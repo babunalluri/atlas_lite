@@ -1,0 +1,4981 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Atlas Lite — NIFTY Entry Sheet</title>
+  <style>
+    :root,
+    [data-theme="dark"] {
+      color-scheme: dark;
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --line: #2d3a4d;
+      --ink: #e8edf4;
+      --muted: #8b9cb3;
+      --pass: #34d399;
+      --fail: #f87171;
+      --accent: #2dd4bf;
+      --warn: #fbbf24;
+      --card-bg-top: #1a2a3d;
+      --card-bg-bottom: #152030;
+      --card-pass-top: rgba(52, 211, 153, 0.07);
+      --card-fail-top: rgba(248, 113, 113, 0.07);
+      --card-divider: rgba(255, 255, 255, 0.06);
+      --card-shadow: rgba(0, 0, 0, 0.22);
+      --parity-bg: #152030;
+      --warn-bg: rgba(251, 191, 36, 0.1);
+      --warn-border: rgba(251, 191, 36, 0.3);
+      --pass-bg: rgba(52, 211, 153, 0.15);
+      --fail-bg: rgba(248, 113, 113, 0.15);
+      --control-border: #4a627e;
+      --control-shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
+      --header-control-h: 28px;
+    }
+    [data-theme="light"] {
+      color-scheme: light;
+      --bg: #eef2f7;
+      --panel: #ffffff;
+      --line: #d5dde8;
+      --ink: #0f172a;
+      --muted: #64748b;
+      --pass: #059669;
+      --fail: #dc2626;
+      --accent: #0d9488;
+      --warn: #d97706;
+      --card-bg-top: #ffffff;
+      --card-bg-bottom: #f8fafc;
+      --card-pass-top: rgba(5, 150, 105, 0.08);
+      --card-fail-top: rgba(220, 38, 38, 0.08);
+      --card-divider: rgba(15, 23, 42, 0.08);
+      --card-shadow: rgba(15, 23, 42, 0.08);
+      --parity-bg: #f1f5f9;
+      --warn-bg: rgba(217, 119, 6, 0.1);
+      --warn-border: rgba(217, 119, 6, 0.28);
+      --pass-bg: rgba(5, 150, 105, 0.12);
+      --fail-bg: rgba(220, 38, 38, 0.12);
+      --control-border: #b8c5d6;
+      --control-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+      --header-control-h: 28px;
+    }
+    * { box-sizing: border-box; }
+    .no-scrollbar {
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+    .no-scrollbar::-webkit-scrollbar {
+      display: none;
+      width: 0;
+      height: 0;
+    }
+    html {
+      font-size: 13px;
+    }
+    html,
+    body {
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+    html::-webkit-scrollbar,
+    body::-webkit-scrollbar {
+      display: none;
+      width: 0;
+      height: 0;
+    }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, sans-serif;
+      font-size: 1rem;
+      background: var(--bg);
+      color: var(--ink);
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    main,
+    .page-layout,
+    .chain-panel,
+    .main-stage,
+    .chart-panel {
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+    main::-webkit-scrollbar,
+    .page-layout::-webkit-scrollbar,
+    .chain-panel::-webkit-scrollbar,
+    .main-stage::-webkit-scrollbar,
+    .chart-panel::-webkit-scrollbar {
+      display: none;
+      width: 0;
+      height: 0;
+    }
+    header {
+      flex-shrink: 0;
+      position: relative;
+      z-index: 30;
+      padding: 6px 12px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    .header-top {
+      display: grid;
+      grid-template-columns: auto auto minmax(0, 1fr);
+      gap: 8px;
+      align-items: center;
+    }
+    .header-left { justify-self: start; min-width: 0; }
+    .header-center { justify-self: center; }
+    .header-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+    .header-meta-end {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+      white-space: nowrap;
+    }
+    .header-meta {
+      justify-self: end;
+      width: 100%;
+      display: flex;
+      flex-wrap: nowrap;
+      gap: 10px;
+      align-items: center;
+      justify-content: flex-end;
+      font-size: 0.8125rem;
+      font-family: ui-monospace, monospace;
+      min-width: 0;
+      max-width: 100%;
+      white-space: nowrap;
+      overflow: visible;
+    }
+    h1 { margin: 0; font-size: 0.9375rem; font-weight: 600; }
+    .header-title-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: nowrap;
+      min-width: 0;
+    }
+    .header-title-row h1 { font-size: 0.9375rem; flex-shrink: 0; }
+    .header-atm,
+    .header-legs {
+      font-size: 0.8125rem;
+      font-family: ui-monospace, monospace;
+      white-space: nowrap;
+    }
+    .header-atm { flex-shrink: 0; }
+    .header-legs {
+      color: var(--muted);
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .theme-toggle,
+    .header-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      box-sizing: border-box;
+      height: var(--header-control-h);
+      min-height: var(--header-control-h);
+      border: 1px solid var(--control-border);
+      border-radius: 6px;
+      background: var(--parity-bg);
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 0.75rem;
+      font-weight: 600;
+      line-height: 1;
+      padding: 0 8px;
+      gap: 5px;
+      white-space: nowrap;
+      box-shadow: var(--control-shadow);
+      transition: color 0.2s, border-color 0.2s, background 0.2s, box-shadow 0.2s;
+    }
+    .header-btn svg {
+      width: 14px;
+      height: 14px;
+      fill: currentColor;
+      flex-shrink: 0;
+    }
+    .theme-toggle {
+      width: var(--header-control-h);
+      min-width: var(--header-control-h);
+      padding: 0;
+      font-size: 0.875rem;
+    }
+    .theme-toggle:hover,
+    .header-btn:hover,
+    .header-btn.active {
+      color: var(--ink);
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent),
+        var(--control-shadow);
+    }
+    .parity-bell {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 40px;
+      height: 40px;
+      flex-shrink: 0;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      background: var(--parity-bg);
+      color: var(--muted);
+      opacity: 0.55;
+      cursor: default;
+      transition: color 0.2s, border-color 0.2s, opacity 0.2s, box-shadow 0.2s;
+    }
+    .ai-bell-wrap {
+      display: inline-flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 1px;
+      flex-shrink: 0;
+      line-height: 1;
+    }
+    .ai-bell-wrap .parity-bell {
+      width: 32px;
+      height: 32px;
+    }
+    .ai-bell-wrap .parity-bell svg {
+      width: 16px;
+      height: 16px;
+    }
+    .ai-bell-label {
+      font-size: 0.5625rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      line-height: 1;
+    }
+    .ai-bell.enter {
+      opacity: 1;
+      color: var(--pass);
+      border-color: color-mix(in srgb, var(--pass) 55%, transparent);
+      background: var(--pass-bg);
+      animation: parity-blink 0.85s ease-in-out infinite;
+    }
+    .ai-bell.watch {
+      opacity: 1;
+      color: var(--warn);
+      border-color: color-mix(in srgb, var(--warn) 55%, transparent);
+      background: var(--warn-bg);
+    }
+    .ai-bell.idle {
+      opacity: 0.45;
+      color: var(--muted);
+    }
+    .parity-bell svg {
+      width: 20px;
+      height: 20px;
+      fill: currentColor;
+    }
+    .parity-bell.green {
+      opacity: 1;
+      color: var(--pass);
+      border-color: color-mix(in srgb, var(--pass) 55%, transparent);
+      background: var(--pass-bg);
+      animation: parity-blink 0.85s ease-in-out infinite;
+    }
+    .parity-bell.orange {
+      opacity: 1;
+      color: var(--warn);
+      border-color: color-mix(in srgb, var(--warn) 55%, transparent);
+      background: var(--warn-bg);
+    }
+    .parity-bell.red {
+      opacity: 1;
+      color: var(--fail);
+      border-color: color-mix(in srgb, var(--fail) 55%, transparent);
+      background: var(--fail-bg);
+    }
+    .bell-tip-wrap {
+      position: relative;
+      display: inline-flex;
+      z-index: 40;
+    }
+    .bell-gate-tip {
+      display: none;
+      position: absolute;
+      top: 100%;
+      left: 50%;
+      transform: translateX(-50%);
+      min-width: 220px;
+      max-width: 280px;
+      padding: 8px 10px 9px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--ink);
+      text-align: left;
+      white-space: normal;
+      z-index: 50;
+    }
+    .bell-tip-wrap:hover .bell-gate-tip,
+    .bell-tip-wrap:focus-within .bell-gate-tip {
+      display: block;
+    }
+    .bell-gate-tip-head {
+      font-size: 0.6875rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+    .bell-gate-tip ul {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+    .bell-gate-tip li {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 0.75rem;
+      line-height: 1.45;
+    }
+    .bell-gate-tip li + li {
+      border-top: 1px solid var(--card-divider);
+      padding-top: 3px;
+      margin-top: 3px;
+    }
+    .bell-gate-tip .gate-state {
+      font-family: ui-monospace, monospace;
+      font-size: 0.6875rem;
+      flex-shrink: 0;
+    }
+    .bell-gate-tip li.pass { color: var(--pass); }
+    .bell-gate-tip li.fail { color: var(--fail); }
+    .bell-gate-tip li.miss { color: var(--warn); }
+    @keyframes parity-blink {
+      0%, 100% {
+        opacity: 1;
+        transform: scale(1);
+        box-shadow: 0 0 0 0 rgba(251, 191, 36, 0);
+      }
+      50% {
+        opacity: 0.45;
+        transform: scale(1.06);
+        box-shadow: 0 0 14px 2px rgba(251, 191, 36, 0.45);
+      }
+    }
+    .sub { font-size: 0.75rem; color: var(--muted); margin-top: 0; }
+    .watch-strips {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-bottom: 6px;
+    }
+    .watch-strips:empty { display: none; margin: 0; }
+    .watch-top {
+      display: grid;
+      grid-template-columns: 5fr 4fr;
+      gap: 6px;
+    }
+    .watch-group-label {
+      font-size: 0.625rem;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin: 0 0 3px 1px;
+    }
+    .watch-group-cards {
+      display: grid;
+      gap: 3px;
+    }
+    .watch-group-cards.cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .watch-group-cards.cols-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+    .watch-group-cards.cols-11 { grid-template-columns: repeat(11, minmax(0, 1fr)); }
+    .watch-card {
+      background: var(--card-bg-bottom);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 4px 5px 5px;
+      text-align: center;
+      position: relative;
+      min-width: 0;
+    }
+    .watch-card::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      border-radius: 6px 6px 0 0;
+      background: var(--muted);
+    }
+    .watch-card.up::before { background: var(--pass); }
+    .watch-card.down::before { background: var(--fail); }
+    .watch-card .name {
+      font-size: 0.6875rem;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+      line-height: 1.2;
+      color: var(--ink);
+    }
+    .watch-card .ltp {
+      font-family: ui-monospace, monospace;
+      font-size: 0.8125rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      line-height: 1.2;
+      margin: 2px 0 1px;
+    }
+    .watch-card .chg-row {
+      display: flex;
+      justify-content: center;
+      align-items: baseline;
+      gap: 6px;
+    }
+    .watch-card .chg {
+      font-family: ui-monospace, monospace;
+      font-size: 0.6875rem;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+    .watch-card .chg.up { color: var(--pass); }
+    .watch-card .chg.down { color: var(--fail); }
+    .watch-card .chg.na { color: var(--muted); font-weight: 400; }
+    .watch-group-cards.cols-11 .watch-card {
+      padding: 4px 3px 5px;
+    }
+    .watch-group-cards.cols-11 .watch-card .name {
+      font-size: 0.625rem;
+    }
+    .watch-group-cards.cols-11 .watch-card .ltp {
+      font-size: 0.75rem;
+    }
+    .watch-group-cards.cols-11 .watch-card .chg-row {
+      flex-wrap: wrap;
+      gap: 1px 4px;
+    }
+    .watch-group-cards.cols-11 .watch-card .chg {
+      font-size: 0.625rem;
+    }
+    @media (max-width: 900px) {
+      .watch-top { grid-template-columns: 1fr; }
+      .watch-group-cards.cols-4,
+      .watch-group-cards.cols-5,
+      .watch-group-cards.cols-11 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .header-top {
+        grid-template-columns: 1fr;
+        justify-items: center;
+        text-align: center;
+      }
+      .header-left,
+      .header-center,
+      .header-meta { justify-self: center; }
+      .header-meta { justify-content: center; }
+      .header-actions { justify-content: center; }
+    }
+    .header-meta-end .badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      box-sizing: border-box;
+      height: var(--header-control-h);
+      min-height: var(--header-control-h);
+      padding: 0 8px;
+      border-radius: 6px;
+      border: 1px solid var(--control-border);
+      font-weight: 600;
+      font-size: 0.75rem;
+      line-height: 1;
+      white-space: nowrap;
+      box-shadow: var(--control-shadow);
+    }
+    .header-meta-end .badge.ready {
+      background: var(--pass-bg);
+      color: var(--pass);
+      border-color: color-mix(in srgb, var(--pass) 45%, var(--control-border));
+    }
+    .header-meta-end .badge.wait {
+      background: var(--warn-bg);
+      color: var(--warn);
+      border-color: var(--warn-border);
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      flex-shrink: 0;
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-weight: 600;
+      font-size: 0.75rem;
+      line-height: 1.2;
+      white-space: nowrap;
+    }
+    .badge.ready { background: var(--pass-bg); color: var(--pass); }
+    .badge.wait { background: var(--warn-bg); color: var(--warn); }
+    main { padding: 0; flex: 1; min-height: 0; overflow: hidden; }
+    .page-layout {
+      display: grid;
+      grid-template-columns: min-content minmax(0, 1fr);
+      gap: 10px;
+      align-items: stretch;
+      padding: 10px 12px;
+      height: 100%;
+      min-height: 0;
+    }
+    .chain-panel {
+      min-width: 0;
+      width: min-content;
+      max-width: 100%;
+      min-height: 0;
+      height: 100%;
+      max-height: 100%;
+      display: flex;
+      flex-direction: column;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 8px 8px 6px;
+    }
+    .chain-bar {
+      display: flex;
+      flex-wrap: nowrap;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      margin-bottom: 6px;
+      font-size: 0.75rem;
+      min-height: var(--header-control-h);
+      width: 100%;
+      max-width: 100%;
+    }
+    .chain-bar label {
+      color: var(--muted);
+      flex-shrink: 0;
+      white-space: nowrap;
+    }
+    .chain-meta {
+      color: var(--muted);
+      font-size: 0.75rem;
+      font-family: ui-monospace, monospace;
+      flex: 0 0 auto;
+      white-space: nowrap;
+      background: var(--panel);
+    }
+    .chain-meta:empty { display: none; }
+    .main-stage {
+      min-width: 0;
+      min-height: 0;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .chart-panel {
+      min-width: 0;
+      min-height: 0;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
+      padding: 0;
+    }
+    .chart-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+      flex-wrap: wrap;
+      padding: 5px 8px;
+      border-bottom: 1px solid var(--line);
+    }
+    .chart-toolbar-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 2px;
+    }
+    .chart-tool-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      height: 24px;
+      min-width: 32px;
+      padding: 0 7px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 0.6875rem;
+      font-weight: 600;
+    }
+    .chart-tool-btn svg {
+      width: 13px;
+      height: 13px;
+      fill: currentColor;
+      color: inherit;
+      flex-shrink: 0;
+    }
+    .chart-tool-btn.active,
+    .chart-tool-btn:hover {
+      color: var(--ink);
+      border-color: var(--accent);
+    }
+    .chart-tool-btn:disabled {
+      opacity: 1;
+      color: color-mix(in srgb, var(--ink) 45%, var(--muted));
+      cursor: default;
+    }
+    .chart-link { cursor: pointer; }
+    .header-atm { cursor: pointer; }
+    .chain-table td.strike-col { cursor: pointer; }
+    .chain-summary-item.chart-link { cursor: pointer; }
+    .chart-toolbar-end {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    .chart-shot-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 26px;
+      min-width: 26px;
+      padding: 0;
+      color: var(--ink);
+    }
+    .chart-shot-btn svg {
+      width: 16px;
+      height: 16px;
+      fill: currentColor;
+      color: var(--ink);
+    }
+    .chart-shot-btn:disabled {
+      color: color-mix(in srgb, var(--ink) 50%, var(--muted));
+    }
+    .chart-shot-btn:disabled svg {
+      color: inherit;
+      fill: currentColor;
+    }
+    .chart-draw-group {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+    .chart-line-style {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+    .chart-line-style[hidden] { display: none; }
+    .chart-line-size-panel {
+      min-width: 0;
+      width: max-content;
+      padding: 3px;
+    }
+    .chart-line-size-panel .chart-menu-item {
+      width: auto;
+      gap: 6px;
+      padding: 4px 8px;
+      white-space: nowrap;
+    }
+    .chart-line-size-panel .line-weight {
+      width: 1.25rem;
+    }
+    .chart-line-color-panel {
+      min-width: 0;
+      width: max-content;
+      padding: 8px;
+      overflow: visible;
+    }
+    .chart-honeycomb {
+      position: relative;
+      width: var(--honey-w, 196px);
+      height: var(--honey-h, 180px);
+      margin: 0 auto;
+    }
+    .chart-honey-cell {
+      position: absolute;
+      box-sizing: border-box;
+      width: var(--honey-size, 18px);
+      height: calc(var(--honey-size, 18px) * 1.1547);
+      margin: 0;
+      padding: 0;
+      border: 0;
+      background: var(--swatch, #fff);
+      clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+      cursor: pointer;
+      transform: translate(-50%, -50%);
+    }
+    .chart-honey-cell:hover,
+    .chart-honey-cell.active {
+      outline: 2px solid #fff;
+      outline-offset: -2px;
+      z-index: 2;
+      filter: brightness(1.08);
+    }
+    .chart-line-color-toggle .color-dot {
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      border-radius: 999px;
+      background: var(--swatch, #60a5fa);
+      border: 1px solid color-mix(in srgb, var(--ink) 35%, transparent);
+      flex-shrink: 0;
+    }
+    .chart-menu-item .line-weight {
+      display: block;
+      width: 2rem;
+      height: var(--swatch-h, 2px);
+      background: var(--swatch, currentColor);
+      border-radius: 1px;
+      flex-shrink: 0;
+    }
+    .chart-menu {
+      position: relative;
+      flex-shrink: 0;
+    }
+    .chart-menu-panel {
+      position: absolute;
+      top: calc(100% + 4px);
+      left: 0;
+      z-index: 8;
+      min-width: 15rem;
+      max-height: min(420px, 62vh);
+      overflow-y: auto;
+      padding: 6px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+    }
+    .chart-menu-panel:not([hidden]) {
+      display: block;
+    }
+    .chart-menu-heading {
+      padding: 7px 6px 3px;
+      color: var(--muted);
+      font-size: 0.625rem;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .chart-menu-heading:first-child { padding-top: 2px; }
+    .chart-menu-panel[hidden] { display: none; }
+    .chart-menu-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      margin: 0;
+      padding: 5px 6px;
+      border: 0;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--ink);
+      font-size: 0.75rem;
+      font-weight: 800;
+      text-align: left;
+      cursor: pointer;
+    }
+    .chart-menu-item:hover,
+    .chart-menu-item.active {
+      background: color-mix(in srgb, var(--accent) 12%, transparent);
+    }
+    .chart-menu-item svg {
+      width: 16px;
+      height: 16px;
+      fill: currentColor;
+      color: var(--ink);
+      flex-shrink: 0;
+    }
+    .chart-menu-item input { margin: 0; accent-color: var(--accent); }
+    .chart-indicator-panel {
+      min-width: 17rem;
+      max-height: min(460px, 68vh);
+      padding: 0;
+      overflow: hidden;
+    }
+    .chart-indicator-panel:not([hidden]) {
+      display: flex;
+      flex-direction: column;
+    }
+    .chart-indicator-panel[hidden] {
+      display: none;
+    }
+    .chart-indicator-search-wrap {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 8px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+      flex-shrink: 0;
+    }
+    .chart-indicator-search-wrap .chart-search-icon {
+      width: 14px;
+      height: 14px;
+      fill: currentColor;
+      color: var(--muted);
+      flex-shrink: 0;
+    }
+    .chart-indicator-search {
+      flex: 1;
+      min-width: 0;
+      height: 28px;
+      padding: 4px 8px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      background: var(--bg);
+      color: var(--ink);
+      font-size: 0.75rem;
+      font-weight: 600;
+      outline: none;
+      box-sizing: border-box;
+    }
+    .chart-indicator-search:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+    }
+    .chart-indicator-search::placeholder {
+      color: var(--muted);
+      font-weight: 400;
+    }
+    .chart-search-clear {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      border-radius: 50%;
+      background: transparent;
+      color: var(--muted);
+      font-size: 0.75rem;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .chart-search-clear:hover {
+      background: color-mix(in srgb, var(--ink) 12%, transparent);
+      color: var(--ink);
+    }
+    .chart-search-clear[hidden] {
+      display: none;
+    }
+    .chart-indicator-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 6px;
+      max-height: min(390px, 56vh);
+    }
+    .chart-indicator-empty {
+      padding: 20px 12px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.75rem;
+      font-weight: 500;
+    }
+    .tv-live-wrap {
+      flex: 1;
+      min-height: 220px;
+      height: 100%;
+      position: relative;
+      overflow: hidden;
+      background: color-mix(in srgb, var(--bg) 55%, var(--panel));
+    }
+    #klineHost {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+    }
+    .chart-empty {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+      font-size: 0.875rem;
+      padding: 16px;
+      text-align: center;
+      pointer-events: none;
+      z-index: 1;
+    }
+    .chart-empty[hidden] { display: none; }
+    .chart-hud {
+      position: absolute;
+      top: 8px;
+      left: 10px;
+      z-index: 5;
+      pointer-events: none;
+      font-family: ui-monospace, monospace;
+      font-size: 0.6875rem;
+      font-weight: 700;
+      color: var(--ink);
+      line-height: 1.35;
+      padding: 5px 8px;
+      border-radius: 6px;
+      background: color-mix(in srgb, var(--panel) 88%, transparent);
+      border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
+      max-width: min(520px, calc(100% - 20px));
+    }
+    .chart-draw-mode {
+      position: absolute;
+      top: 8px;
+      right: 10px;
+      z-index: 4;
+      pointer-events: none;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--accent) 22%, var(--panel));
+      color: var(--ink);
+      font-size: 0.6875rem;
+      font-weight: 800;
+    }
+    .chart-draw-mode[hidden],
+    .chart-hud:empty { display: none; }
+    .chart-toasts {
+      position: absolute;
+      left: 50%;
+      bottom: 12px;
+      transform: translateX(-50%);
+      z-index: 6;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      pointer-events: none;
+    }
+    .chart-toast {
+      padding: 7px 10px;
+      border-radius: 8px;
+      background: var(--ink);
+      color: var(--bg);
+      font-size: 0.75rem;
+      font-weight: 800;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+      white-space: nowrap;
+    }
+    .sheet-board {
+      flex-shrink: 0;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 7px 8px 8px;
+      width: 100%;
+    }
+    #warnings:empty { display: none; }
+    #warnings { margin-bottom: 6px; }
+    .paper-bar {
+      display: none;
+    }
+    .paper-bar[hidden] { display: none; }
+    .paper-bar .paper-k {
+      color: var(--muted);
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      font-size: 0.625rem;
+    }
+    .paper-bar .paper-up { color: var(--pass); }
+    .paper-bar .paper-dn { color: var(--fail); }
+    @media (max-width: 1100px) {
+      body { height: auto; overflow: auto; }
+      main { flex: none; overflow: visible; }
+      .page-layout {
+        display: flex;
+        flex-direction: column;
+        height: auto;
+      }
+      .chain-panel {
+        width: 100%;
+        min-width: 0;
+        max-height: 280px;
+      }
+      .chain-bar {
+        width: 100%;
+        overflow-x: auto;
+        justify-content: center;
+      }
+      .main-stage { width: 100%; height: auto; }
+      .chart-panel { width: 100%; min-height: 320px; }
+      .watch-top { grid-template-columns: 1fr; }
+      .sheet-groups { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+    }
+    .warn {
+      background: var(--warn-bg);
+      border: 1px solid var(--warn-border);
+      color: var(--warn);
+      padding: 6px 8px;
+      border-radius: 6px;
+      font-size: 0.75rem;
+      margin-bottom: 0;
+    }
+    .sheet-groups {
+      display: grid;
+      grid-template-columns: repeat(10, minmax(0, 1fr));
+      gap: 4px 6px;
+      align-items: stretch;
+    }
+    .sheet-groups > :only-child {
+      grid-column: 1 / -1;
+    }
+    @media (max-width: 1100px) {
+      .sheet-groups { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+    }
+    @media (max-width: 720px) {
+      .sheet-groups { grid-template-columns: 1fr 1fr; }
+    }
+    .metric-card {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 3px;
+      text-align: center;
+      background: var(--card-bg-bottom);
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 8px 6px 7px;
+      min-width: 0;
+      min-height: 0;
+      position: relative;
+      overflow: hidden;
+    }
+    .metric-card::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: var(--line);
+    }
+    .metric-card.pass::before { background: var(--pass); }
+    .metric-card.fail::before { background: var(--fail); }
+    .metric-card.info::before { background: var(--accent); opacity: 0.65; }
+    .metric-card.pass {
+      background: color-mix(in srgb, var(--pass) 6%, var(--card-bg-bottom));
+    }
+    .metric-card.fail {
+      background: color-mix(in srgb, var(--fail) 6%, var(--card-bg-bottom));
+    }
+    .metric-card .card-label {
+      font-size: 0.6875rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--ink);
+      font-weight: 700;
+      line-height: 1.2;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 100%;
+    }
+    .metric-card .card-value {
+      display: flex;
+      align-items: baseline;
+      justify-content: center;
+      width: 100%;
+      font-family: ui-monospace, monospace;
+      font-size: 1rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      line-height: 1.1;
+    }
+    .metric-card .card-sub,
+    .metric-card .card-target {
+      display: none;
+    }
+    .num { font-family: ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+    .live {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      font-weight: 600;
+      transition: color 0.3s;
+    }
+    .live.up { color: var(--pass); }
+    .live.down { color: var(--fail); }
+    .live.neutral { color: var(--ink); font-weight: 500; }
+    .live.na { color: var(--muted); font-weight: 400; }
+    .live .arrow { font-size: 0.65rem; line-height: 1; opacity: 0.9; }
+    .history-toggle:hover,
+    .history-toggle.active {
+      color: var(--ink);
+      border-color: var(--accent);
+    }
+    .history-modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    .history-modal.open { display: flex; }
+    .history-backdrop {
+      position: absolute;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.55);
+    }
+    [data-theme="light"] .history-backdrop {
+      background: rgba(15, 23, 42, 0.35);
+    }
+    .history-dialog {
+      position: relative;
+      z-index: 1;
+      width: min(980px, 100%);
+      max-height: 90vh;
+      overflow: auto;
+      padding: 14px 16px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel);
+      box-shadow: 0 20px 50px var(--card-shadow);
+    }
+    .history-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .history-head h2 {
+      margin: 0;
+      font-size: 0.9rem;
+      font-weight: 600;
+    }
+    .history-close {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--parity-bg);
+      color: var(--muted);
+      font-size: 0.75rem;
+      font-weight: 600;
+      line-height: 1;
+      padding: 6px 10px;
+      cursor: pointer;
+    }
+    .history-close svg {
+      width: 14px;
+      height: 14px;
+      fill: currentColor;
+      flex-shrink: 0;
+    }
+    .history-close:hover {
+      color: var(--ink);
+      border-color: var(--accent);
+    }
+    .history-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .history-filters {
+      margin-bottom: 12px;
+    }
+    .history-table td.hist-entry {
+      white-space: normal;
+      line-height: 1.15;
+      text-align: center;
+      vertical-align: middle;
+    }
+    .history-table td.hist-entry .hist-entry-line {
+      display: block;
+    }
+    .history-toolbar label {
+      font-size: 0.72rem;
+      color: var(--muted);
+    }
+    .history-toolbar select,
+    .history-toolbar button {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--parity-bg);
+      color: var(--ink);
+      font-size: 0.75rem;
+      font-weight: 600;
+      line-height: 1;
+      padding: 6px 10px;
+    }
+    .history-toolbar button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      cursor: pointer;
+    }
+    .history-toolbar button svg {
+      width: 14px;
+      height: 14px;
+      fill: currentColor;
+      flex-shrink: 0;
+    }
+    .history-toolbar button:hover {
+      border-color: var(--accent);
+    }
+    .history-meta {
+      font-size: 0.72rem;
+      color: var(--muted);
+      margin-left: auto;
+    }
+    .history-table-wrap {
+      overflow: auto;
+      max-height: min(46vh, 420px);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+    table.history-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.72rem;
+    }
+    .history-table th,
+    .history-table td {
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+    }
+    .history-table th,
+    .history-table td:not(.hist-entry) {
+      white-space: nowrap;
+    }
+    .history-table th {
+      position: sticky;
+      top: 0;
+      background: var(--card-bg-top);
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .history-table tbody tr { cursor: pointer; }
+    .history-table tbody tr:hover { background: var(--card-pass-top); }
+    .history-table tbody tr.selected { background: var(--warn-bg); }
+    .history-detail {
+      margin-top: 12px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--card-bg-bottom);
+      font-size: 0.72rem;
+      font-family: ui-monospace, monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 280px;
+      overflow: auto;
+    }
+    .hist-pass { color: var(--pass); }
+    .hist-fail { color: var(--fail); }
+    .hist-muted { color: var(--muted); }
+    .chain-toggle:hover,
+    .chain-toggle.active {
+      color: var(--ink);
+      border-color: var(--accent);
+    }
+    .chain-summary {
+      display: flex;
+      flex-wrap: nowrap;
+      gap: 6px;
+      font-size: 0.75rem;
+      color: var(--muted);
+      flex: 0 0 auto;
+      align-items: center;
+      justify-content: center;
+      white-space: nowrap;
+    }
+    .chain-summary-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .chain-summary-val {
+      color: var(--accent);
+      font-family: ui-monospace, monospace;
+      font-variant-numeric: tabular-nums;
+      font-weight: 700;
+      font-size: 0.75rem;
+      line-height: 1.2;
+      padding: 2px 5px;
+      border-radius: 5px;
+      background: color-mix(in srgb, var(--accent) 14%, var(--parity-bg));
+      border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+      box-shadow: 0 1px 0 color-mix(in srgb, var(--accent) 10%, transparent);
+    }
+    .chain-table-wrap {
+      flex: 1;
+      overflow: auto;
+      min-height: 120px;
+      width: max-content;
+      max-width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+    .chain-table-wrap,
+    .history-dialog,
+    .history-table-wrap,
+    .history-detail {
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+    .chain-table-wrap::-webkit-scrollbar,
+    .history-dialog::-webkit-scrollbar,
+    .history-table-wrap::-webkit-scrollbar,
+    .history-detail::-webkit-scrollbar {
+      display: none;
+      width: 0;
+      height: 0;
+    }
+    table.chain-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.75rem;
+      font-family: ui-monospace, monospace;
+      font-variant-numeric: tabular-nums;
+    }
+    .chain-table th,
+    .chain-table td {
+      padding: 4px 5px;
+      border-bottom: 1px solid var(--line);
+      white-space: nowrap;
+    }
+    .chain-table td {
+      text-align: right;
+    }
+    .chain-table th {
+      text-align: center;
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      background: var(--card-bg-top);
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .chain-table th.strike-col,
+    .chain-table td.strike-col {
+      text-align: center;
+      font-weight: 700;
+      background: var(--card-bg-bottom);
+      border-left: 1px solid var(--line);
+      border-right: 1px solid var(--line);
+    }
+    .chain-table th.ce-head {
+      color: var(--pass);
+      background: color-mix(in srgb, var(--pass) 8%, var(--card-bg-top));
+    }
+    .chain-table th.pe-head {
+      color: var(--fail);
+      background: color-mix(in srgb, var(--fail) 8%, var(--card-bg-top));
+    }
+    .chain-table td.ce-side {
+      background: color-mix(in srgb, var(--pass) 4%, transparent);
+    }
+    .chain-table td.pe-side {
+      background: color-mix(in srgb, var(--fail) 4%, transparent);
+    }
+    .chain-table tr.atm-row td {
+      background: color-mix(in srgb, var(--accent) 12%, var(--card-bg-bottom));
+      box-shadow: inset 0 1px 0 color-mix(in srgb, var(--accent) 35%, transparent),
+        inset 0 -1px 0 color-mix(in srgb, var(--accent) 35%, transparent);
+    }
+    .chain-table tr.max-pain-row td.strike-col {
+      color: var(--warn);
+    }
+    .chain-table tr.chain-total-row td {
+      position: sticky;
+      bottom: 0;
+      z-index: 3;
+      padding: 8px 8px;
+      font-weight: 700;
+      font-size: 0.8125rem;
+      border-top: 2px solid var(--accent);
+      border-bottom: none;
+      box-shadow: 0 -6px 16px rgba(0, 0, 0, 0.28);
+      background: linear-gradient(
+        180deg,
+        color-mix(in srgb, var(--accent) 16%, var(--card-bg-top)) 0%,
+        var(--card-bg-top) 100%
+      );
+    }
+    .chain-table tr.chain-total-row td.ce-side {
+      background: linear-gradient(
+        180deg,
+        color-mix(in srgb, var(--pass) 18%, var(--card-bg-top)) 0%,
+        color-mix(in srgb, var(--pass) 8%, var(--card-bg-top)) 100%
+      );
+      box-shadow: inset 0 1px 0 color-mix(in srgb, var(--pass) 35%, transparent);
+    }
+    .chain-table tr.chain-total-row td.pe-side {
+      background: linear-gradient(
+        180deg,
+        color-mix(in srgb, var(--fail) 18%, var(--card-bg-top)) 0%,
+        color-mix(in srgb, var(--fail) 8%, var(--card-bg-top)) 100%
+      );
+      box-shadow: inset 0 1px 0 color-mix(in srgb, var(--fail) 35%, transparent);
+    }
+    .chain-table tr.chain-total-row td.strike-col {
+      background: color-mix(in srgb, var(--accent) 22%, var(--card-bg-top));
+      box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+    }
+    .chain-total-label {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--accent) 28%, var(--card-bg-bottom));
+      color: var(--accent);
+      font-size: 0.6875rem;
+      font-weight: 800;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 50%, transparent);
+    }
+    .chain-table tr.spot-marker td.strike-col::after {
+      content: " ◀ spot";
+      font-size: 0.6875rem;
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .chain-up { color: var(--pass); }
+    .chain-down { color: var(--fail); }
+    .chain-muted { color: var(--muted); }
+  </style>
+</head>
+<body data-theme="dark">
+  <header>
+    <div class="header-top">
+      <div class="header-left">
+        <div class="header-title-row">
+          <h1>NIFTY 50</h1>
+          <span class="header-atm">ATM <strong id="atm">—</strong></span>
+          <span id="legs" class="header-legs"></span>
+        </div>
+      </div>
+      <div class="header-center">
+        <span class="bell-tip-wrap">
+          <span
+            class="parity-bell"
+            id="parityBell"
+            aria-label="Entry bell"
+            aria-describedby="bellGateTip"
+            role="status"
+            tabindex="0"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 2a6 6 0 0 0-6 6v3.1c0 .9-.3 1.8-.9 2.5L4.3 15a1 1 0 0 0 .8 1.6h13.8a1 1 0 0 0 .8-1.6l-.8-1.4a4.2 4.2 0 0 1-.9-2.5V8a6 6 0 0 0-6-6zm0 20a2.5 2.5 0 0 0 2.4-2h-4.8A2.5 2.5 0 0 0 12 22z"/>
+            </svg>
+          </span>
+          <div class="bell-gate-tip" id="bellGateTip" role="tooltip">Notebook 7/7</div>
+        </span>
+      </div>
+      <div class="header-meta">
+        <span id="feedPath">connecting…</span>
+        <span id="timestamp" class="sub">—</span>
+        <div class="header-meta-end">
+          <div class="header-actions">
+            <button type="button" class="theme-toggle" id="themeToggle" title="Switch theme" aria-label="Switch theme">☀</button>
+            <button type="button" class="header-btn history-toggle" id="historyToggle" title="View recorded snapshots">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3a9 9 0 1 0 9 9h-2a7 7 0 1 1-2.05-4.95L15 9h6V3l-2.76 2.76A8.96 8.96 0 0 0 13 3zm-1 5h2v5h-5V11h3V8z"/></svg>
+              History
+            </button>
+          </div>
+          <span id="entryBadge" class="badge wait" title="All gated entry checks must pass">NOT READY</span>
+        </div>
+      </div>
+    </div>
+  </header>
+  <main>
+    <div class="page-layout">
+      <aside class="chain-panel" aria-label="Option chain">
+        <div class="chain-bar">
+          <div class="chain-summary" id="chainSummary"></div>
+          <span class="chain-meta" id="chainMeta"></span>
+        </div>
+        <div class="chain-table-wrap" id="chainTableWrap">
+          <table class="chain-table">
+            <thead>
+              <tr>
+                <th class="ce-head">OI</th>
+                <th class="ce-head">%</th>
+                <th class="ce-head">LTP</th>
+                <th class="strike-col">Str</th>
+                <th class="pe-head">LTP</th>
+                <th class="pe-head">%</th>
+                <th class="pe-head">OI</th>
+              </tr>
+            </thead>
+            <tbody id="chainRows">
+              <tr><td colspan="7" class="chain-muted" style="text-align:center">Loading chain…</td></tr>
+            </tbody>
+            <tfoot id="chainTotals"></tfoot>
+          </table>
+        </div>
+      </aside>
+      <div class="main-stage">
+        <section class="sheet-board">
+          <div class="watch-strips" id="indexStrip"></div>
+          <div class="paper-bar" id="paperBar" hidden>Paper…</div>
+          <div id="warnings"></div>
+          <div class="sheet-groups" id="sheetGroups">
+            <div style="text-align:center;color:var(--muted);padding:12px 8px">Connecting to SSE…</div>
+          </div>
+        </section>
+        <aside class="chart-panel" aria-label="NIFTY 50 chart">
+          <div class="chart-toolbar">
+            <div class="chart-toolbar-group" id="chartIntervalBar"></div>
+            <div class="chart-toolbar-group" id="chartStyleBar"></div>
+            <div class="chart-menu" id="chartIndicatorMenu">
+              <button type="button" class="chart-tool-btn" id="chartIndicatorToggle" aria-haspopup="true" aria-expanded="false">Indicators</button>
+              <div class="chart-menu-panel chart-indicator-panel" id="chartIndicatorPanel" hidden>
+                <div class="chart-indicator-search-wrap">
+                  <svg class="chart-search-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+                  <input type="text" class="chart-indicator-search" id="chartIndicatorSearch" placeholder="Search indicators…" autocomplete="off" spellcheck="false">
+                  <button type="button" class="chart-search-clear" id="chartIndicatorSearchClear" title="Clear search" aria-label="Clear search" hidden>×</button>
+                </div>
+                <div class="chart-indicator-list" id="chartIndicatorList"></div>
+              </div>
+            </div>
+            <div class="chart-draw-group">
+              <button type="button" class="chart-tool-btn chart-shot-btn" id="chartDrawUndo" title="Undo drawing (⌘Z)" aria-label="Undo drawing"></button>
+              <button type="button" class="chart-tool-btn chart-shot-btn" id="chartDrawRedo" title="Redo drawing (⌘Y)" aria-label="Redo drawing"></button>
+              <button type="button" class="chart-tool-btn" id="chartDrawClear" title="Clear drawings">Clear</button>
+              <button type="button" class="chart-tool-btn" id="chartResetBtn" title="Reset chart zoom and scroll">Reset</button>
+              <div class="chart-menu" id="chartDrawMenu">
+                <button type="button" class="chart-tool-btn" id="chartDrawToggle" aria-haspopup="true" aria-expanded="false">Draw</button>
+                <div class="chart-menu-panel" id="chartDrawPanel" hidden></div>
+              </div>
+              <div class="chart-line-style" id="chartLineStyle" hidden>
+                <div class="chart-menu" id="chartLineSizeMenu">
+                  <button type="button" class="chart-tool-btn" id="chartLineSizeToggle" aria-haspopup="true" aria-expanded="false">1px</button>
+                  <div class="chart-menu-panel chart-line-size-panel" id="chartLineSizePanel" hidden></div>
+                </div>
+                <div class="chart-menu" id="chartLineColorMenu">
+                  <button type="button" class="chart-tool-btn chart-line-color-toggle" id="chartLineColorToggle" aria-haspopup="true" aria-expanded="false" title="Line color">
+                    <span class="color-dot" id="chartLineColorDot"></span>
+                    <span>Color</span>
+                  </button>
+                  <div class="chart-menu-panel chart-line-color-panel" id="chartLineColorPanel" hidden>
+                    <div class="chart-honeycomb" id="chartHoneycomb" role="group" aria-label="Line color palette"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="chart-toolbar-end">
+              <button type="button" class="chart-tool-btn chart-shot-btn" id="chartShotBtn" title="Save chart screenshot" aria-label="Save chart screenshot">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 5h-3.2l-1.8-2H9L7.2 5H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm-8 13a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.2a2.8 2.8 0 1 0 0-5.6 2.8 2.8 0 0 0 0 5.6z"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="tv-live-wrap" id="tvLiveWrap">
+            <div id="klineHost"></div>
+            <div class="chart-hud" id="chartOhlcHud"></div>
+            <div class="chart-draw-mode" id="chartDrawMode" hidden></div>
+            <div class="chart-toasts" id="chartToasts"></div>
+            <div class="chart-empty" id="chartEmpty" hidden>Loading…</div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </main>
+  <div class="history-modal" id="historyModal" aria-hidden="true">
+    <div class="history-backdrop" id="historyBackdrop"></div>
+    <section class="history-dialog" id="historyPanel" role="dialog" aria-modal="true" aria-label="Recording history">
+      <div class="history-head">
+        <h2>Recording history</h2>
+        <button type="button" class="history-close" id="historyClose">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+          Close
+        </button>
+      </div>
+      <div class="history-toolbar">
+        <label for="recordingFile">Recording file</label>
+        <select id="recordingFile"></select>
+        <button type="button" id="recordingRefresh">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+          Refresh list
+        </button>
+        <button type="button" id="recordingLoad">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6h-8l-2-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V6h5.17l2 2H20v10z"/></svg>
+          Load
+        </button>
+        <button type="button" id="recordingDownload" title="Download the selected 30-minute JSONL file">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+          Download file
+        </button>
+        <button type="button" id="recordingDownloadDay" title="Download every slot for that IST day as a zip">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+          Download day
+        </button>
+        <button type="button" id="recordingPrev">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+          Prev
+        </button>
+        <button type="button" id="recordingNext">
+          Next
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 6 8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
+        </button>
+      </div>
+      <div class="history-toolbar history-filters">
+        <label for="historyEntryFilter">Entry</label>
+        <select id="historyEntryFilter" title="Filter by notebook ENTRY READY across every slot on this IST day">
+          <option value="all" selected>All</option>
+          <option value="ready">READY</option>
+          <option value="not_ready">NOT READY</option>
+        </select>
+        <label for="historyGatesFilter">Gates</label>
+        <select id="historyGatesFilter" title="Filter by notebook gates passed across every slot on this IST day">
+          <option value="all" selected>All</option>
+          <option value="7">7/7</option>
+          <option value="6">6/7</option>
+          <option value="5">5/7</option>
+          <option value="le4">≤4/7</option>
+        </select>
+        <label for="historyFailingFilter">Failing</label>
+        <select id="historyFailingFilter" title="Filter by a failing notebook gate across every slot on this IST day">
+          <option value="" selected>Any gate</option>
+          <option value="ADX">ADX</option>
+          <option value="VIX chg">VIX chg</option>
+          <option value="PCR">PCR</option>
+          <option value="IV Percentile">IV Percentile</option>
+          <option value="ATM CE">ATM CE</option>
+          <option value="IV vs today low">IV vs today low</option>
+          <option value="OI vs today high">OI vs today high</option>
+        </select>
+        <span class="history-meta" id="recordingMeta">Select a 30-minute recording file</span>
+      </div>
+      <div class="history-table-wrap">
+        <table class="history-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Spot</th>
+              <th>ADX</th>
+              <th>PCR</th>
+              <th>IVP</th>
+              <th>CE</th>
+              <th>PE</th>
+              <th>Entry</th>
+              <th>Gates</th>
+            </tr>
+          </thead>
+          <tbody id="recordingRows">
+            <tr><td colspan="9" class="hist-muted">Open History and load a file</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="history-detail" id="recordingDetail">Click a row for full snapshot details.</div>
+    </section>
+  </div>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/klinecharts@9.8.5/dist/umd/klinecharts.min.js"></script>
+  <script>
+    const TICK_STICKY_MS = 3000;
+    const prevValues = new Map();
+    const stickyTicks = new Map();
+
+    const CARD_ORDER = ["adx", "atr", "vix_chg", "ivp", "iv_day_high", "ce", "pe", "pcr", "max_pain", "oi_day_high"];
+    const METRIC_HEAD = {
+      ivp: "IVP",
+      iv_day_high: "ATM IV",
+      oi_day_high: "OI vs high",
+    };
+    const THEME_KEY = "atlas-lite-theme";
+    const PARITY_CLOSE_PCT = 2;
+    const PARITY_BELL_PAIR_GAP_S = 0.9;
+    const PARITY_BELL_MIN_INTERVAL_S = 60;
+    let lastParityState = "idle";
+    let parityAudioCtx = null;
+    let pendingParityBell = false;
+    const CHART_INTERVALS = [
+      { id: 1, label: "1m" },
+      { id: 3, label: "3m" },
+      { id: 5, label: "5m" },
+      { id: 15, label: "15m" },
+      { id: 30, label: "30m" },
+      { id: 60, label: "1h" },
+      { id: 0, label: "D" },
+    ];
+    const CHART_STYLES = [
+      { id: "candle", label: "Candle" },
+      { id: "line", label: "Line" },
+    ];
+    const DRAW_GROUPS = [
+      {
+        heading: "Lines",
+        tools: [
+          { id: "segment", name: "Trend line" },
+          { id: "rayLine", name: "Ray" },
+          { id: "straightLine", name: "Infinite line" },
+          { id: "horizontalStraightLine", name: "Horizontal" },
+          { id: "horizontalRayLine", name: "Horizontal ray" },
+          { id: "horizontalSegment", name: "Horizontal segment" },
+          { id: "verticalStraightLine", name: "Vertical" },
+          { id: "verticalRayLine", name: "Vertical ray" },
+          { id: "verticalSegment", name: "Vertical segment" },
+          { id: "priceLine", name: "Price line" },
+          { id: "atlasArrow", name: "Arrow" },
+        ],
+      },
+      {
+        heading: "Channels",
+        tools: [
+          { id: "parallelStraightLine", name: "Parallel channel" },
+          { id: "priceChannelLine", name: "Price channel" },
+        ],
+      },
+      {
+        heading: "Fibonacci & measure",
+        tools: [
+          { id: "fibonacciLine", name: "Fib retracement" },
+          { id: "atlasFibSegment", name: "Fib segment" },
+          { id: "atlasMeasure", name: "Price / time measure" },
+        ],
+      },
+      {
+        heading: "Shapes",
+        tools: [
+          { id: "atlasRect", name: "Rectangle" },
+          { id: "atlasCircle", name: "Circle" },
+          { id: "atlasTriangle", name: "Triangle" },
+        ],
+      },
+      {
+        heading: "Notes",
+        tools: [
+          { id: "simpleAnnotation", name: "Text note" },
+          { id: "simpleTag", name: "Price tag" },
+        ],
+      },
+    ];
+    const DRAW_TOOLS = DRAW_GROUPS.flatMap((group) => group.tools);
+    const PRICE_ALERT_OVERLAYS = new Set([
+      "horizontalStraightLine",
+      "horizontalRayLine",
+      "horizontalSegment",
+      "priceLine",
+    ]);
+    const OVERLAY_INDICATORS = ["SESSION", "VWAP", "ST", "ATRB", "VP", "MA", "EMA", "SMA", "BBI", "BOLL", "SAR", "AVP"];
+    const PANE_INDICATORS = [
+      "FUTOI",
+      "MACD", "RSI", "KDJ", "DMI", "CCI", "WR", "BIAS", "ROC",
+      "TRIX", "DMA", "AO", "PSY", "MTM", "EMV",
+      "OBV", "PVT", "VR", "CR", "BRAR",
+    ];
+    const INDICATOR_NAMES = {
+      SESSION: "Session open / prev close",
+      VWAP: "Session VWAP + bands",
+      ST: "Supertrend",
+      ATRB: "ATR bands",
+      VP: "Volume profile / POC",
+      MA: "Moving Average",
+      EMA: "Exponential MA",
+      SMA: "Simple MA",
+      BBI: "Bull & Bear Index",
+      BOLL: "Bollinger Bands",
+      SAR: "Parabolic SAR",
+      AVP: "Average Price",
+      FUTOI: "FUT Open Interest",
+      MACD: "MACD",
+      RSI: "Relative Strength",
+      KDJ: "KDJ Stochastic",
+      DMI: "DMI / ADX",
+      CCI: "Commodity Channel",
+      WR: "Williams %R",
+      BIAS: "Bias",
+      ROC: "Rate of Change",
+      TRIX: "TRIX",
+      DMA: "Different of MA",
+      AO: "Awesome Oscillator",
+      PSY: "Psychological Line",
+      MTM: "Momentum",
+      EMV: "Ease of Movement",
+      OBV: "On Balance Volume",
+      PVT: "Price Volume Trend",
+      VR: "Volume Ratio",
+      CR: "Energy / CR",
+      BRAR: "BRAR",
+    };
+
+    let niftyChart = null;
+    let niftyChartKind = "candle";
+    let niftyInterval = 1;
+    let niftyRawBars = [];
+    let niftyLastBarTime = null;
+    let candlePollTimer = null;
+    let paperPollTimer = null;
+    const PAPER_POLL_MS = 2000;
+    let chartHasFullData = false;
+    let chartResizeObs = null;
+    let chartHasVol = false;
+    const CHART_ICONS = {
+      clock: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 .01 20.01A10 10 0 0 0 12 2zm1 11H7V11h4V6h2v7z"/></svg>',
+      day: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 4h-1V2h-2v2H8V2H6v2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 16H5V10h14v10zM5 8V6h14v2H5z"/></svg>',
+      candle: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3h2v4H8V3zm1 5h2v13H7V8h2zm6-3h2v5h-2V5zm1 6h2v10h-4V11h2z"/></svg>',
+      line: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 18.2 9 12.1l3.8 3.2L21 7.2l-1.4-1.5-6.2 7.4-3.8-3.2L2 16.8z"/></svg>',
+      draw: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 17.3V21h3.8L19.1 8.6l-3.8-3.8L3 17.3zM20.7 7c.4-.4.4-1 0-1.4l-2.3-2.3c-.4-.4-1-.4-1.4 0l-1.1 1.1 3.8 3.8 1-1.2z"/></svg>',
+      clear: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>',
+      indicators: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 20h16v-2H4v2zM4 8h4v8H4V8zm6-4h4v12h-4V4zm6 6h4v6h-4v-6z"/></svg>',
+      undo: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12.5 8C9.2 8 6.3 9.4 4.4 11.6L3 10v6h6l-2.1-2.1A6.9 6.9 0 0 1 12.5 12a7 7 0 0 1 6.6 4.6l1.9-.6A9 9 0 0 0 12.5 8z"/></svg>',
+      redo: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11.5 8c3.3 0 6.2 1.4 8.1 3.6L21 10v6h-6l2.1-2.1A6.9 6.9 0 0 0 11.5 12a7 7 0 0 0-6.6 4.6l-1.9-.6A9 9 0 0 1 11.5 8z"/></svg>',
+      reset: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 5V1.6L7.2 6.4 12 11.2V8a6 6 0 1 1-6 6H4a8 8 0 1 0 8-9z"/></svg>',
+    };
+
+    const DRAW_ICONS = {
+      segment: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4.6 19.4 18.4 5.6l1 1L5.6 20.4z"/><circle cx="4.2" cy="19.8" r="2"/><circle cx="19.8" cy="4.2" r="2"/></svg>',
+      rayLine: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4.6 19.4 20 4l1 1L5.6 20.4z"/><circle cx="4.2" cy="19.8" r="2"/><path d="M18 3h4v4h-1.2V5.2H18z"/></svg>',
+      straightLine: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M2.8 21.2 21.2 2.8l1 1L3.8 22.2z"/><path d="M2 18.8 5.2 22H2zM18.8 2H22v3.2z"/></svg>',
+      horizontalStraightLine: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M2 11h20v2H2z"/><path d="M2 9.2 4.8 12 2 14.8zM22 9.2V14.8L19.2 12z"/></svg>',
+      horizontalRayLine: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="4" cy="12" r="2"/><path d="M6 11h14v2H6z"/><path d="M22 9.2V14.8L19.2 12z"/></svg>',
+      horizontalSegment: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="2"/><path d="M7 11h10v2H7z"/><circle cx="19" cy="12" r="2"/></svg>',
+      verticalStraightLine: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11 2h2v20h-2z"/><path d="M9.2 2H14.8L12 4.8zM9.2 22 12 19.2 14.8 22z"/></svg>',
+      verticalRayLine: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="20" r="2"/><path d="M11 4h2v14h-2z"/><path d="M9.2 2H14.8L12 4.8z"/></svg>',
+      verticalSegment: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="2"/><path d="M11 7h2v10h-2z"/><circle cx="12" cy="19" r="2"/></svg>',
+      priceLine: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 11h12v2H3z"/><path d="M15 8h6v8h-6l-2.2-4z"/></svg>',
+      atlasArrow: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4.8 18.1 16.2 6.7l1.1 1.1L5.9 19.2z"/><path d="M14.2 4.4h6.4V10.8h-1.8V7.5l-5.8 5.8-1.3-1.3 5.8-5.8h-3.3z"/></svg>',
+      parallelStraightLine: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 8.2 19.2 3.5l.6 1.9L3.6 10.1zM3.6 14.9 20.4 10l.6 1.9-16.8 4.9z"/></svg>',
+      priceChannelLine: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 7.2 19.2 2.5l.6 1.9L3.6 9.1zM3.6 16.9 20.4 12l.6 1.9-16.8 4.9z"/><path d="M4 12.2 19.6 7.6l.5 1.6-15.6 4.6z" opacity=".55"/></svg>',
+      fibonacciLine: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 4h18v1.6H3zM3 9h18v1.6H3zM3 13.4h18v1.6H3zM3 18.4h18v1.6H3z"/></svg>',
+      atlasFibSegment: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 4h12v1.6H6zM6 9h12v1.6H6zM6 13.4h12v1.6H6zM6 18.4h12v1.6H6z"/><path d="M5 3.4h1.6v17.2H5zM17.4 3.4H19v17.2h-1.6z"/></svg>',
+      atlasMeasure: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 7h16v10H4zm2 2v6h12V9zm2 .8h1.4v2.2H8zm3 0h1.4v4.4H11zm3 0h1.4v2.2H14z"/></svg>',
+      atlasRect: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 6h16v12H4zm2 2v8h12V8z"/></svg>',
+      atlasCircle: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 3a9 9 0 1 0 .01 18.01A9 9 0 0 0 12 3zm0 2.2a6.8 6.8 0 1 1 0 13.6 6.8 6.8 0 0 1 0-13.6z"/></svg>',
+      atlasTriangle: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 4 21 19H3zm0 3.8L6.2 17h11.6z"/></svg>',
+      simpleAnnotation: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M5 19h14v2H5zM8.2 4h7.6L19 17h-2.2l-.8-2.6H8l-.8 2.6H5zm4 2.4h-.4L9.6 12.2h4.8z"/></svg>',
+      simpleTag: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M13.2 4 21 11.8 12.2 20.6 4.4 12.8V4zm-7 2.2v5.4l6.6 6.6 6.2-6.2-6.6-6.6H6.2z"/><circle cx="9.2" cy="9.2" r="1.5"/></svg>',
+    };
+
+    const INDICATOR_ICONS = {
+      SESSION: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 7h18v1.5H3zm0 8.5h18V17H3z"/><path d="M11 4h2v16h-2z"/></svg>',
+      VWAP: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 7h18v1.4H3zm0 4.3h18v1.4H3zm0 4.3h18v1.4H3z"/><path d="M3 12.2 8 9.4l4 4.2 4.2-6.2L21 11v1.6l-5.2-3.2-4 6-4.2-4.4L3 13.6z"/></svg>',
+      ST: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 16h6v1.6H3zm6-5h6v1.6H9zm6-5h6v1.6h-6z"/><path d="M8.2 16.8 9.8 15l4.2.2 1.4-4.8 4.8.2-.4 1.6-3.2-.2-1.4 4.8-4.4-.2z"/></svg>',
+      ATRB: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.5h18v1.5H3zm0 5.75h18v1.5H3zm0 5.75h18v1.5H3z"/></svg>',
+      VP: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M10 4h11v2.2H10zM7 7.4h14v2.2H7zM4 10.8h17v2.4H4zM8 14.4h13v2.2H8zM12 17.8h9v2.2h-9z"/></svg>',
+      MA: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 16.4 8.2 10l4.2 3.4L21 6.2V8l-8.2 6.8-4.2-3.4L3 18z"/></svg>',
+      EMA: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 17.2 9 8.4 14 12 21 4.6V6.6L14.2 13.6 9.2 10 3 18.6z"/></svg>',
+      SMA: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 14h5.2l3-6.4 3.4 8.2L18.6 10H21v1.6h-3.2l-2.4 5.8-3.6-8.6L8.6 15.6H3z"/></svg>',
+      BBI: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 6h2.2v12H4zm4.6 3h2.2v9H8.6zm4.6-2h2.2v11h-2.2zM18 8h2.2v10H18z"/></svg>',
+      BOLL: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 6.2 9 4.4l6 3 6-2.2v1.7l-6 2.2-6-3-6 1.8zm0 5.2 6-1.6 6 2.4 6-1.8v1.6l-6 1.8-6-2.4-6 1.6zm0 5.4 6-1.8 6 3 6-2.2V20l-6 2.2-6-3-6 1.8z"/></svg>',
+      SAR: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="16" r="1.7"/><circle cx="9" cy="12.5" r="1.7"/><circle cx="13" cy="9.2" r="1.7"/><circle cx="17" cy="7" r="1.7"/><circle cx="20.2" cy="5.2" r="1.5"/></svg>',
+      AVP: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 12h18v1.6H3z"/><path d="M7 7h1.6v10H7zm8.4 0H17v10h-1.6z"/></svg>',
+      FUTOI: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 18V10h2.2v8zm4.6 0V7h2.2v11zm4.6 0V12h2.2v6zM18 18v-4h2.2v4z"/></svg>',
+      MACD: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 13h2.2v5H4zm3.6-4h2.2v9H7.6zm3.6 2h2.2v7h-2.2zm3.6-6h2.2v13h-2.2zM18 10h2.2v7H18z"/></svg>',
+      RSI: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 6h18v1.2H3zM3 16.8h18V18H3z"/><path d="M3 14.2 8 9.6l4.2 4 4-6.2L21 10v1.6l-4.6-2.4-4 6.2-4.4-4.2L3 15.6z"/></svg>',
+      KDJ: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 15.2 8.2 9.6 13 13.2 21 6.4V8l-7.6 6.4-4.8-3.6L3 16.8z"/><path d="M3 17.4 9 12.2l4.4 3.2L21 9.2v1.6l-7.4 5.8-4.4-3.2L3 19z" opacity=".55"/></svg>',
+      DMI: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 16.6 10 8.8 15.2 13 21 6.4V8.2L15.2 14.6 10 10.6 3 18.2z"/><path d="M3 12h18v1.4H3z" opacity=".55"/></svg>',
+      CCI: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 12h18v1.4H3z"/><path d="M3 13 7.4 8.2 11.2 14 15.6 6.6 21 12.2v1.6L15.4 8.4 11.2 16 7.2 9.8 3 14.4z"/></svg>',
+      WR: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.8h18v1.4H3z"/><path d="M3 8.4 8.4 14l3.8-4.4 4.4 6.2L21 11.4V13l-4.2 4.4-4.6-6.4-3.8 4.4L3 10z"/></svg>',
+      BIAS: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 13h18v1.5H3z"/><path d="M4 10.4 10.2 7l4 4.2L21 6.6V8.4l-6.6 4.4-4-4.2L5.6 12z"/></svg>',
+      ROC: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 18 11.2 8.4 15 12.2 21 5.2V7.2L15.2 13.6 11.4 9.8 3 19.4z"/></svg>',
+      TRIX: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 14.8c2.6-6 5.2-8.4 9-8.4S17.8 9 21 14.2v1.8c-3-4.6-5.2-6.4-9-6.4S6 11.8 3 16.8z"/></svg>',
+      DMA: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 16.6 9 10.2 14.2 13.8 21 7.4V9.2L14.2 15.4 9 11.8 3 18.2z"/><path d="M3 13.2 9 8.2 15 12 21 6.2V8l-6 5.4-6-3.8L3 14.8z" opacity=".5"/></svg>',
+      AO: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 12.6h2.2V19H4zm3.6-3h2.2V19H7.6zm3.6-4h2.2V19h-2.2zm3.6 2h2.2V19h-2.2zM18 11h2.2v8H18z"/></svg>',
+      PSY: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 12.2 7.6 8.4 12 13l4.2-5.2L21 11v1.6l-4.6-2.6L12 15.2 7.6 10.2 3 13.8z"/><circle cx="12" cy="18" r="1.6"/></svg>',
+      MTM: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 17V7.6h1.8v7.2L10 8.2l4.2 5 3.2-4.6H21V10h-2.8L15 14.8 10.8 9.8 6.6 16H3z"/></svg>',
+      EMV: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 16.2 9.2 8.6 13.4 13 21 5.8v2L13.6 15 9.4 10.6 5.8 16.2H4z"/><path d="M4 19h16v1.5H4z" opacity=".5"/></svg>',
+      OBV: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 18V8h2.2v10zm4.6 0V11h2.2v7zm4.6 0V6h2.2v12zM18 18v-5h2.2v5z"/></svg>',
+      PVT: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 18 8.4 12.2 12.6 15l8.4-9.2V7.6L12.8 16.4 8.6 13.6 3 19.4z"/><path d="M16.2 18.6 21 13.8V16l-3.4 3.4z"/></svg>',
+      VR: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 6.5h6.4v1.6H4zm9.6 0H20v1.6h-6.4zM4 11.2h16v1.6H4zM4 16h6.4v1.6H4zm9.6 0H20v1.6h-6.4z"/></svg>',
+      CR: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M5 19 12 4.8 19 19h-2.1l-1.5-3.2H8.6L7.1 19zm4.3-4.8h5.4L12 8.2z"/></svg>',
+      BRAR: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 17.4 9.2 9.6 13.6 13.4 20 6.2V8l-6.2 6.8-4.4-3.8L6 17.4z"/><path d="M4 13.2h16v1.5H4z" opacity=".5"/></svg>',
+    };
+
+    function chartIcon(name) {
+      return CHART_ICONS[name] || "";
+    }
+
+    function drawIcon(id) {
+      return DRAW_ICONS[id] || chartIcon("draw");
+    }
+
+    function indicatorIcon(name) {
+      return INDICATOR_ICONS[name] || chartIcon("indicators");
+    }
+
+    function setToolButton(el, icon, label) {
+      if (!el) return;
+      el.innerHTML = `${chartIcon(icon)}<span>${label}</span>`;
+    }
+    let chartDrawTool = null;
+    let chartHudBound = false;
+    let chartExtrasReady = false;
+    let overlayIgnore = false;
+    let overlayHistory = [[]];
+    let overlayRedo = [];
+    let chartDefaultBarSpace = 6;
+    let chartDefaultOffsetRight = 80;
+    const DRAW_LINE_SIZES = [1, 2, 3, 4, 5];
+    const HONEYCOMB_RINGS = 4;
+    const HONEYCOMB_SIZE = 12;
+    let chartDrawLineSize = 1;
+    let chartDrawLineColor = "#60a5fa";
+    let honeycombPalette = null;
+    const LINE_DRAW_TOOLS = new Set(
+      (DRAW_GROUPS.find((group) => group.heading === "Lines") || { tools: [] }).tools.map((t) => t.id),
+    );
+    const priceAlertArmed = new Map();
+    const chartOverlayIndicators = new Set();
+    const chartPaneIndicators = new Set();
+    const chartIndicatorPanes = {};
+
+    function klineStyles(theme) {
+      const dark = theme !== "light";
+      const up = dark ? "#34d399" : "#059669";
+      const down = dark ? "#f87171" : "#dc2626";
+      const grid = dark ? "#2d3a4d" : "#d5dde8";
+      const text = dark ? "#8b9cb3" : "#64748b";
+      const bg = dark ? "#1a2332" : "#ffffff";
+      const line = dark ? "#2dd4bf" : "#0d9488";
+      return {
+        grid: { show: true, horizontal: { color: grid }, vertical: { color: grid } },
+        candle: {
+          type: niftyChartKind === "line" ? "area" : "candle_solid",
+          bar: {
+            upColor: up,
+            downColor: down,
+            noChangeColor: text,
+            upBorderColor: up,
+            downBorderColor: down,
+            noChangeBorderColor: text,
+            upWickColor: up,
+            downWickColor: down,
+            noChangeWickColor: text,
+          },
+          area: {
+            lineSize: 2,
+            lineColor: line,
+            value: "close",
+            backgroundColor: [
+              { offset: 0, color: dark ? "rgba(45,212,191,0.28)" : "rgba(13,148,136,0.22)" },
+              { offset: 1, color: dark ? "rgba(45,212,191,0.02)" : "rgba(13,148,136,0.02)" },
+            ],
+          },
+          priceMark: {
+            last: { upColor: up, downColor: down, noChangeColor: text },
+          },
+          tooltip: { showRule: "none" },
+        },
+        indicator: {
+          lastValueMark: { show: true },
+          tooltip: {
+            showRule: "always",
+            showName: true,
+            showParams: true,
+            text: { size: 11, family: "ui-monospace, monospace", weight: "bold", color: text },
+          },
+          bars: [
+            { upColor: up, downColor: down, noChangeColor: text },
+          ],
+        },
+        xAxis: {
+          axisLine: { color: grid },
+          tickLine: { color: grid },
+          tickText: { color: text },
+        },
+        yAxis: {
+          axisLine: { color: grid },
+          tickLine: { color: grid },
+          tickText: { color: text },
+        },
+        separator: { color: grid },
+        crosshair: {
+          show: true,
+          horizontal: {
+            show: true,
+            line: { show: true, style: "dashed", dashedValue: [4, 2], size: 1, color: text },
+            text: { show: true, color: "#ffffff", borderColor: grid, backgroundColor: dark ? "#1e293b" : "#475569" },
+          },
+          vertical: {
+            show: true,
+            line: { show: true, style: "dashed", dashedValue: [4, 2], size: 1, color: text },
+            text: { show: true, color: "#ffffff", borderColor: grid, backgroundColor: dark ? "#1e293b" : "#475569" },
+          },
+        },
+        overlay: {
+          line: { color: dark ? "#93c5fd" : "#2563eb", size: 1 },
+          rect: {
+            borderColor: dark ? "#93c5fd" : "#2563eb",
+            borderSize: 1,
+          },
+          polygon: {
+            borderColor: dark ? "#93c5fd" : "#2563eb",
+            borderSize: 1,
+          },
+          circle: {
+            borderColor: dark ? "#93c5fd" : "#2563eb",
+            borderSize: 1,
+          },
+          arc: { color: dark ? "#93c5fd" : "#2563eb", size: 1 },
+          point: {
+            color: "transparent",
+            borderColor: "transparent",
+            borderSize: 0,
+            radius: 0,
+            activeColor: "transparent",
+            activeBorderColor: dark ? "#93c5fd" : "#2563eb",
+            activeBorderSize: 1,
+            activeRadius: 4,
+          },
+        },
+      };
+    }
+
+    function formatKlineDate(_fmt, timestamp, _format, type) {
+      const d = new Date(Number(timestamp));
+      const axis = type === "xAxis" || type === 0 || type === "tick";
+      if (axis) {
+        if (niftyInterval === 0) {
+          return d.toLocaleDateString("en-IN", {
+            timeZone: "Asia/Kolkata",
+            day: "2-digit",
+            month: "short",
+          });
+        }
+        return d.toLocaleTimeString("en-IN", {
+          timeZone: "Asia/Kolkata",
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false,
+        });
+      }
+      return d.toLocaleString("en-IN", {
+        timeZone: "Asia/Kolkata",
+        day: "2-digit",
+        month: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      }) + " IST";
+    }
+
+    function setChartEmpty(message) {
+      const el = document.getElementById("chartEmpty");
+      if (!el) return;
+      if (message) {
+        el.hidden = false;
+        el.textContent = message;
+      } else {
+        el.hidden = true;
+      }
+    }
+
+    function barVolume(bar) {
+      return Number(bar.volume) || 0;
+    }
+
+    function barOi(bar) {
+      return Number(bar.oi) || 0;
+    }
+
+    function seedOhlc(bar) {
+      return {
+        open: bar.open,
+        high: bar.high,
+        low: bar.low,
+        close: bar.close,
+        volume: barVolume(bar),
+        oi: barOi(bar),
+      };
+    }
+
+    function rollOhlc(cur, bar) {
+      cur.high = Math.max(cur.high, bar.high);
+      cur.low = Math.min(cur.low, bar.low);
+      cur.close = bar.close;
+      cur.volume += barVolume(bar);
+      cur.oi = barOi(bar);
+    }
+
+    function aggregateBars(bars, minutes) {
+      if (!minutes || minutes <= 1) return bars.map((b) => ({ ...b }));
+      const bucket = minutes * 60;
+      const out = [];
+      let cur = null;
+      for (const b of bars) {
+        const t = Math.floor(b.time / bucket) * bucket;
+        if (!cur || cur.time !== t) {
+          cur = { time: t, ...seedOhlc(b) };
+          out.push(cur);
+        } else {
+          rollOhlc(cur, b);
+        }
+      }
+      return out;
+    }
+
+    function dailyBars(bars) {
+      const grouped = new Map();
+      for (const b of bars) {
+        const key = new Date(b.time * 1000).toLocaleDateString("en-CA", {
+          timeZone: "Asia/Kolkata",
+        });
+        const prev = grouped.get(key);
+        if (!prev) {
+          grouped.set(key, { time: key, ...seedOhlc(b) });
+        } else {
+          rollOhlc(prev, b);
+        }
+      }
+      return [...grouped.values()];
+    }
+
+    function viewBars() {
+      if (niftyInterval === 0) return dailyBars(niftyRawBars);
+      return aggregateBars(niftyRawBars, niftyInterval);
+    }
+
+    function toKline(bars) {
+      return bars.map((b) => ({
+        timestamp: typeof b.time === "string"
+          ? new Date(`${b.time}T00:00:00+05:30`).getTime()
+          : Number(b.time) * 1000,
+        open: b.open,
+        high: b.high,
+        low: b.low,
+        close: b.close,
+        volume: barVolume(b),
+        oi: barOi(b),
+      }));
+    }
+
+    function formatHudTime(ts) {
+      return new Date(Number(ts)).toLocaleString("en-IN", {
+        timeZone: "Asia/Kolkata",
+        day: "2-digit",
+        month: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      }) + " IST";
+    }
+
+    function formatHudNum(value, digits) {
+      if (value == null || !Number.isFinite(Number(value))) return "—";
+      return Number(value).toLocaleString("en-IN", {
+        maximumFractionDigits: digits,
+        minimumFractionDigits: digits > 0 ? Math.min(digits, 2) : 0,
+      });
+    }
+
+    function renderOhlcHud(k, crosshairData) {
+      const el = document.getElementById("chartOhlcHud");
+      if (!el) return;
+      if (!k || k.close == null) {
+        el.textContent = "";
+        return;
+      }
+      let html =
+        `${formatHudTime(k.timestamp)}<br>` +
+        `O ${formatHudNum(k.open, 2)}  H ${formatHudNum(k.high, 2)}  ` +
+        `L ${formatHudNum(k.low, 2)}  C ${formatHudNum(k.close, 2)}<br>` +
+        `FUT Vol ${formatHudNum(k.volume, 0)}  OI ${formatHudNum(k.oi, 0)}`;
+
+      if (crosshairData && crosshairData.indicatorData) {
+        const parts = [];
+        Object.entries(crosshairData.indicatorData).forEach(([paneId, indMap]) => {
+          if (!indMap) return;
+          Object.entries(indMap).forEach(([name, vals]) => {
+            if (!vals || typeof vals !== "object") return;
+            const sub = [];
+            Object.entries(vals).forEach(([kKey, v]) => {
+              if (v != null && Number.isFinite(Number(v))) {
+                sub.push(`${kKey.toUpperCase()} ${Number(v).toFixed(2)}`);
+              }
+            });
+            if (sub.length) {
+              parts.push(`<b>${name}</b> ${sub.join(" ")}`);
+            }
+          });
+        });
+        if (parts.length) {
+          html += `<br>${parts.join("  ·  ")}`;
+        }
+      }
+
+      el.innerHTML = html;
+    }
+
+    function showChartToast(text) {
+      const host = document.getElementById("chartToasts");
+      if (!host) return;
+      const el = document.createElement("div");
+      el.className = "chart-toast";
+      el.textContent = text;
+      host.appendChild(el);
+      setTimeout(() => el.remove(), 4500);
+    }
+
+    function calcAtrSeries(dataList, period) {
+      const out = new Array(dataList.length).fill(null);
+      let prevClose = null;
+      for (let i = 0; i < dataList.length; i += 1) {
+        const h = Number(dataList[i].high);
+        const l = Number(dataList[i].low);
+        const c = Number(dataList[i].close);
+        const tr = prevClose == null
+          ? h - l
+          : Math.max(h - l, Math.abs(h - prevClose), Math.abs(l - prevClose));
+        if (i === 0) {
+          out[i] = null;
+        } else if (i < period) {
+          let sum = 0;
+          let n = 0;
+          for (let j = 1; j <= i; j += 1) {
+            const hh = Number(dataList[j].high);
+            const ll = Number(dataList[j].low);
+            const pc = Number(dataList[j - 1].close);
+            sum += Math.max(hh - ll, Math.abs(hh - pc), Math.abs(ll - pc));
+            n += 1;
+          }
+          out[i] = n ? sum / n : null;
+        } else if (i === period) {
+          let sum = 0;
+          for (let j = 1; j <= period; j += 1) {
+            const hh = Number(dataList[j].high);
+            const ll = Number(dataList[j].low);
+            const pc = Number(dataList[j - 1].close);
+            sum += Math.max(hh - ll, Math.abs(hh - pc), Math.abs(ll - pc));
+          }
+          out[i] = sum / period;
+        } else {
+          out[i] = (out[i - 1] * (period - 1) + tr) / period;
+        }
+        prevClose = c;
+      }
+      return out;
+    }
+
+    function registerChartExtras() {
+      if (typeof klinecharts === "undefined" || chartExtrasReady) return;
+      chartExtrasReady = true;
+      try {
+        klinecharts.registerIndicator({
+          name: "SESSION",
+          shortName: "SESSION",
+          series: "price",
+          figures: [
+            { key: "open", title: "9:15: ", type: "line" },
+            { key: "pclose", title: "PClose: ", type: "line" },
+          ],
+          calc: (dataList) => {
+            const dayOpen = new Map();
+            const dayLast = new Map();
+            dataList.forEach((k) => {
+              const day = new Date(k.timestamp).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+              const hm = new Date(k.timestamp).toLocaleTimeString("en-GB", {
+                timeZone: "Asia/Kolkata",
+                hour: "2-digit",
+                minute: "2-digit",
+                hour12: false,
+              });
+              if (!dayOpen.has(day)) dayOpen.set(day, Number(k.open));
+              if (hm === "09:15") dayOpen.set(day, Number(k.open));
+              dayLast.set(day, Number(k.close));
+            });
+            const days = [...dayLast.keys()].sort();
+            const prevCloseByDay = new Map();
+            days.forEach((day, idx) => {
+              if (idx > 0) prevCloseByDay.set(day, dayLast.get(days[idx - 1]));
+            });
+            return dataList.map((k) => {
+              const day = new Date(k.timestamp).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+              return {
+                open: dayOpen.get(day) ?? null,
+                pclose: prevCloseByDay.get(day) ?? null,
+              };
+            });
+          },
+        });
+      } catch (_) {}
+      try {
+        klinecharts.registerIndicator({
+          name: "VWAP",
+          shortName: "VWAP",
+          series: "price",
+          calcParams: [],
+          figures: [
+            { key: "vwap", title: "VWAP: ", type: "line" },
+            { key: "up1", title: "+1σ: ", type: "line" },
+            { key: "dn1", title: "-1σ: ", type: "line" },
+            { key: "up2", title: "+2σ: ", type: "line" },
+            { key: "dn2", title: "-2σ: ", type: "line" },
+          ],
+          calc: (dataList) => {
+            let day = "";
+            let pv = 0;
+            let vol = 0;
+            let sumSq = 0;
+            return dataList.map((k) => {
+              const key = new Date(k.timestamp).toLocaleDateString("en-CA", {
+                timeZone: "Asia/Kolkata",
+              });
+              if (key !== day) {
+                day = key;
+                pv = 0;
+                vol = 0;
+                sumSq = 0;
+              }
+              const typical = (Number(k.high) + Number(k.low) + Number(k.close)) / 3;
+              const v = Number(k.volume) || 0;
+              pv += typical * v;
+              sumSq += typical * typical * v;
+              vol += v;
+              const vwap = vol > 0 ? pv / vol : typical;
+              const variance = vol > 0 ? Math.max(0, sumSq / vol - vwap * vwap) : 0;
+              const sigma = Math.sqrt(variance);
+              return {
+                vwap,
+                up1: vwap + sigma,
+                dn1: vwap - sigma,
+                up2: vwap + 2 * sigma,
+                dn2: vwap - 2 * sigma,
+              };
+            });
+          },
+        });
+      } catch (_) {}
+      try {
+        klinecharts.registerIndicator({
+          name: "FUTOI",
+          shortName: "FUT OI",
+          series: "volume",
+          figures: [{ key: "oi", title: "OI: ", type: "bar" }],
+          calc: (dataList) => dataList.map((k) => ({ oi: Number(k.oi) || 0 })),
+        });
+      } catch (_) {}
+      try {
+        klinecharts.registerIndicator({
+          name: "ST",
+          shortName: "ST",
+          series: "price",
+          calcParams: [10, 3],
+          figures: [
+            { key: "up", title: "ST↑: ", type: "line" },
+            { key: "dn", title: "ST↓: ", type: "line" },
+          ],
+          calc: (dataList, indicator) => {
+            const period = Number(indicator.calcParams[0]) || 10;
+            const mult = Number(indicator.calcParams[1]) || 3;
+            const atr = calcAtrSeries(dataList, period);
+            let finalUpper = null;
+            let finalLower = null;
+            let dir = 1;
+            return dataList.map((k, i) => {
+              if (atr[i] == null) return {};
+              const mid = (Number(k.high) + Number(k.low)) / 2;
+              const basicUpper = mid + mult * atr[i];
+              const basicLower = mid - mult * atr[i];
+              const close = Number(k.close);
+              const prevClose = i > 0 ? Number(dataList[i - 1].close) : close;
+              if (finalUpper == null) {
+                finalUpper = basicUpper;
+                finalLower = basicLower;
+              } else {
+                finalUpper = basicUpper < finalUpper || prevClose > finalUpper ? basicUpper : finalUpper;
+                finalLower = basicLower > finalLower || prevClose < finalLower ? basicLower : finalLower;
+              }
+              if (dir === 1) {
+                dir = close < finalLower ? -1 : 1;
+              } else {
+                dir = close > finalUpper ? 1 : -1;
+              }
+              return dir === 1
+                ? { up: finalLower, dn: null }
+                : { up: null, dn: finalUpper };
+            });
+          },
+        });
+      } catch (_) {}
+      try {
+        klinecharts.registerIndicator({
+          name: "ATRB",
+          shortName: "ATR Bands",
+          series: "price",
+          calcParams: [14, 2],
+          figures: [
+            { key: "mid", title: "MID: ", type: "line" },
+            { key: "up", title: "UP: ", type: "line" },
+            { key: "dn", title: "DN: ", type: "line" },
+          ],
+          calc: (dataList, indicator) => {
+            const period = Number(indicator.calcParams[0]) || 14;
+            const mult = Number(indicator.calcParams[1]) || 2;
+            const atr = calcAtrSeries(dataList, period);
+            let ema = null;
+            const kEma = 2 / (period + 1);
+            return dataList.map((k, i) => {
+              const close = Number(k.close);
+              ema = ema == null ? close : close * kEma + ema * (1 - kEma);
+              if (atr[i] == null) return {};
+              return {
+                mid: ema,
+                up: ema + mult * atr[i],
+                dn: ema - mult * atr[i],
+              };
+            });
+          },
+        });
+      } catch (_) {}
+      try {
+        klinecharts.registerIndicator({
+          name: "RSI",
+          shortName: "RSI",
+          calcParams: [14],
+          precision: 2,
+          figures: [{ key: "rsi", title: "RSI(14): ", type: "line" }],
+          styles: {
+            lines: [{ color: "#a855f7", size: 1.5 }],
+          },
+          calc: (dataList, indicator) => {
+            const period = Number(indicator.calcParams[0]) || 14;
+            let avgGain = 0;
+            let avgLoss = 0;
+            return dataList.map((k, i) => {
+              if (i === 0) return {};
+              const change = Number(k.close) - Number(dataList[i - 1].close);
+              const gain = change > 0 ? change : 0;
+              const loss = change < 0 ? -change : 0;
+              if (i < period) {
+                avgGain += gain;
+                avgLoss += loss;
+                return {};
+              }
+              if (i === period) {
+                avgGain = (avgGain + gain) / period;
+                avgLoss = (avgLoss + loss) / period;
+              } else {
+                avgGain = (avgGain * (period - 1) + gain) / period;
+                avgLoss = (avgLoss * (period - 1) + loss) / period;
+              }
+              if (avgLoss === 0) return { rsi: 100 };
+              const rs = avgGain / avgLoss;
+              return { rsi: Number((100 - (100 / (1 + rs))).toFixed(2)) };
+            });
+          },
+        });
+      } catch (_) {}
+      try {
+        klinecharts.registerIndicator({
+          name: "DMI",
+          shortName: "DMI",
+          calcParams: [14, 14],
+          precision: 2,
+          figures: [
+            { key: "pdi", title: "+DI: ", type: "line" },
+            { key: "mdi", title: "-DI: ", type: "line" },
+            { key: "adx", title: "ADX: ", type: "line" },
+          ],
+          styles: {
+            lines: [
+              { color: "#38bdf8", size: 1.5 },
+              { color: "#f43f5e", size: 1.5 },
+              { color: "#fbbf24", size: 1.5 },
+            ],
+          },
+          calc: (dataList, indicator) => {
+            const period = Number(indicator.calcParams[0]) || 14;
+            let sumTr = 0, sumDmPlus = 0, sumDmMinus = 0;
+            let trSm = 0, dmPlusSm = 0, dmMinusSm = 0;
+            const dxList = [];
+            let adxSm = 0;
+            return dataList.map((k, i) => {
+              if (i === 0) return {};
+              const prev = dataList[i - 1];
+              const h = Number(k.high);
+              const l = Number(k.low);
+              const cPrev = Number(prev.close);
+              const tr = Math.max(h - l, Math.abs(h - cPrev), Math.abs(l - cPrev));
+              const upMove = h - Number(prev.high);
+              const downMove = Number(prev.low) - l;
+              const dmPlus = (upMove > downMove && upMove > 0) ? upMove : 0;
+              const dmMinus = (downMove > upMove && downMove > 0) ? downMove : 0;
+
+              if (i < period) {
+                sumTr += tr;
+                sumDmPlus += dmPlus;
+                sumDmMinus += dmMinus;
+                return {};
+              }
+              if (i === period) {
+                trSm = sumTr + tr;
+                dmPlusSm = sumDmPlus + dmPlus;
+                dmMinusSm = sumDmMinus + dmMinus;
+              } else {
+                trSm = trSm - (trSm / period) + tr;
+                dmPlusSm = dmPlusSm - (dmPlusSm / period) + dmPlus;
+                dmMinusSm = dmMinusSm - (dmMinusSm / period) + dmMinus;
+              }
+              const pdi = trSm > 0 ? (dmPlusSm / trSm) * 100 : 0;
+              const mdi = trSm > 0 ? (dmMinusSm / trSm) * 100 : 0;
+              const diSum = pdi + mdi;
+              const dx = diSum > 0 ? (Math.abs(pdi - mdi) / diSum) * 100 : 0;
+              dxList.push(dx);
+
+              let adx = null;
+              if (dxList.length === period) {
+                adxSm = dxList.reduce((a, b) => a + b, 0) / period;
+                adx = adxSm;
+              } else if (dxList.length > period) {
+                adxSm = ((adxSm * (period - 1)) + dx) / period;
+                adx = adxSm;
+              }
+              return {
+                pdi: Number(pdi.toFixed(2)),
+                mdi: Number(mdi.toFixed(2)),
+                adx: adx !== null ? Number(adx.toFixed(2)) : null,
+              };
+            });
+          },
+        });
+      } catch (_) {}
+      try {
+        klinecharts.registerIndicator({
+          name: "VP",
+          shortName: "VP",
+          series: "price",
+          figures: [],
+          calc: (dataList) => dataList.map(() => ({})),
+          draw: ({ ctx, kLineDataList, visibleRange, bounding, yAxis }) => {
+            if (!yAxis || !kLineDataList.length || !visibleRange) return false;
+            const from = Math.max(0, visibleRange.from | 0);
+            const to = Math.min(kLineDataList.length - 1, visibleRange.to | 0);
+            if (to < from) return false;
+            const last = kLineDataList[to];
+            const day = new Date(last.timestamp).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+            const session = [];
+            for (let i = from; i <= to; i += 1) {
+              const row = kLineDataList[i];
+              const key = new Date(row.timestamp).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+              if (key === day) session.push(row);
+            }
+            if (!session.length) return false;
+            let lo = Infinity;
+            let hi = -Infinity;
+            session.forEach((k) => {
+              lo = Math.min(lo, Number(k.low));
+              hi = Math.max(hi, Number(k.high));
+            });
+            if (!(hi > lo)) return false;
+            const bins = 24;
+            const step = (hi - lo) / bins;
+            const volBins = new Array(bins).fill(0);
+            session.forEach((k) => {
+              const mid = (Number(k.high) + Number(k.low)) / 2;
+              let idx = Math.floor((mid - lo) / step);
+              if (idx < 0) idx = 0;
+              if (idx >= bins) idx = bins - 1;
+              volBins[idx] += Number(k.volume) || 0;
+            });
+            const maxVol = Math.max(...volBins, 1);
+            const maxW = Math.min(120, bounding.width * 0.28);
+            let poc = 0;
+            volBins.forEach((v, i) => { if (v > volBins[poc]) poc = i; });
+            ctx.save();
+            for (let i = 0; i < bins; i += 1) {
+              const priceTop = hi - i * step;
+              const priceBot = priceTop - step;
+              const y1 = yAxis.convertToPixel(priceTop);
+              const y2 = yAxis.convertToPixel(priceBot);
+              const h = Math.max(1, Math.abs(y2 - y1) - 1);
+              const w = (volBins[i] / maxVol) * maxW;
+              const y = Math.min(y1, y2);
+              ctx.fillStyle = i === poc ? "rgba(251,191,36,0.45)" : "rgba(45,212,191,0.22)";
+              ctx.fillRect(0, y, w, h);
+            }
+            const pocPrice = lo + (poc + 0.5) * step;
+            const pocY = yAxis.convertToPixel(pocPrice);
+            ctx.strokeStyle = "rgba(251,191,36,0.95)";
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(0, pocY);
+            ctx.lineTo(bounding.width, pocY);
+            ctx.stroke();
+            ctx.fillStyle = "rgba(251,191,36,0.95)";
+            ctx.font = "10px ui-monospace, monospace";
+            ctx.fillText(`POC ${pocPrice.toFixed(1)}`, 4, pocY - 3);
+            ctx.restore();
+            return true;
+          },
+        });
+      } catch (_) {}
+      const stroke = { style: "stroke" };
+      const strokeFill = { style: "stroke_fill", color: "rgba(96,165,250,0.12)" };
+      try {
+        klinecharts.registerOverlay({
+          name: "atlasRect",
+          totalStep: 3,
+          needDefaultPointFigure: true,
+          needDefaultXAxisFigure: true,
+          needDefaultYAxisFigure: true,
+          createPointFigures: ({ coordinates }) => {
+            if (coordinates.length < 2) return [];
+            return [{
+              type: "polygon",
+              attrs: {
+                coordinates: [
+                  coordinates[0],
+                  { x: coordinates[1].x, y: coordinates[0].y },
+                  coordinates[1],
+                  { x: coordinates[0].x, y: coordinates[1].y },
+                ],
+              },
+              styles: strokeFill,
+            }];
+          },
+        });
+      } catch (_) {}
+      try {
+        klinecharts.registerOverlay({
+          name: "atlasCircle",
+          totalStep: 3,
+          needDefaultPointFigure: true,
+          needDefaultXAxisFigure: true,
+          needDefaultYAxisFigure: true,
+          createPointFigures: ({ coordinates }) => {
+            if (coordinates.length < 2) return [];
+            const dx = coordinates[0].x - coordinates[1].x;
+            const dy = coordinates[0].y - coordinates[1].y;
+            return [{
+              type: "circle",
+              attrs: { x: coordinates[0].x, y: coordinates[0].y, r: Math.sqrt(dx * dx + dy * dy) },
+              styles: stroke,
+            }];
+          },
+        });
+      } catch (_) {}
+      try {
+        klinecharts.registerOverlay({
+          name: "atlasTriangle",
+          totalStep: 4,
+          needDefaultPointFigure: true,
+          needDefaultXAxisFigure: true,
+          needDefaultYAxisFigure: true,
+          createPointFigures: ({ coordinates }) => {
+            if (coordinates.length < 3) return [];
+            return [{ type: "polygon", attrs: { coordinates: coordinates.slice(0, 3) }, styles: strokeFill }];
+          },
+        });
+      } catch (_) {}
+      try {
+        klinecharts.registerOverlay({
+          name: "atlasArrow",
+          totalStep: 3,
+          needDefaultPointFigure: true,
+          needDefaultXAxisFigure: true,
+          needDefaultYAxisFigure: true,
+          createPointFigures: ({ coordinates }) => {
+            if (coordinates.length < 2) return [];
+            const start = coordinates[0];
+            const end = coordinates[1];
+            const angle = Math.atan2(end.y - start.y, end.x - start.x);
+            const size = 10;
+            const left = {
+              x: end.x - size * Math.cos(angle - Math.PI / 6),
+              y: end.y - size * Math.sin(angle - Math.PI / 6),
+            };
+            const right = {
+              x: end.x - size * Math.cos(angle + Math.PI / 6),
+              y: end.y - size * Math.sin(angle + Math.PI / 6),
+            };
+            return [
+              { type: "line", attrs: { coordinates: [start, end] } },
+              { type: "polygon", attrs: { coordinates: [end, left, right] }, styles: { style: "fill" } },
+            ];
+          },
+        });
+      } catch (_) {}
+      try {
+        klinecharts.registerOverlay({
+          name: "atlasMeasure",
+          totalStep: 3,
+          needDefaultPointFigure: true,
+          needDefaultXAxisFigure: true,
+          needDefaultYAxisFigure: true,
+          createPointFigures: ({ coordinates, overlay }) => {
+            if (coordinates.length < 2) return [];
+            const p0 = overlay.points[0];
+            const p1 = overlay.points[1];
+            const diff = Number(p1.value) - Number(p0.value);
+            const pct = Number(p0.value) ? (diff / Number(p0.value)) * 100 : 0;
+            const sign = diff >= 0 ? "+" : "";
+            const ms = Math.abs(Number(p1.timestamp) - Number(p0.timestamp));
+            const mins = Math.round(ms / 60000);
+            const timeLabel = mins >= 60
+              ? `${Math.floor(mins / 60)}h ${mins % 60}m`
+              : `${mins}m`;
+            const mid = {
+              x: (coordinates[0].x + coordinates[1].x) / 2,
+              y: (coordinates[0].y + coordinates[1].y) / 2,
+            };
+            return [
+              {
+                type: "line",
+                attrs: { coordinates: [coordinates[0], coordinates[1]] },
+              },
+              {
+                type: "text",
+                ignoreEvent: true,
+                attrs: {
+                  x: mid.x,
+                  y: mid.y - 8,
+                  text: `${sign}${diff.toFixed(2)} (${sign}${pct.toFixed(2)}%) · ${timeLabel}`,
+                  align: "center",
+                  baseline: "bottom",
+                },
+              },
+            ];
+          },
+        });
+      } catch (_) {}
+      try {
+        klinecharts.registerOverlay({
+          name: "atlasFibSegment",
+          totalStep: 3,
+          needDefaultPointFigure: true,
+          needDefaultXAxisFigure: true,
+          needDefaultYAxisFigure: true,
+          createPointFigures: ({ coordinates, overlay }) => {
+            if (coordinates.length < 2) return [];
+            const percents = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+            const y0 = coordinates[0].y;
+            const y1 = coordinates[1].y;
+            const v0 = Number(overlay.points[0].value);
+            const v1 = Number(overlay.points[1].value);
+            const left = Math.min(coordinates[0].x, coordinates[1].x);
+            const right = Math.max(coordinates[0].x, coordinates[1].x);
+            const lines = [];
+            const texts = [];
+            percents.forEach((pct) => {
+              const y = y0 + (y1 - y0) * pct;
+              const price = v0 + (v1 - v0) * pct;
+              lines.push({ coordinates: [{ x: left, y }, { x: right, y }] });
+              texts.push({
+                x: right,
+                y,
+                text: `${(pct * 100).toFixed(1)}% ${price.toFixed(2)}`,
+                align: "left",
+                baseline: "bottom",
+              });
+            });
+            return [
+              { type: "line", attrs: lines },
+              { type: "text", ignoreEvent: true, attrs: texts },
+            ];
+          },
+        });
+      } catch (_) {}
+    }
+
+    function listOverlays() {
+      if (!niftyChart) return [];
+      try {
+        const store = niftyChart._chartStore.getOverlayStore();
+        const out = [];
+        store._instances.forEach((arr) => {
+          arr.forEach((ov) => out.push(ov));
+        });
+        return out;
+      } catch (_) {
+        return [];
+      }
+    }
+
+    function drawLineStyles(size, color) {
+      const s = Math.max(1, Number(size) || 1);
+      const c = color || chartDrawLineColor;
+      return {
+        line: { size: s, color: c },
+        rect: { borderSize: s, borderColor: c },
+        polygon: { borderSize: s, borderColor: c, color: c },
+        circle: { borderSize: s, borderColor: c },
+        arc: { size: s, color: c },
+      };
+    }
+
+    function resolveOverlayLineSize(ov) {
+      if (!ov) return chartDrawLineSize;
+      if (ov.lineSize != null) return Number(ov.lineSize) || 1;
+      const styles = ov.styles || {};
+      return Number(
+        styles.line?.size
+        || styles.rect?.borderSize
+        || styles.polygon?.borderSize
+        || styles.circle?.borderSize
+        || styles.arc?.size
+        || 1
+      ) || 1;
+    }
+
+    function resolveOverlayLineColor(ov) {
+      if (!ov) return chartDrawLineColor;
+      if (ov.lineColor) return ov.lineColor;
+      const styles = ov.styles || {};
+      return styles.line?.color
+        || styles.rect?.borderColor
+        || styles.polygon?.borderColor
+        || styles.circle?.borderColor
+        || styles.arc?.color
+        || chartDrawLineColor;
+    }
+
+    function overlaySnapshot(ov) {
+      return {
+        name: ov.name,
+        id: ov.id,
+        points: (ov.points || []).map((p) => ({
+          timestamp: p.timestamp,
+          value: p.value,
+          dataIndex: p.dataIndex,
+        })),
+        extendData: ov.extendData,
+        lineSize: resolveOverlayLineSize(ov),
+        lineColor: resolveOverlayLineColor(ov),
+      };
+    }
+
+    function overlaysState() {
+      return listOverlays().map(overlaySnapshot);
+    }
+
+    function overlayDrawOptions(name, extra) {
+      const opts = Object.assign({}, extra || {});
+      const size = opts.lineSize != null ? opts.lineSize : chartDrawLineSize;
+      const color = opts.lineColor != null ? opts.lineColor : chartDrawLineColor;
+      delete opts.lineSize;
+      delete opts.lineColor;
+      opts.styles = Object.assign({}, drawLineStyles(size, color), opts.styles || {});
+      return Object.assign({
+        name,
+        mode: "strong_magnet",
+        onDrawEnd: () => {
+          if (!overlayIgnore) {
+            chartDrawTool = null;
+            renderDrawBar();
+            setTimeout(pushOverlayHistory, 0);
+          }
+          return false;
+        },
+        onPressedMoveEnd: () => {
+          if (!overlayIgnore) setTimeout(pushOverlayHistory, 0);
+          return false;
+        },
+        onRemoved: () => {
+          if (!overlayIgnore) setTimeout(pushOverlayHistory, 0);
+          return false;
+        },
+      }, opts);
+    }
+
+    function pushOverlayHistory() {
+      const next = overlaysState();
+      const prev = overlayHistory[overlayHistory.length - 1];
+      if (JSON.stringify(prev) === JSON.stringify(next)) return;
+      overlayHistory.push(next);
+      overlayRedo = [];
+      if (overlayHistory.length > 80) overlayHistory.shift();
+      const undoBtn = document.getElementById("chartDrawUndo");
+      const redoBtn = document.getElementById("chartDrawRedo");
+      if (undoBtn) undoBtn.disabled = overlayHistory.length < 2;
+      if (redoBtn) redoBtn.disabled = !overlayRedo.length;
+    }
+
+    function applyOverlayState(snaps) {
+      if (!niftyChart) return;
+      overlayIgnore = true;
+      try {
+        niftyChart.removeOverlay();
+        snaps.forEach((snap) => {
+          try {
+            niftyChart.createOverlay(overlayDrawOptions(snap.name, {
+              id: snap.id,
+              points: snap.points,
+              extendData: snap.extendData,
+              lineSize: snap.lineSize || 1,
+              lineColor: snap.lineColor || chartDrawLineColor,
+            }));
+          } catch (_) {}
+        });
+      } catch (_) {}
+      overlayIgnore = false;
+    }
+
+    function undoDrawing() {
+      if (!niftyChart || overlayHistory.length < 2) return;
+      overlayRedo.push(overlayHistory.pop());
+      applyOverlayState(overlayHistory[overlayHistory.length - 1]);
+      chartDrawTool = null;
+      renderDrawBar();
+    }
+
+    function redoDrawing() {
+      if (!niftyChart || !overlayRedo.length) return;
+      const next = overlayRedo.pop();
+      overlayHistory.push(next);
+      applyOverlayState(next);
+      chartDrawTool = null;
+      renderDrawBar();
+    }
+
+    function bindChartHud() {
+      if (!niftyChart || chartHudBound) return;
+      chartHudBound = true;
+      niftyChart.subscribeAction("onCrosshairChange", (data) => {
+        const k = data && data.kLineData;
+        if (k) renderOhlcHud(k, data);
+      });
+    }
+
+    function checkPriceAlerts(bars) {
+      if (!bars.length) return;
+      const close = Number(bars[bars.length - 1].close);
+      const prev = checkPriceAlerts._prev;
+      checkPriceAlerts._prev = close;
+      if (prev == null || prev === close || !Number.isFinite(close)) return;
+      listOverlays().forEach((ov) => {
+        if (!PRICE_ALERT_OVERLAYS.has(ov.name)) return;
+        const px = Number((ov.points && ov.points[0] && ov.points[0].value));
+        if (!Number.isFinite(px)) return;
+        const crossed = (prev < px && close >= px) || (prev > px && close <= px);
+        const id = ov.id || `${ov.name}:${px}`;
+        if (crossed && !priceAlertArmed.get(id)) {
+          priceAlertArmed.set(id, true);
+          showChartToast(`Price alert ${px.toFixed(2)} · now ${close.toFixed(2)}`);
+          playTempleBellTwice();
+        } else if (!crossed && Math.abs(close - px) > Math.max(2, px * 0.0002)) {
+          priceAlertArmed.set(id, false);
+        }
+      });
+    }
+
+    function disposeChart() {
+      const host = document.getElementById("klineHost");
+      if (niftyChart && typeof klinecharts !== "undefined") {
+        try {
+          klinecharts.dispose(host || niftyChart);
+        } catch (_) {}
+      }
+      niftyChart = null;
+      chartHasFullData = false;
+      chartHasVol = false;
+      chartHudBound = false;
+      chartDrawTool = null;
+      overlayHistory = [[]];
+      overlayRedo = [];
+      Object.keys(chartIndicatorPanes).forEach((key) => { delete chartIndicatorPanes[key]; });
+    }
+
+    function applyCandleStyle() {
+      if (!niftyChart) return;
+      niftyChart.setStyles({
+        candle: { type: niftyChartKind === "line" ? "area" : "candle_solid" },
+      });
+    }
+
+    function restoreIndicators() {
+      if (!niftyChart) return;
+      if (!chartHasVol) {
+        try {
+          niftyChart.createIndicator("VOL", false, { height: 72 });
+        } catch (_) {}
+        chartHasVol = true;
+      }
+      chartOverlayIndicators.forEach((name) => {
+        if (chartIndicatorPanes[name]) return;
+        try {
+          const paneId = niftyChart.createIndicator(name, true, { id: "candle_pane" });
+          chartIndicatorPanes[name] = paneId || "candle_pane";
+        } catch (_) {}
+      });
+      chartPaneIndicators.forEach((name) => {
+        if (chartIndicatorPanes[name]) return;
+        try {
+          const opts = name === "FUTOI" ? { height: 64 } : undefined;
+          chartIndicatorPanes[name] = opts
+            ? niftyChart.createIndicator(name, false, opts)
+            : niftyChart.createIndicator(name);
+        } catch (_) {}
+      });
+    }
+
+    function updateDrawModeChip() {
+      const el = document.getElementById("chartDrawMode");
+      if (!el) return;
+      if (chartDrawTool) {
+        el.hidden = false;
+        el.textContent = `Drawing on · ${drawToolLabel()} · ${chartDrawLineSize}px · ${chartDrawLineColor} · magnet`;
+      } else {
+        el.hidden = true;
+        el.textContent = "";
+      }
+    }
+
+    function clearAutoSessionOverlays() {
+      if (!niftyChart) return;
+      overlayIgnore = true;
+      try {
+        niftyChart.removeOverlay({ groupId: "session-marks" });
+      } catch (_) {}
+      overlayIgnore = false;
+    }
+
+    function dropChartPriceLine(price, label) {
+      const px = Number(price);
+      if (!Number.isFinite(px) || !ensureChart()) return;
+      registerChartExtras();
+      const id = `sheet_${String(label || "lvl").replace(/\s+/g, "_")}_${px}`;
+      try {
+        niftyChart.removeOverlay({ id });
+      } catch (_) {}
+      try {
+        niftyChart.createOverlay(overlayDrawOptions("priceLine", {
+          id,
+          groupId: "sheet-levels",
+          points: [{ value: px }],
+          extendData: label || String(px),
+        }));
+        pushOverlayHistory();
+        showChartToast(`${label || "Level"} · ${px.toFixed(2)}`);
+      } catch (_) {}
+    }
+
+    function hideNativeChartLabels() {
+      if (!niftyChart) return;
+      try {
+        const theme = document.body.getAttribute("data-theme") || "dark";
+        const dark = theme !== "light";
+        const grid = dark ? "#2d3a4d" : "#d5dde8";
+        const text = dark ? "#8b9cb3" : "#64748b";
+        niftyChart.setStyles({
+          candle: {
+            tooltip: {
+              showRule: "none",
+              showType: "standard",
+              text: { size: 0, color: "transparent" },
+            },
+          },
+          indicator: {
+            tooltip: {
+              showRule: "always",
+              showName: true,
+              showParams: true,
+              text: { size: 11, family: "ui-monospace, monospace", weight: "bold", color: text },
+            },
+          },
+          crosshair: {
+            show: true,
+            horizontal: {
+              show: true,
+              line: { show: true, style: "dashed", dashedValue: [4, 2], size: 1, color: text },
+              text: { show: true, color: "#ffffff", borderColor: grid, backgroundColor: dark ? "#1e293b" : "#475569" },
+            },
+            vertical: {
+              show: true,
+              line: { show: true, style: "dashed", dashedValue: [4, 2], size: 1, color: text },
+              text: { show: true, color: "#ffffff", borderColor: grid, backgroundColor: dark ? "#1e293b" : "#475569" },
+            },
+          },
+          overlay: {
+            point: {
+              color: "transparent",
+              borderColor: "transparent",
+              borderSize: 0,
+              radius: 0,
+              activeRadius: 4,
+            },
+          },
+        });
+      } catch (_) {}
+    }
+
+    function ensureChart() {
+      const host = document.getElementById("klineHost");
+      if (!host || typeof klinecharts === "undefined") return false;
+      if (niftyChart && !niftyChart._atlasHudOnly) {
+        disposeChart();
+      }
+      if (niftyChart) return true;
+      if (host.clientWidth < 8 || host.clientHeight < 8) return false;
+      registerChartExtras();
+      const theme = document.body.getAttribute("data-theme") || "dark";
+      niftyChart = klinecharts.init(host, {
+        locale: "en-US",
+        timezone: "Asia/Kolkata",
+        styles: klineStyles(theme),
+        customApi: { formatDate: formatKlineDate },
+      });
+      niftyChart._atlasHudOnly = true;
+      captureChartDefaults();
+      if (typeof niftyChart.setTimezone === "function") {
+        niftyChart.setTimezone("Asia/Kolkata");
+      }
+      applyCandleStyle();
+      hideNativeChartLabels();
+      bindChartHud();
+      if (!chartResizeObs) {
+        chartResizeObs = new ResizeObserver(() => {
+          if (niftyChart && typeof niftyChart.resize === "function") {
+            niftyChart.resize();
+          }
+        });
+        chartResizeObs.observe(host);
+      }
+      return true;
+    }
+
+    function paintChart() {
+      if (typeof klinecharts === "undefined") {
+        setChartEmpty("Chart library failed to load.");
+        return;
+      }
+      if (!ensureChart()) {
+        setChartEmpty("Loading…");
+        return;
+      }
+      const bars = toKline(viewBars());
+      if (!bars.length) {
+        setChartEmpty("Waiting for Kite NIFTY 50 candles. Feed must be live.");
+        niftyChart.applyNewData([]);
+        return;
+      }
+      setChartEmpty("");
+      niftyChart.applyNewData(bars);
+      chartHasFullData = true;
+      hideNativeChartLabels();
+      clearAutoSessionOverlays();
+      restoreIndicators();
+      if (bars.length) {
+        const last = bars[bars.length - 1];
+        renderOhlcHud(last);
+        checkPriceAlerts(bars);
+      }
+    }
+
+    function mergeCandleBars(incoming) {
+      if (!incoming || !incoming.length) return false;
+      const byTime = new Map(niftyRawBars.map((b) => [b.time, b]));
+      let changed = false;
+      for (const bar of incoming) {
+        if (!bar || bar.time == null) continue;
+        const prev = byTime.get(bar.time);
+        if (
+          !prev
+          || prev.open !== bar.open
+          || prev.high !== bar.high
+          || prev.low !== bar.low
+          || prev.close !== bar.close
+          || prev.volume !== bar.volume
+        ) {
+          changed = true;
+        }
+        byTime.set(bar.time, bar);
+      }
+      if (!changed) return false;
+      niftyRawBars = Array.from(byTime.values()).sort((a, b) => a.time - b.time);
+      if (niftyRawBars.length > 2000) niftyRawBars = niftyRawBars.slice(-2000);
+      niftyLastBarTime = niftyRawBars[niftyRawBars.length - 1].time;
+      return true;
+    }
+
+    function paintChartLive() {
+      if (!chartHasFullData || !niftyChart || typeof niftyChart.updateData !== "function") {
+        paintChart();
+        return;
+      }
+      const bars = toKline(viewBars());
+      if (!bars.length) {
+        paintChart();
+        return;
+      }
+      try {
+        niftyChart.updateData(bars[bars.length - 1]);
+      } catch (_) {
+        paintChart();
+        return;
+      }
+      hideNativeChartLabels();
+      renderOhlcHud(bars[bars.length - 1]);
+      checkPriceAlerts(bars);
+    }
+
+    function applyLiveCandleBars(incoming) {
+      if (!niftyRawBars.length) return;
+      if (mergeCandleBars(incoming)) paintChartLive();
+    }
+
+    function applyChartTheme() {
+      disposeChart();
+      renderDrawBar();
+      paintChart();
+    }
+
+    function startDrawTool(name) {
+      if (!ensureChart()) return;
+      registerChartExtras();
+      chartDrawTool = name;
+      renderDrawBar();
+      try {
+        niftyChart.createOverlay(overlayDrawOptions(name));
+      } catch (_) {
+        try {
+          niftyChart.createOverlay(name);
+        } catch (__) {}
+      }
+    }
+
+    function clearDrawings() {
+      if (!niftyChart) return;
+      try {
+        niftyChart.removeOverlay();
+      } catch (_) {}
+      chartDrawTool = null;
+      pushOverlayHistory();
+      renderDrawBar();
+    }
+
+    function readChartBarSpace() {
+      if (!niftyChart || typeof niftyChart.getBarSpace !== "function") return chartDefaultBarSpace;
+      try {
+        const space = niftyChart.getBarSpace();
+        if (typeof space === "number" && space > 0) return space;
+        if (space && typeof space.bar === "number" && space.bar > 0) return space.bar;
+      } catch (_) {}
+      return chartDefaultBarSpace;
+    }
+
+    function captureChartDefaults() {
+      const space = readChartBarSpace();
+      if (space > 0) chartDefaultBarSpace = space;
+      if (niftyChart && typeof niftyChart.getOffsetRightDistance === "function") {
+        try {
+          const dist = niftyChart.getOffsetRightDistance();
+          if (Number.isFinite(dist)) chartDefaultOffsetRight = dist;
+        } catch (_) {}
+      }
+    }
+
+    function resetChartView() {
+      if (!ensureChart()) return;
+      chartDrawTool = null;
+      try {
+        if (typeof niftyChart.setBarSpace === "function") {
+          niftyChart.setBarSpace(chartDefaultBarSpace);
+        }
+        if (typeof niftyChart.setOffsetRightDistance === "function") {
+          niftyChart.setOffsetRightDistance(chartDefaultOffsetRight);
+        }
+        if (typeof niftyChart.scrollToRealTime === "function") {
+          niftyChart.scrollToRealTime();
+        }
+      } catch (_) {}
+      renderDrawBar();
+    }
+
+    function toggleIndicator(name, onCandle) {
+      if (!ensureChart()) return;
+      const bag = onCandle ? chartOverlayIndicators : chartPaneIndicators;
+      if (bag.has(name)) {
+        const paneId = chartIndicatorPanes[name] || (onCandle ? "candle_pane" : undefined);
+        try {
+          niftyChart.removeIndicator(paneId, name);
+        } catch (_) {
+          try { niftyChart.removeIndicator(name); } catch (__) {}
+        }
+        delete chartIndicatorPanes[name];
+        bag.delete(name);
+      } else {
+        try {
+          const paneId = onCandle
+            ? niftyChart.createIndicator(name, true, { id: "candle_pane" })
+            : niftyChart.createIndicator(name);
+          chartIndicatorPanes[name] = paneId || (onCandle ? "candle_pane" : undefined);
+          bag.add(name);
+        } catch (_) {}
+      }
+      renderChartToolbar();
+    }
+
+    function closeChartMenu(panelId, toggleId) {
+      const panel = document.getElementById(panelId);
+      const toggle = document.getElementById(toggleId);
+      if (!panel || !toggle) return;
+      panel.hidden = true;
+      toggle.setAttribute("aria-expanded", "false");
+      if (toggleId === "chartDrawToggle") {
+        toggle.classList.toggle("active", !!chartDrawTool);
+      } else if (toggleId === "chartLineSizeToggle" || toggleId === "chartLineColorToggle") {
+        toggle.classList.toggle("active", isLineDrawTool(chartDrawTool));
+      } else {
+        toggle.classList.remove("active");
+      }
+    }
+
+    function toggleChartMenu(panelId, toggleId, event) {
+      if (event) event.stopPropagation();
+      const panel = document.getElementById(panelId);
+      const toggle = document.getElementById(toggleId);
+      if (!panel || !toggle) return;
+      const open = panel.hidden;
+      [
+        ["chartDrawPanel", "chartDrawToggle"],
+        ["chartIndicatorPanel", "chartIndicatorToggle"],
+        ["chartLineSizePanel", "chartLineSizeToggle"],
+        ["chartLineColorPanel", "chartLineColorToggle"],
+      ].forEach(([pid, tid]) => {
+        if (pid !== panelId) closeChartMenu(pid, tid);
+      });
+      panel.hidden = !open;
+      toggle.setAttribute("aria-expanded", open ? "true" : "false");
+      toggle.classList.toggle(
+        "active",
+        open
+          || (toggleId === "chartDrawToggle" && !!chartDrawTool)
+          || ((toggleId === "chartLineSizeToggle" || toggleId === "chartLineColorToggle") && isLineDrawTool(chartDrawTool)),
+      );
+      if (open && panelId === "chartIndicatorPanel") {
+        const searchInput = document.getElementById("chartIndicatorSearch");
+        if (searchInput) {
+          setTimeout(() => searchInput.focus(), 50);
+        }
+      }
+    }
+
+    function isLineDrawTool(name) {
+      return LINE_DRAW_TOOLS.has(name);
+    }
+
+    function hslToHex(h, s, l) {
+      const sat = s / 100;
+      const light = l / 100;
+      const a = sat * Math.min(light, 1 - light);
+      const f = (n) => {
+        const k = (n + h / 30) % 12;
+        const color = light - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
+        return Math.round(255 * color).toString(16).padStart(2, "0");
+      };
+      return `#${f(0)}${f(8)}${f(4)}`;
+    }
+
+    function buildHoneycombPalette(rings = HONEYCOMB_RINGS, size = HONEYCOMB_SIZE) {
+      const cells = [];
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      const w = size;
+      const h = size * 1.1547;
+      for (let q = -rings; q <= rings; q++) {
+        for (let r = -rings; r <= rings; r++) {
+          const s = -q - r;
+          const dist = Math.max(Math.abs(q), Math.abs(r), Math.abs(s));
+          if (dist > rings) continue;
+          const x = w * (Math.sqrt(3) * q + (Math.sqrt(3) / 2) * r);
+          const y = h * (0.75 * r);
+          minX = Math.min(minX, x);
+          minY = Math.min(minY, y);
+          maxX = Math.max(maxX, x);
+          maxY = Math.max(maxY, y);
+          let color = "#ffffff";
+          if (dist > 0) {
+            const hue = (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+            const sat = Math.min(100, 35 + dist * 11);
+            const light = Math.max(18, 94 - dist * 11);
+            color = hslToHex(hue, sat, light);
+          }
+          cells.push({ x, y, color, dist });
+        }
+      }
+      const padX = w / 2 + 2;
+      const padY = h / 2 + 2;
+      return {
+        width: Math.ceil(maxX - minX + padX * 2),
+        height: Math.ceil(maxY - minY + padY * 2),
+        cells: cells.map((cell) => ({
+          color: cell.color,
+          left: cell.x - minX + padX,
+          top: cell.y - minY + padY,
+        })),
+      };
+    }
+
+    function getHoneycombPalette() {
+      if (!honeycombPalette) honeycombPalette = buildHoneycombPalette();
+      return honeycombPalette;
+    }
+
+    function rearmPendingLineDraw() {
+      const tool = chartDrawTool;
+      if (!tool || !isLineDrawTool(tool) || !niftyChart) return;
+      try {
+        listOverlays().forEach((ov) => {
+          if (ov.name === tool && Number(ov.currentStep) < Number(ov.totalStep)) {
+            try { niftyChart.removeOverlay({ id: ov.id }); } catch (_) {}
+          }
+        });
+      } catch (_) {}
+      try {
+        niftyChart.createOverlay(overlayDrawOptions(tool));
+      } catch (_) {}
+    }
+
+    function setDrawLineSize(size) {
+      chartDrawLineSize = Math.min(5, Math.max(1, Number(size) || 1));
+      rearmPendingLineDraw();
+      renderDrawBar();
+    }
+
+    function setDrawLineColor(color) {
+      if (!color) return;
+      chartDrawLineColor = String(color);
+      rearmPendingLineDraw();
+      renderDrawBar();
+    }
+
+    function drawToolLabel() {
+      const item = DRAW_TOOLS.find((row) => row.id === chartDrawTool);
+      return item ? item.name : "Draw";
+    }
+
+    function renderLineStyleControls() {
+      const styleWrap = document.getElementById("chartLineStyle");
+      const sizeToggle = document.getElementById("chartLineSizeToggle");
+      const sizePanel = document.getElementById("chartLineSizePanel");
+      const colorToggle = document.getElementById("chartLineColorToggle");
+      const colorDot = document.getElementById("chartLineColorDot");
+      const colorPanel = document.getElementById("chartLineColorPanel");
+      const honeycomb = document.getElementById("chartHoneycomb");
+      if (!styleWrap || !sizeToggle || !sizePanel || !colorToggle || !honeycomb) return;
+      const showStyle = isLineDrawTool(chartDrawTool);
+      styleWrap.hidden = !showStyle;
+      if (!showStyle) {
+        sizePanel.hidden = true;
+        if (colorPanel) colorPanel.hidden = true;
+        sizeToggle.setAttribute("aria-expanded", "false");
+        colorToggle.setAttribute("aria-expanded", "false");
+        sizeToggle.classList.remove("active");
+        colorToggle.classList.remove("active");
+        return;
+      }
+      sizeToggle.innerHTML = `<span>${chartDrawLineSize}px</span>`;
+      sizeToggle.classList.toggle("active", !sizePanel.hidden);
+      sizePanel.innerHTML = DRAW_LINE_SIZES.map((size) =>
+        `<button type="button" class="chart-menu-item${chartDrawLineSize === size ? " active" : ""}" data-line-size="${size}"><span class="line-weight" style="--swatch-h:${size}px;--swatch:${chartDrawLineColor}"></span><span>${size}px</span></button>`,
+      ).join("");
+      sizePanel.querySelectorAll("[data-line-size]").forEach((btn) => {
+        btn.addEventListener("click", (event) => {
+          event.stopPropagation();
+          setDrawLineSize(btn.getAttribute("data-line-size"));
+          closeChartMenu("chartLineSizePanel", "chartLineSizeToggle");
+        });
+      });
+      if (colorDot) colorDot.style.setProperty("--swatch", chartDrawLineColor);
+      colorToggle.classList.toggle("active", !(colorPanel && colorPanel.hidden));
+      const palette = getHoneycombPalette();
+      honeycomb.style.setProperty("--honey-w", `${palette.width}px`);
+      honeycomb.style.setProperty("--honey-h", `${palette.height}px`);
+      honeycomb.style.setProperty("--honey-size", `${HONEYCOMB_SIZE}px`);
+      honeycomb.innerHTML = palette.cells.map((cell) =>
+        `<button type="button" class="chart-honey-cell${chartDrawLineColor.toLowerCase() === cell.color.toLowerCase() ? " active" : ""}" data-line-color="${cell.color}" style="left:${cell.left}px;top:${cell.top}px;--swatch:${cell.color}" title="${cell.color}" aria-label="Line color ${cell.color}"></button>`,
+      ).join("");
+      honeycomb.querySelectorAll("[data-line-color]").forEach((btn) => {
+        btn.addEventListener("click", (event) => {
+          event.stopPropagation();
+          setDrawLineColor(btn.getAttribute("data-line-color"));
+          closeChartMenu("chartLineColorPanel", "chartLineColorToggle");
+        });
+      });
+    }
+
+    function renderDrawBar() {
+      const panel = document.getElementById("chartDrawPanel");
+      const toggle = document.getElementById("chartDrawToggle");
+      const clearBtn = document.getElementById("chartDrawClear");
+      const resetBtn = document.getElementById("chartResetBtn");
+      const undoBtn = document.getElementById("chartDrawUndo");
+      const redoBtn = document.getElementById("chartDrawRedo");
+      if (!panel || !toggle || !clearBtn) return;
+      toggle.innerHTML = `${chartIcon("draw")}<span>${drawToolLabel()}</span>`;
+      toggle.classList.toggle("active", !!chartDrawTool);
+      updateDrawModeChip();
+      renderLineStyleControls();
+      panel.innerHTML = DRAW_GROUPS.map((group) =>
+        `<div class="chart-menu-heading">${group.heading}</div>` +
+        group.tools.map((item) =>
+          `<button type="button" class="chart-menu-item${chartDrawTool === item.id ? " active" : ""}" data-draw="${item.id}">${drawIcon(item.id)}<span>${item.name}</span></button>`,
+        ).join(""),
+      ).join("");
+      panel.querySelectorAll("[data-draw]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          startDrawTool(btn.getAttribute("data-draw"));
+          closeChartMenu("chartDrawPanel", "chartDrawToggle");
+        });
+      });
+      if (undoBtn && !undoBtn.dataset.ready) {
+        undoBtn.dataset.ready = "1";
+        undoBtn.innerHTML = chartIcon("undo");
+        undoBtn.addEventListener("click", () => {
+          if (typeof undoDrawing === "function") undoDrawing();
+        });
+      }
+      if (redoBtn && !redoBtn.dataset.ready) {
+        redoBtn.dataset.ready = "1";
+        redoBtn.innerHTML = chartIcon("redo");
+        redoBtn.addEventListener("click", () => {
+          if (typeof redoDrawing === "function") redoDrawing();
+        });
+      }
+      if (undoBtn) undoBtn.disabled = typeof overlayHistory === "undefined" || overlayHistory.length < 2;
+      if (redoBtn) redoBtn.disabled = typeof overlayRedo === "undefined" || !overlayRedo.length;
+      if (!clearBtn.dataset.ready) {
+        clearBtn.dataset.ready = "1";
+        setToolButton(clearBtn, "clear", "Clear");
+        clearBtn.addEventListener("click", clearDrawings);
+      }
+      if (resetBtn && !resetBtn.dataset.ready) {
+        resetBtn.dataset.ready = "1";
+        setToolButton(resetBtn, "reset", "Reset");
+        resetBtn.addEventListener("click", resetChartView);
+      }
+      const sizeToggle = document.getElementById("chartLineSizeToggle");
+      const colorToggle = document.getElementById("chartLineColorToggle");
+      if (sizeToggle && !sizeToggle.dataset.ready) {
+        sizeToggle.dataset.ready = "1";
+        sizeToggle.addEventListener("click", (event) => {
+          toggleChartMenu("chartLineSizePanel", "chartLineSizeToggle", event);
+        });
+      }
+      if (colorToggle && !colorToggle.dataset.ready) {
+        colorToggle.dataset.ready = "1";
+        colorToggle.addEventListener("click", (event) => {
+          toggleChartMenu("chartLineColorPanel", "chartLineColorToggle", event);
+        });
+      }
+    }
+
+    let chartIndicatorFilter = "";
+
+    function renderIndicatorList() {
+      const list = document.getElementById("chartIndicatorList");
+      if (!list) return;
+      const q = chartIndicatorFilter.trim().toLowerCase();
+      const overlayItems = OVERLAY_INDICATORS.map((name) => ({ name, onCandle: true }));
+      const paneItems = PANE_INDICATORS.map((name) => ({ name, onCandle: false }));
+
+      function matchesFilter(item) {
+        if (!q) return true;
+        const code = item.name.toLowerCase();
+        const label = (INDICATOR_NAMES[item.name] || "").toLowerCase();
+        return code.includes(q) || label.includes(q);
+      }
+
+      const filteredOverlay = overlayItems.filter(matchesFilter);
+      const filteredPane = paneItems.filter(matchesFilter);
+
+      function indicatorRows(items) {
+        return items.map((item) => {
+          const checked = (item.onCandle ? chartOverlayIndicators : chartPaneIndicators).has(item.name);
+          return `<label class="chart-menu-item">
+            <input type="checkbox" data-ind="${item.name}" data-on-candle="${item.onCandle ? "1" : "0"}"${checked ? " checked" : ""}>
+            ${indicatorIcon(item.name)}
+            <span>${INDICATOR_NAMES[item.name] || item.name}</span>
+          </label>`;
+        }).join("");
+      }
+
+      if (!filteredOverlay.length && !filteredPane.length) {
+        list.innerHTML = `<div class="chart-indicator-empty">No indicators matching "${escapeHtml(q)}"</div>`;
+        return;
+      }
+
+      let html = "";
+      if (filteredOverlay.length) {
+        html += `<div class="chart-menu-heading">On price</div>${indicatorRows(filteredOverlay)}`;
+      }
+      if (filteredPane.length) {
+        html += `<div class="chart-menu-heading">Panes</div>${indicatorRows(filteredPane)}`;
+      }
+      list.innerHTML = html;
+
+      list.querySelectorAll("input").forEach((box) => {
+        box.addEventListener("change", () => {
+          toggleIndicator(box.getAttribute("data-ind"), box.getAttribute("data-on-candle") === "1");
+        });
+      });
+    }
+
+    function renderChartToolbar() {
+      const intervalBar = document.getElementById("chartIntervalBar");
+      const styleBar = document.getElementById("chartStyleBar");
+      const searchInput = document.getElementById("chartIndicatorSearch");
+      const searchClear = document.getElementById("chartIndicatorSearchClear");
+
+      if (searchInput && !searchInput.dataset.ready) {
+        searchInput.dataset.ready = "1";
+        searchInput.addEventListener("input", (e) => {
+          chartIndicatorFilter = e.target.value;
+          if (searchClear) searchClear.hidden = !chartIndicatorFilter;
+          renderIndicatorList();
+        });
+        searchInput.addEventListener("keydown", (e) => {
+          if (e.key === "Escape") {
+            if (chartIndicatorFilter) {
+              chartIndicatorFilter = "";
+              searchInput.value = "";
+              if (searchClear) searchClear.hidden = true;
+              renderIndicatorList();
+            } else {
+              closeChartMenu("chartIndicatorPanel", "chartIndicatorToggle");
+            }
+          }
+        });
+      }
+      if (searchClear && !searchClear.dataset.ready) {
+        searchClear.dataset.ready = "1";
+        searchClear.addEventListener("click", () => {
+          chartIndicatorFilter = "";
+          if (searchInput) {
+            searchInput.value = "";
+            searchInput.focus();
+          }
+          searchClear.hidden = true;
+          renderIndicatorList();
+        });
+      }
+
+      intervalBar.innerHTML = CHART_INTERVALS.map(
+        (item) =>
+          `<button type="button" class="chart-tool-btn${item.id === niftyInterval ? " active" : ""}" data-interval="${item.id}">${chartIcon(item.id === 0 ? "day" : "clock")}<span>${item.label}</span></button>`,
+      ).join("");
+      styleBar.innerHTML = CHART_STYLES.map(
+        (item) =>
+          `<button type="button" class="chart-tool-btn${item.id === niftyChartKind ? " active" : ""}" data-style="${item.id}">${chartIcon(item.id)}<span>${item.label}</span></button>`,
+      ).join("");
+
+      renderIndicatorList();
+
+      const count = chartOverlayIndicators.size + chartPaneIndicators.size;
+      const toggle = document.getElementById("chartIndicatorToggle");
+      setToolButton(toggle, "indicators", count ? `Indicators (${count})` : "Indicators");
+      intervalBar.querySelectorAll("button").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          niftyInterval = Number(btn.getAttribute("data-interval"));
+          renderChartToolbar();
+          paintChart();
+        });
+      });
+      styleBar.querySelectorAll("button").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          niftyChartKind = btn.getAttribute("data-style");
+          renderChartToolbar();
+          applyCandleStyle();
+          paintChart();
+        });
+      });
+    }
+
+    function chartIntervalLabel() {
+      const item = CHART_INTERVALS.find((row) => row.id === niftyInterval);
+      return item ? item.label : "1m";
+    }
+
+    function chartShotFilename() {
+      const stamp = new Date()
+        .toLocaleString("sv-SE", { timeZone: "Asia/Kolkata" })
+        .replace(/[: ]/g, "-")
+        .slice(0, 16);
+      return `NIFTY50-${chartIntervalLabel()}-${stamp}.png`;
+    }
+
+    function captureChartImage() {
+      const theme = document.body.getAttribute("data-theme") || "dark";
+      const bg = theme === "light" ? "#ffffff" : "#1a2332";
+      if (niftyChart && typeof niftyChart.getConvertPictureUrl === "function") {
+        try {
+          return niftyChart.getConvertPictureUrl(true, "png", bg) || "";
+        } catch (_) {
+          try {
+            return niftyChart.getConvertPictureUrl(true, "jpeg", bg) || "";
+          } catch (__) {}
+        }
+      }
+      const host = document.getElementById("klineHost");
+      const canvas = host && host.querySelector("canvas");
+      if (!canvas) return "";
+      try {
+        return canvas.toDataURL("image/png");
+      } catch (_) {
+        return "";
+      }
+    }
+
+    async function saveChartScreenshot() {
+      const url = captureChartImage();
+      if (!url) return;
+      const name = chartShotFilename();
+      let blob;
+      try {
+        blob = await (await fetch(url)).blob();
+      } catch (_) {
+        return;
+      }
+      if (window.showSaveFilePicker) {
+        try {
+          const handle = await window.showSaveFilePicker({
+            suggestedName: name,
+            types: [{ description: "PNG image", accept: { "image/png": [".png"] } }],
+          });
+          const writable = await handle.createWritable();
+          await writable.write(blob);
+          await writable.close();
+          return;
+        } catch (err) {
+          if (err && err.name === "AbortError") return;
+        }
+      }
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    }
+
+    async function refreshNiftyCandles() {
+      if (document.visibilityState === "hidden") return;
+      try {
+        const qs = niftyLastBarTime != null && niftyRawBars.length
+          ? `?since=${niftyLastBarTime}`
+          : "";
+        const resp = await fetch(`/api/candles${qs}`);
+        if (!resp.ok) {
+          setChartEmpty("Candle API not ready. Restart Atlas Lite (./run.sh), then refresh this page.");
+          return;
+        }
+        const data = await resp.json();
+        const incoming = Array.isArray(data.bars) ? data.bars : [];
+        const hadBars = niftyRawBars.length > 0;
+        if (data.delta && hadBars) {
+          mergeCandleBars(incoming);
+          paintChartLive();
+        } else {
+          niftyRawBars = incoming;
+          if (niftyRawBars.length) {
+            niftyLastBarTime = niftyRawBars[niftyRawBars.length - 1].time;
+          }
+          paintChart();
+        }
+      } catch (_) {
+        setChartEmpty("Could not load NIFTY 50 candles from Kite.");
+      }
+    }
+
+    function stopCandlePoll() {
+      if (candlePollTimer != null) {
+        clearInterval(candlePollTimer);
+        candlePollTimer = null;
+      }
+    }
+
+    function startCandlePoll() {
+      stopCandlePoll();
+      candlePollTimer = setInterval(() => { refreshNiftyCandles(); }, 5000);
+    }
+
+    function formatPaperInr(value, digits) {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return "—";
+      return "₹" + n.toLocaleString("en-IN", {
+        minimumFractionDigits: digits,
+        maximumFractionDigits: digits,
+      });
+    }
+
+    function paperStrategyLabel(strategy) {
+      if (strategy === "short_iron_fly") return "Iron fly";
+      if (strategy === "long_straddle") return "Long straddle";
+      return "Sit";
+    }
+
+    function renderPaperBar(data) {
+      const host = document.getElementById("paperBar");
+      if (!host) return;
+      if (!data || data.enabled === false) {
+        host.hidden = true;
+        host.innerHTML = "";
+        return;
+      }
+      host.hidden = false;
+      const pos = data.position;
+      const regime = data.regime;
+      const mtm = Number(data.mtm_pnl);
+      const mtmCls = mtm > 0 ? "paper-up" : mtm < 0 ? "paper-dn" : "";
+      let book = "Flat";
+      if (pos) {
+        const kind = paperStrategyLabel(pos.strategy);
+        const atm = pos.atm != null ? `ATM ${pos.atm}` : "ATM —";
+        if (pos.strategy === "short_iron_fly") {
+          const credit = pos.credit != null ? ` · cr ${Number(pos.credit).toFixed(1)}` : "";
+          book = `${kind} ${atm} ±${pos.wing_pts || 250}${credit}`;
+        } else {
+          book = `${kind} ${atm}`;
+        }
+      }
+      const want = regime ? paperStrategyLabel(regime) : (data.fly_ready ? "Fly ready" : data.tape_ready ? "Long ready" : "Sit");
+      const entries = `${data.entries_today ?? 0}/${data.max_entries_per_day ?? 5}`;
+      const failing = [
+        ...(data.fly_failing || []).map((g) => `Fly: ${g}`),
+        ...(data.tape_failing || []).map((g) => `Long: ${g}`),
+      ];
+      const missing = [
+        ...(data.fly_missing || []).map((g) => `Fly missing: ${g}`),
+        ...(data.tape_missing || []).map((g) => `Long missing: ${g}`),
+      ];
+      const tipBits = [];
+      if (failing.length) tipBits.push(failing.join(" · "));
+      if (missing.length) tipBits.push(missing.join(" · "));
+      if (!pos && !tipBits.length) tipBits.push("Paper idle · no live orders");
+      const win = data.tape_in_window ? "in window" : (data.entry_window || "09:15-15:14");
+      host.title = tipBits.join(" · ");
+      host.innerHTML = [
+        `<span class="paper-k">Paper</span>`,
+        `<span>${escapeHtml(want)}</span>`,
+        `<span>${escapeHtml(book)}</span>`,
+        `<span class="${mtmCls}">MTM ${escapeHtml(formatPaperInr(mtm, 0))}</span>`,
+        `<span>Eq ${escapeHtml(formatPaperInr(data.equity, 0))}</span>`,
+        `<span>${escapeHtml(entries)} · ${escapeHtml(win)}</span>`,
+      ].join("");
+    }
+
+    async function loadPaperSnapshot() {
+      if (document.visibilityState === "hidden") return;
+      try {
+        const resp = await fetch("/api/paper");
+        if (!resp.ok) return;
+        renderPaperBar(await resp.json());
+      } catch (_) {
+        /* keep last paint */
+      }
+    }
+
+    function stopPaperPoll() {
+      if (paperPollTimer != null) {
+        clearInterval(paperPollTimer);
+        paperPollTimer = null;
+      }
+    }
+
+    function startPaperPoll() {
+      stopPaperPoll();
+      paperPollTimer = setInterval(() => { loadPaperSnapshot(); }, PAPER_POLL_MS);
+    }
+
+    function updateModalScrollLock() {
+      const anyOpen = document.getElementById("historyModal").classList.contains("open");
+      document.body.style.overflow = anyOpen ? "hidden" : "";
+    }
+
+    function initTheme() {
+      const saved = localStorage.getItem(THEME_KEY) || "dark";
+      document.body.setAttribute("data-theme", saved);
+      updateThemeToggle(saved);
+    }
+
+    function updateThemeToggle(theme) {
+      const btn = document.getElementById("themeToggle");
+      const isDark = theme === "dark";
+      btn.textContent = isDark ? "☀" : "☾";
+      btn.title = isDark ? "Switch to light theme" : "Switch to dark theme";
+      btn.setAttribute("aria-label", btn.title);
+    }
+
+    function toggleTheme() {
+      const next = document.body.getAttribute("data-theme") === "light" ? "dark" : "light";
+      document.body.setAttribute("data-theme", next);
+      localStorage.setItem(THEME_KEY, next);
+      updateThemeToggle(next);
+      applyChartTheme();
+    }
+
+    document.getElementById("themeToggle").addEventListener("click", toggleTheme);
+    document.getElementById("chartShotBtn").addEventListener("click", saveChartScreenshot);
+    document.getElementById("chartIndicatorToggle").addEventListener("click", (event) => {
+      toggleChartMenu("chartIndicatorPanel", "chartIndicatorToggle", event);
+    });
+    document.getElementById("chartDrawToggle").addEventListener("click", (event) => {
+      toggleChartMenu("chartDrawPanel", "chartDrawToggle", event);
+    });
+    document.addEventListener("click", (event) => {
+      const drawMenu = document.getElementById("chartDrawMenu");
+      const indicatorMenu = document.getElementById("chartIndicatorMenu");
+      const sizeMenu = document.getElementById("chartLineSizeMenu");
+      const colorMenu = document.getElementById("chartLineColorMenu");
+      if (!drawMenu || !drawMenu.contains(event.target)) {
+        closeChartMenu("chartDrawPanel", "chartDrawToggle");
+      }
+      if (!indicatorMenu || !indicatorMenu.contains(event.target)) {
+        closeChartMenu("chartIndicatorPanel", "chartIndicatorToggle");
+      }
+      if (!sizeMenu || !sizeMenu.contains(event.target)) {
+        closeChartMenu("chartLineSizePanel", "chartLineSizeToggle");
+      }
+      if (!colorMenu || !colorMenu.contains(event.target)) {
+        closeChartMenu("chartLineColorPanel", "chartLineColorToggle");
+      }
+    });
+    document.addEventListener("pointerdown", unlockParityAudio);
+    document.addEventListener("keydown", unlockParityAudio);
+    initTheme();
+
+    const HISTORY_PAGE = 200;
+
+    function escapeHtml(text) {
+      return String(text)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+    let recordingOffset = 0;
+    let recordingTotal = 0;
+    let recordingEntries = [];
+    let recordingScope = "file";
+    let recordingDayLabel = "";
+    let recordingFileCount = 0;
+
+    function formatLiveTimestamp(ms) {
+      if (!ms) return "—";
+      const ts = new Date(ms);
+      if (Number.isNaN(ts.getTime())) return "—";
+      return ts.toLocaleString("en-IN", {
+        timeZone: "Asia/Kolkata",
+        year: "numeric",
+        month: "short",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: true,
+      }) + " IST";
+    }
+
+    function formatRecordingTs(ts) {
+      if (!ts) return "—";
+      const d = new Date(ts);
+      if (Number.isNaN(d.getTime())) return ts;
+      return d.toLocaleString("en-IN", {
+        timeZone: "Asia/Kolkata",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        fractionalSecondDigits: 3,
+        hour12: true,
+      }) + " IST";
+    }
+
+    function formatHistMetric(value, id) {
+      if (value == null || Number.isNaN(value)) return "—";
+      if (id === "pcr") return Number(value).toFixed(3);
+      if (id === "ivp" || id === "oi_pct_chg" || id === "oi_day_high") return Number(value).toFixed(1) + "%";
+      if (id === "ce" || id === "pe" || id === "adx") return Number(value).toFixed(2);
+      if (id === "spot") return Number(value).toLocaleString("en-IN", { maximumFractionDigits: 2 });
+      return String(value);
+    }
+
+    function formatRecordingDetail(entry) {
+      const feed = entry.feed || {};
+      const evaln = entry.evaluation || {};
+      const indices = entry.indices || [];
+      const lines = [
+        `Time: ${entry.ts || "—"}`,
+        `Spot: ${formatHistMetric(entry.spot, "spot")} · ATM ${entry.atm_strike ?? "—"}`,
+        "",
+        "— Metrics —",
+        `ADX: ${formatHistMetric(feed.adx, "adx")} · ATR: ${formatHistMetric(feed.atr, "atr")}`,
+        `VIX chg: ${formatHistMetric(feed.vix_chg, "vix_chg")} · IVP: ${formatHistMetric(feed.ivp, "ivp")}`,
+        `PCR: ${formatHistMetric(feed.pcr, "pcr")} · Max pain: ${formatHistMetric(feed.max_pain, "max_pain")}`,
+        `CE: ${formatHistMetric(feed.ce, "ce")} · PE: ${formatHistMetric(feed.pe, "pe")}`,
+        `IV: ${formatHistMetric(feed.iv, "iv")} · Low ${formatHistMetric(feed.iv_day_low, "iv")} · High ${formatHistMetric(feed.iv_day_high, "iv")}`,
+        `OI vs high: ${formatHistMetric(feed.oi_vs_day_high ?? feed.oi_pct_chg, feed.oi_vs_day_high != null ? "oi_day_high" : "oi_pct_chg")}`,
+        "",
+        "— Indices —",
+      ];
+      for (const idx of indices) {
+        lines.push(
+          `${idx.label}: ${formatHistMetric(idx.ltp, "spot")} (${formatHistMetric(idx.chg_pts, "spot")} / ${idx.chg_pct != null ? idx.chg_pct.toFixed(3) + "%" : "—"})`,
+        );
+      }
+      lines.push("", "— Gates —");
+      for (const row of evaln.rows || []) {
+        const mark = row.passed === true ? "PASS" : row.passed === false ? "FAIL" : "—";
+        lines.push(`${row.label}: ${formatHistMetric(row.value, row.id)} → ${mark}`);
+      }
+      if ((entry.live_warnings || []).length) {
+        lines.push("", "— Warnings —", ...entry.live_warnings);
+      }
+      return lines.join("\n");
+    }
+
+    function renderRecordingRows(entries) {
+      const tbody = document.getElementById("recordingRows");
+      if (!entries.length) {
+        tbody.innerHTML = '<tr><td colspan="9" class="hist-muted">No snapshots match these filters</td></tr>';
+        document.getElementById("recordingDetail").textContent = "No data.";
+        return;
+      }
+      tbody.innerHTML = entries.map((entry, i) => {
+        const feed = entry.feed || {};
+        const evaln = entry.evaluation || {};
+        const ready = evaln.entry_ready;
+        const entryCls = ready ? "hist-pass hist-entry" : "hist-fail hist-entry";
+        const entryText = ready
+          ? "READY"
+          : '<span class="hist-entry-line">NOT</span><span class="hist-entry-line">READY</span>';
+        const src = entry.file ? ` title="${escapeHtml(entry.file)}"` : "";
+        const gates = `${evaln.passed ?? 0}/${evaln.gates_total ?? evaln.evaluable ?? 0}`;
+        return `<tr data-idx="${i}"${src}>
+          <td>${formatRecordingTs(entry.ts)}</td>
+          <td>${formatHistMetric(entry.spot, "spot")}</td>
+          <td>${formatHistMetric(feed.adx, "adx")}</td>
+          <td>${formatHistMetric(feed.pcr, "pcr")}</td>
+          <td>${formatHistMetric(feed.ivp, "ivp")}</td>
+          <td>${formatHistMetric(feed.ce, "ce")}</td>
+          <td>${formatHistMetric(feed.pe, "pe")}</td>
+          <td class="${entryCls}">${entryText}</td>
+          <td>${gates}</td>
+        </tr>`;
+      }).join("");
+      tbody.querySelectorAll("tr[data-idx]").forEach((row) => {
+        row.addEventListener("click", () => {
+          tbody.querySelectorAll("tr.selected").forEach(r => r.classList.remove("selected"));
+          row.classList.add("selected");
+          const idx = Number(row.getAttribute("data-idx"));
+          document.getElementById("recordingDetail").textContent =
+            formatRecordingDetail(recordingEntries[idx]);
+        });
+      });
+    }
+
+    function updateRecordingMeta(name) {
+      const meta = document.getElementById("recordingMeta");
+      if (!name && recordingScope !== "day") {
+        meta.textContent = "Select a 30-minute recording file";
+        return;
+      }
+      const bits = [];
+      const entry = document.getElementById("historyEntryFilter")?.value;
+      const gates = document.getElementById("historyGatesFilter")?.value;
+      const failing = document.getElementById("historyFailingFilter")?.value;
+      if (entry && entry !== "all") bits.push(entry === "ready" ? "READY" : "NOT READY");
+      if (gates && gates !== "all") bits.push(gates === "le4" ? "≤4/7" : `${gates}/7`);
+      if (failing) bits.push(`fail ${failing}`);
+      const filt = bits.length ? ` · ${bits.join(" · ")}` : "";
+      const label = recordingScope === "day"
+        ? `${recordingDayLabel}${recordingFileCount ? ` · ${recordingFileCount} files` : ""}`
+        : name;
+      if (!recordingTotal) {
+        meta.textContent = `${label} · no matches${filt}`;
+        return;
+      }
+      const end = Math.min(recordingOffset + recordingEntries.length, recordingTotal);
+      meta.textContent = `${label} · showing ${recordingOffset + 1}-${end} of ${recordingTotal}${filt}`;
+    }
+
+    function formatRecordingSize(bytes) {
+      const n = Number(bytes) || 0;
+      if (n >= 1048576) return `${(n / 1048576).toFixed(1)} MB`;
+      if (n >= 1024) return `${Math.round(n / 1024)} KB`;
+      return `${n} B`;
+    }
+
+    function recordingDayFromName(name) {
+      const m = String(name || "").match(/^(\d{4}-\d{2}-\d{2})_/);
+      return m ? m[1] : "";
+    }
+
+    function triggerDownload(url, filename) {
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename || "";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }
+
+    async function loadRecordingFiles(selectName) {
+      const select = document.getElementById("recordingFile");
+      const resp = await fetch("/api/recordings");
+      const data = await resp.json();
+      const files = data.files || [];
+      select.innerHTML = files.length
+        ? files.map(f => `<option value="${f.name}">${f.name} (${formatRecordingSize(f.size_bytes)})</option>`).join("")
+        : '<option value="">No recordings yet</option>';
+      if (selectName && files.some(f => f.name === selectName)) {
+        select.value = selectName;
+      } else if (files.length) {
+        select.value = files[0].name;
+      }
+    }
+
+    function historyFiltersActive() {
+      const entry = document.getElementById("historyEntryFilter")?.value || "all";
+      const gates = document.getElementById("historyGatesFilter")?.value || "all";
+      const failing = document.getElementById("historyFailingFilter")?.value || "";
+      return (entry && entry !== "all") || (gates && gates !== "all") || Boolean(failing);
+    }
+
+    function historyFilterQuery() {
+      const params = new URLSearchParams();
+      const entry = document.getElementById("historyEntryFilter")?.value || "all";
+      const gates = document.getElementById("historyGatesFilter")?.value || "all";
+      const failing = document.getElementById("historyFailingFilter")?.value || "";
+      if (entry && entry !== "all") params.set("entry", entry);
+      if (gates && gates !== "all") params.set("gates", gates);
+      if (failing) params.set("failing", failing);
+      const qs = params.toString();
+      return qs ? `&${qs}` : "";
+    }
+
+    async function loadRecordingPage() {
+      const name = document.getElementById("recordingFile").value;
+      if (!name) return;
+      const day = recordingDayFromName(name);
+      const useDay = historyFiltersActive() && day;
+      const url = useDay
+        ? `/api/recordings/day/${encodeURIComponent(day)}?limit=${HISTORY_PAGE}&offset=${recordingOffset}${historyFilterQuery()}`
+        : `/api/recordings/${encodeURIComponent(name)}?limit=${HISTORY_PAGE}&offset=${recordingOffset}${historyFilterQuery()}`;
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        document.getElementById("recordingMeta").textContent = "Failed to load recording";
+        return;
+      }
+      const data = await resp.json();
+      recordingTotal = data.total || 0;
+      recordingEntries = data.entries || [];
+      recordingScope = data.scope === "day" ? "day" : "file";
+      recordingDayLabel = data.day || day || "";
+      recordingFileCount = Number(data.file_count) || (data.files || []).length || 0;
+      renderRecordingRows(recordingEntries);
+      updateRecordingMeta(name);
+      document.getElementById("recordingDetail").textContent = recordingEntries.length
+        ? (recordingScope === "day"
+          ? "Click a row for full snapshot. Hover a row to see its 30-minute file."
+          : "Click a row for full snapshot.")
+        : "No snapshots match these filters.";
+    }
+
+    async function setHistoryOpen(open) {
+      const modal = document.getElementById("historyModal");
+      const btn = document.getElementById("historyToggle");
+      modal.classList.toggle("open", open);
+      modal.setAttribute("aria-hidden", open ? "false" : "true");
+      btn.classList.toggle("active", open);
+      updateModalScrollLock();
+      if (open) {
+        recordingOffset = 0;
+        await loadRecordingFiles();
+        await loadRecordingPage();
+      }
+    }
+
+    async function toggleHistoryPanel() {
+      const modal = document.getElementById("historyModal");
+      await setHistoryOpen(!modal.classList.contains("open"));
+    }
+
+    document.getElementById("historyToggle").addEventListener("click", () => { toggleHistoryPanel(); });
+    document.getElementById("historyClose").addEventListener("click", () => { setHistoryOpen(false); });
+    document.getElementById("historyBackdrop").addEventListener("click", () => { setHistoryOpen(false); });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        if (document.getElementById("historyModal").classList.contains("open")) {
+          setHistoryOpen(false);
+        }
+        return;
+      }
+      const mod = event.metaKey || event.ctrlKey;
+      if (!mod || event.altKey) return;
+      const key = String(event.key || "").toLowerCase();
+      const tag = (event.target && event.target.tagName) || "";
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || event.target?.isContentEditable) return;
+      if (key === "z" && !event.shiftKey) {
+        event.preventDefault();
+        undoDrawing();
+      } else if (key === "y" || (key === "z" && event.shiftKey)) {
+        event.preventDefault();
+        redoDrawing();
+      }
+    });
+    document.getElementById("recordingRefresh").addEventListener("click", async () => {
+      const current = document.getElementById("recordingFile").value;
+      await loadRecordingFiles(current);
+    });
+    document.getElementById("recordingLoad").addEventListener("click", async () => {
+      recordingOffset = 0;
+      await loadRecordingPage();
+    });
+    ["historyEntryFilter", "historyGatesFilter", "historyFailingFilter"].forEach((id) => {
+      document.getElementById(id).addEventListener("change", async () => {
+        recordingOffset = 0;
+        await loadRecordingPage();
+      });
+    });
+    document.getElementById("recordingDownload").addEventListener("click", () => {
+      const name = document.getElementById("recordingFile").value;
+      if (!name) return;
+      triggerDownload(`/api/recordings/${encodeURIComponent(name)}/download`, name);
+    });
+    document.getElementById("recordingDownloadDay").addEventListener("click", () => {
+      const name = document.getElementById("recordingFile").value;
+      const day = recordingDayFromName(name);
+      if (!day) return;
+      triggerDownload(`/api/recordings/archive/${day}`, `atlas-recordings-${day}.zip`);
+    });
+    document.getElementById("recordingFile").addEventListener("change", async () => {
+      recordingOffset = 0;
+      await loadRecordingPage();
+    });
+    document.getElementById("recordingPrev").addEventListener("click", async () => {
+      recordingOffset = Math.max(0, recordingOffset - HISTORY_PAGE);
+      await loadRecordingPage();
+    });
+    document.getElementById("recordingNext").addEventListener("click", async () => {
+      if (recordingOffset + HISTORY_PAGE < recordingTotal) {
+        recordingOffset += HISTORY_PAGE;
+        await loadRecordingPage();
+      }
+    });
+
+    const CHAIN_POLL_MS = 1000;
+    let chainPollTimer = null;
+    let chainScrollPending = false;
+
+    function formatChainNum(value, digits = 2) {
+      if (value == null || Number.isNaN(value)) return "—";
+      return Number(value).toLocaleString("en-IN", {
+        minimumFractionDigits: digits,
+        maximumFractionDigits: digits,
+      });
+    }
+
+    function formatChainOi(value) {
+      if (value == null || Number.isNaN(value)) return "—";
+      return Math.round(value).toLocaleString("en-IN");
+    }
+
+    function formatChainChg(value) {
+      if (value == null || Number.isNaN(value)) return "—";
+      const text = (value >= 0 ? "+" : "") + Number(value).toFixed(2) + "%";
+      const cls = value > 0 ? "chain-up" : value < 0 ? "chain-down" : "chain-muted";
+      return `<span class="${cls}">${text}</span>`;
+    }
+
+    function spotStrikeMarker(spot, strike, step) {
+      if (spot == null || strike == null) return false;
+      const next = strike + step;
+      return spot >= strike && spot < next;
+    }
+
+    function formatChainExpiry(expiry) {
+      if (!expiry) return "—";
+      const raw = String(expiry);
+      const d = new Date(`${raw}T00:00:00`);
+      if (Number.isNaN(d.getTime())) return raw;
+      return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
+    }
+
+    function renderChainSummary(data) {
+      const el = document.getElementById("chainSummary");
+      const shown = (data.rows || []).length;
+      const atm = data.atm_strike;
+      const mp = data.max_pain != null ? Math.round(data.max_pain) : null;
+      el.innerHTML = `
+        <span class="chain-summary-item">Spot <span class="chain-summary-val">${formatChainNum(data.spot)}</span></span>
+        <span class="chain-summary-item chart-link" data-chart-price="${atm ?? ""}" data-chart-label="ATM" title="Drop ATM on chart">ATM <span class="chain-summary-val">${atm ?? "—"}</span></span>
+        <span class="chain-summary-item">PCR <span class="chain-summary-val">${data.pcr != null ? Number(data.pcr).toFixed(3) : "—"}</span></span>
+        <span class="chain-summary-item chart-link" data-chart-price="${mp ?? ""}" data-chart-label="Max pain" title="Drop max pain on chart">MP <span class="chain-summary-val">${mp ?? "—"}</span></span>
+        <span class="chain-summary-item">Exp <span class="chain-summary-val">${formatChainExpiry(data.expiry)}</span></span>
+        <span class="chain-summary-item">Rows <span class="chain-summary-val">${shown || "—"}</span></span>
+      `;
+      el.querySelectorAll("[data-chart-price]").forEach((node) => {
+        node.addEventListener("click", () => {
+          const px = Number(node.getAttribute("data-chart-price"));
+          if (!Number.isFinite(px)) return;
+          dropChartPriceLine(px, node.getAttribute("data-chart-label") || "Level");
+        });
+      });
+    }
+
+    function accumulateChainLeg(rows, legKey) {
+      let oiSum = 0;
+      let ltpSum = 0;
+      let prevSum = 0;
+      let oiN = 0;
+      let ltpN = 0;
+      let pctN = 0;
+      for (const row of rows) {
+        const leg = row[legKey] || {};
+        const oi = leg.oi;
+        const ltp = leg.ltp;
+        const chg = leg.chg_pct;
+        if (oi != null && !Number.isNaN(oi)) {
+          oiSum += Number(oi);
+          oiN += 1;
+        }
+        if (ltp != null && !Number.isNaN(ltp)) {
+          ltpSum += Number(ltp);
+          ltpN += 1;
+        }
+        if (ltp != null && chg != null && !Number.isNaN(ltp) && !Number.isNaN(chg)) {
+          const chgNum = Number(chg);
+          if (chgNum <= -100) continue;
+          const denom = 1 + chgNum / 100;
+          if (Math.abs(denom) < 1e-12) continue;
+          prevSum += Number(ltp) / denom;
+          pctN += 1;
+        }
+      }
+      let chgPct = null;
+      if (pctN > 0 && prevSum > 0) {
+        const ltpForPct = rows.reduce((sum, row) => {
+          const leg = row[legKey] || {};
+          if (leg.ltp != null && leg.chg_pct != null && Number(leg.chg_pct) > -100) {
+            return sum + Number(leg.ltp);
+          }
+          return sum;
+        }, 0);
+        chgPct = Math.round((ltpForPct - prevSum) / prevSum * 10000) / 100;
+      }
+      return {
+        oi: oiN ? Math.round(oiSum) : null,
+        ltp: ltpN ? Math.round(ltpSum * 100) / 100 : null,
+        chg_pct: chgPct,
+      };
+    }
+
+    function resolveChainTotals(data) {
+      const apiTotals = data.totals;
+      if (apiTotals && (apiTotals.ce || apiTotals.pe)) return apiTotals;
+      const rows = data.rows || [];
+      if (!rows.length) return { ce: {}, pe: {} };
+      return {
+        ce: accumulateChainLeg(rows, "ce"),
+        pe: accumulateChainLeg(rows, "pe"),
+      };
+    }
+
+    function renderChainTotals(data) {
+      const tfoot = document.getElementById("chainTotals");
+      const totals = resolveChainTotals(data);
+      const ce = totals.ce || {};
+      const pe = totals.pe || {};
+      if (!(data.rows || []).length) {
+        tfoot.innerHTML = "";
+        return;
+      }
+      tfoot.innerHTML = `<tr class="chain-total-row">
+        <td class="ce-side">${formatChainOi(ce.oi)}</td>
+        <td class="ce-side">${formatChainChg(ce.chg_pct)}</td>
+        <td class="ce-side">${formatChainNum(ce.ltp)}</td>
+        <td class="strike-col"><span class="chain-total-label">Total</span></td>
+        <td class="pe-side">${formatChainNum(pe.ltp)}</td>
+        <td class="pe-side">${formatChainChg(pe.chg_pct)}</td>
+        <td class="pe-side">${formatChainOi(pe.oi)}</td>
+      </tr>`;
+    }
+
+    function renderChainRows(data) {
+      const tbody = document.getElementById("chainRows");
+      const rows = data.rows || [];
+      const maxPain = data.max_pain != null ? Math.round(data.max_pain) : null;
+      const spot = data.spot;
+      const step = 50;
+      if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="7" class="chain-muted" style="text-align:center">No chain rows</td></tr>';
+        renderChainTotals(data);
+        return;
+      }
+      tbody.innerHTML = rows.map(row => {
+        const ce = row.ce || {};
+        const pe = row.pe || {};
+        const classes = [];
+        if (row.is_atm) classes.push("atm-row");
+        if (maxPain != null && row.strike === maxPain) classes.push("max-pain-row");
+        if (spotStrikeMarker(spot, row.strike, step)) classes.push("spot-marker");
+        const cls = classes.join(" ");
+        return `<tr class="${cls}" data-strike="${row.strike}">
+          <td class="ce-side">${formatChainOi(ce.oi)}</td>
+          <td class="ce-side">${formatChainChg(ce.chg_pct)}</td>
+          <td class="ce-side">${formatChainNum(ce.ltp)}</td>
+          <td class="strike-col">${row.strike}</td>
+          <td class="pe-side">${formatChainNum(pe.ltp)}</td>
+          <td class="pe-side">${formatChainChg(pe.chg_pct)}</td>
+          <td class="pe-side">${formatChainOi(pe.oi)}</td>
+        </tr>`;
+      }).join("");
+
+      renderChainTotals(data);
+
+      if (chainScrollPending) {
+        chainScrollPending = false;
+        const target = tbody.querySelector("tr.atm-row") || tbody.querySelector("tr.spot-marker");
+        if (target) {
+          target.scrollIntoView({ block: "center", behavior: "instant" });
+        }
+      }
+    }
+
+    const chainTableWrap = document.getElementById("chainTableWrap");
+    if (chainTableWrap && !chainTableWrap.dataset.chartLinkReady) {
+      chainTableWrap.dataset.chartLinkReady = "1";
+      chainTableWrap.addEventListener("click", (event) => {
+        const cell = event.target.closest("td.strike-col");
+        const row = event.target.closest("tr[data-strike]");
+        if (!cell || !row || row.classList.contains("chain-total-row")) return;
+        const px = Number(row.getAttribute("data-strike"));
+        if (!Number.isFinite(px)) return;
+        const label = row.classList.contains("atm-row")
+          ? "ATM"
+          : row.classList.contains("max-pain-row")
+            ? "Max pain"
+            : "Strike";
+        dropChartPriceLine(px, label);
+      });
+    }
+
+    async function loadChainSnapshot() {
+      if (document.visibilityState === "hidden") return;
+      try {
+        const resp = await fetch("/api/chain");
+        if (!resp.ok) {
+          document.getElementById("chainMeta").textContent = "Failed to load chain";
+          return;
+        }
+        const data = await resp.json();
+        document.getElementById("chainMeta").textContent = "";
+        renderChainSummary(data);
+        renderChainRows(data);
+      } catch (_) {
+        document.getElementById("chainMeta").textContent = "Chain request failed";
+      }
+    }
+
+    function stopChainPoll() {
+      if (chainPollTimer != null) {
+        clearInterval(chainPollTimer);
+        chainPollTimer = null;
+      }
+    }
+
+    function startChainPoll() {
+      stopChainPoll();
+      chainPollTimer = setInterval(() => { loadChainSnapshot(); }, CHAIN_POLL_MS);
+    }
+
+    function syncPollersToVisibility() {
+      if (document.visibilityState === "hidden") {
+        stopChainPoll();
+        stopCandlePoll();
+        stopPaperPoll();
+        return;
+      }
+      loadChainSnapshot();
+      startChainPoll();
+      refreshNiftyCandles();
+      startCandlePoll();
+    }
+
+    document.addEventListener("visibilitychange", syncPollersToVisibility);
+
+    chainScrollPending = true;
+    loadChainSnapshot();
+    startChainPoll();
+
+    function formatOi(value) {
+      if (value == null || Number.isNaN(value)) return null;
+      return Math.round(value).toLocaleString("en-IN");
+    }
+
+    function cardSubHtml(id, feed) {
+      if (!feed) return "";
+      if ((id === "oi_day_high" || id === "oi_pct_chg") && feed.fut_oi != null) {
+        let text = `OI ${formatOi(feed.fut_oi)}`;
+        if (feed.fut_oi_day_high != null) {
+          text += ` · high ${formatOi(feed.fut_oi_day_high)}`;
+        }
+        return `<div class="card-sub">${text}</div>`;
+      }
+      if (id === "iv_day_high" && (feed.iv_day_low != null || feed.iv_day_high != null)) {
+        const bits = [];
+        if (feed.iv_day_low != null) bits.push(`Low ${Number(feed.iv_day_low).toFixed(2)}`);
+        if (feed.iv_day_high != null) bits.push(`High ${Number(feed.iv_day_high).toFixed(2)}`);
+        if (feed.iv_vs_day_low != null) bits.push(`${Number(feed.iv_vs_day_low).toFixed(1)}% of low`);
+        return `<div class="card-sub">${bits.join(" · ")}</div>`;
+      }
+      if (id === "ivp" && feed.ivp_proxy_days != null) {
+        const proxy = Number(feed.ivp_proxy_days) || 0;
+        const real = Number(feed.ivp_real_days) || 0;
+        if (real === 0 && proxy > 0) {
+          return `<div class="card-sub" title="Historical IV bootstrapped from scaled India VIX. Real EOD ATM IV replaces proxy days over time.">VIX proxy · ${proxy}d</div>`;
+        }
+        if (real > 0 && proxy > 0) {
+          return `<div class="card-sub">${real}d NSE · ${proxy}d proxy</div>`;
+        }
+        if (real > 0) {
+          return `<div class="card-sub">${real}d NSE FO</div>`;
+        }
+      }
+      if ((id === "adx" || id === "atr") && feed.adx_hint) {
+        const hint = String(feed.adx_hint);
+        const short = hint.length > 28 ? hint.slice(0, 28) + "…" : hint;
+        return `<div class="card-sub" title="${escapeHtml(hint)}">${escapeHtml(short)}</div>`;
+      }
+      return "";
+    }
+
+    function formatValue(value, id) {
+      if (value == null || Number.isNaN(value)) return "—";
+      if (id === "pcr") return value.toFixed(3);
+      if (id === "ivp" || id === "oi_pct_chg" || id === "oi_day_high") return value.toFixed(1) + "%";
+      if (id.endsWith("_chg") && id !== "vix_chg") return (value >= 0 ? "+" : "") + value.toFixed(2) + "%";
+      if (id === "vix_chg") return (value >= 0 ? "+" : "") + value.toFixed(2);
+      if (id === "ce" || id === "pe" || id === "adx" || id === "atr" || id === "iv_day_high") return value.toFixed(2);
+      if (id === "max_pain") return String(Math.round(value));
+      return Number.isInteger(value) ? String(value) : value.toFixed(2);
+    }
+
+    function updateStickyTicks(rows, now) {
+      for (const r of rows) {
+        const cur = r.value;
+        if (cur == null || Number.isNaN(cur)) continue;
+        const prev = prevValues.get(r.id);
+        if (prev !== undefined && cur !== prev) {
+          stickyTicks.set(r.id, {
+            tick: cur > prev ? "up" : "down",
+            until: now + TICK_STICKY_MS,
+          });
+        }
+        prevValues.set(r.id, cur);
+      }
+      for (const [id, sticky] of stickyTicks) {
+        if (sticky.until <= now) stickyTicks.delete(id);
+      }
+    }
+
+    function liveValueHtml(r, now) {
+      const formatted = formatValue(r.value, r.id);
+      if (formatted === "—") {
+        return `<span class="live na">${formatted}</span>`;
+      }
+
+      const sticky = stickyTicks.get(r.id);
+      const movementTick = sticky && sticky.until > now ? sticky.tick : null;
+      let tone = "neutral";
+      let arrow = "";
+
+      if (movementTick === "up") {
+        tone = "up";
+        arrow = "▲";
+      } else if (movementTick === "down") {
+        tone = "down";
+        arrow = "▼";
+      }
+
+      const mark = arrow ? `<span class="arrow">${arrow}</span>` : "";
+      return `<span class="live ${tone}">${mark}${formatted}</span>`;
+    }
+
+    function formatChgPts(value) {
+      if (value == null || Number.isNaN(value)) return { text: "—", tone: "na" };
+      const text = (value >= 0 ? "+" : "") + value.toLocaleString("en-IN", { maximumFractionDigits: 2 });
+      const tone = value > 0 ? "up" : value < 0 ? "down" : "na";
+      return { text, tone };
+    }
+
+    function formatChgPct(value) {
+      if (value == null || Number.isNaN(value)) return { text: "—", tone: "na" };
+      const text = (value >= 0 ? "+" : "") + value.toFixed(3) + "%";
+      const tone = value > 0 ? "up" : value < 0 ? "down" : "na";
+      return { text, tone };
+    }
+
+    function indexCardHtml(item) {
+      const ltp = item.ltp != null
+        ? item.ltp.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+        : "—";
+      const chgPts = formatChgPts(item.chg_pts);
+      const chg = formatChgPct(item.chg_pct);
+      const cardTone = chg.tone !== "na" ? chg.tone : chgPts.tone;
+      const name = escapeHtml(item.label || item.id || "");
+      return `<article class="watch-card ${cardTone !== "na" ? cardTone : ""}">
+        <div class="name">${name}</div>
+        <div class="ltp">${ltp}</div>
+        <div class="chg-row">
+          <span class="chg ${chgPts.tone}">${chgPts.text}</span>
+          <span class="chg ${chg.tone}">${chg.text}</span>
+        </div>
+      </article>`;
+    }
+
+    function watchGroupHtml(label, cols, items) {
+      if (!items.length) return "";
+      return `<section class="watch-group">
+        <div class="watch-group-label">${escapeHtml(label)}</div>
+        <div class="watch-group-cards cols-${cols}">${items.map(indexCardHtml).join("")}</div>
+      </section>`;
+    }
+
+    function renderIndices(indices) {
+      const strip = document.getElementById("indexStrip");
+      const items = indices && indices.length ? indices : [];
+      if (!items.length) {
+        strip.innerHTML = "";
+        return;
+      }
+      const byGroup = { index: [], fut: [], stock: [] };
+      for (const item of items) {
+        const g = item.group && byGroup[item.group] ? item.group : "index";
+        byGroup[g].push(item);
+      }
+      strip.innerHTML =
+        `<div class="watch-top">${watchGroupHtml("Indices", 5, byGroup.index)}${watchGroupHtml("Futures", 4, byGroup.fut)}</div>` +
+        watchGroupHtml("Stocks", 11, byGroup.stock);
+    }
+
+    function metricHead(row) {
+      return METRIC_HEAD[row.id] || row.label || row.id;
+    }
+
+    function renderMetricCard(r, now, feed) {
+      const tone = r.passed === true ? "pass" : r.passed === false ? "fail" : "info";
+      const sub = cardSubHtml(r.id, feed);
+      const target = r.target ? `<div class="card-target">${escapeHtml(r.target)}</div>` : "";
+      const linkPrice = r.id === "max_pain" && r.value != null ? Math.round(Number(r.value)) : null;
+      const linkAttrs = linkPrice != null
+        ? ` data-chart-price="${linkPrice}" data-chart-label="Max pain" title="Drop max pain on chart"`
+        : "";
+      return `<article class="metric-card ${tone}${linkPrice != null ? " chart-link" : ""}"${linkAttrs}>
+        <div class="card-label">${escapeHtml(metricHead(r))}</div>
+        <div class="card-value">${liveValueHtml(r, now)}</div>
+        ${sub}
+        ${target}
+      </article>`;
+    }
+
+    function renderSheet(rows, now, feed) {
+      const byId = new Map(rows.map(r => [r.id, r]));
+      const used = new Set();
+      const cells = [];
+      for (const id of CARD_ORDER) {
+        const r = byId.get(id);
+        if (!r) continue;
+        used.add(r.id);
+        cells.push(renderMetricCard(r, now, feed));
+      }
+      for (const r of rows) {
+        if (used.has(r.id)) continue;
+        cells.push(renderMetricCard(r, now, feed));
+      }
+
+      const host = document.getElementById("sheetGroups");
+      host.innerHTML = cells.length
+        ? cells.join("")
+        : '<div style="text-align:center;color:var(--muted);padding:32px">Waiting for feed…</div>';
+      host.querySelectorAll("[data-chart-price]").forEach((node) => {
+        node.addEventListener("click", () => {
+          const px = Number(node.getAttribute("data-chart-price"));
+          if (!Number.isFinite(px)) return;
+          dropChartPriceLine(px, node.getAttribute("data-chart-label") || "Level");
+        });
+      });
+    }
+
+    function updateEntryBell(evaln) {
+      const bell = document.getElementById("parityBell");
+      const tip = document.getElementById("bellGateTip");
+      if (!bell) return;
+      const ready = !!evaln.entry_ready;
+      const passed = evaln.passed ?? 0;
+      const total = evaln.gates_total ?? 0;
+      const failing = evaln.failing_gates || [];
+      const missing = evaln.missing_gates || [];
+      bell.classList.remove("green", "orange", "red");
+      if (tip) {
+        const gated = (evaln.rows || []).filter((row) => row.gates_entry);
+        const items = gated.length
+          ? gated.map((row) => {
+              const label = String(row.label || row.id || "");
+              let state = "pass";
+              let mark = "ok";
+              if (failing.includes(label) || row.passed === false) {
+                state = "fail";
+                mark = "fail";
+              } else if (missing.includes(label) || row.passed == null) {
+                state = "miss";
+                mark = "—";
+              }
+              return `<li class="${state}"><span>${escapeHtml(label)}</span><span class="gate-state">${mark}</span></li>`;
+            })
+          : [
+              ...failing.map((name) => `<li class="fail"><span>${escapeHtml(name)}</span><span class="gate-state">fail</span></li>`),
+              ...missing.map((name) => `<li class="miss"><span>${escapeHtml(name)}</span><span class="gate-state">—</span></li>`),
+            ];
+        const head = ready
+          ? `Notebook ${passed}/${total} · all passing`
+          : `Notebook ${passed}/${total}`;
+        const body = items.length
+          ? `<ul>${items.join("")}</ul>`
+          : `<ul><li class="miss"><span>Waiting for notebook gates</span><span class="gate-state">—</span></li></ul>`;
+        tip.innerHTML = `<div class="bell-gate-tip-head">${escapeHtml(head)}</div>${body}`;
+      }
+      bell.removeAttribute("title");
+      if (ready) {
+        bell.classList.add("green");
+        bell.setAttribute("aria-label", `Entry ready ${passed}/${total}`);
+        if (lastParityState !== "ready") playTempleBellTwice();
+        lastParityState = "ready";
+        return;
+      }
+      const parts = [];
+      if (missing.length) parts.push(`Missing: ${missing.join(", ")}`);
+      if (failing.length) parts.push(`Failing: ${failing.join(", ")}`);
+      bell.setAttribute(
+        "aria-label",
+        parts.length
+          ? `Entry not ready ${passed}/${total}. ${parts.join(". ")}`
+          : `Entry not ready ${passed}/${total}`,
+      );
+      lastParityState = "idle";
+    }
+
+    function parityAudioContext() {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return null;
+      if (!parityAudioCtx) parityAudioCtx = new Ctx();
+      if (parityAudioCtx.state === "suspended") parityAudioCtx.resume();
+      return parityAudioCtx;
+    }
+
+    function strikeTempleBell(ctx, start) {
+      const master = ctx.createGain();
+      master.gain.setValueAtTime(0.0001, start);
+      master.gain.exponentialRampToValueAtTime(0.7, start + 0.014);
+      master.gain.exponentialRampToValueAtTime(0.22, start + 0.22);
+      master.gain.exponentialRampToValueAtTime(0.0001, start + 2.8);
+      master.connect(ctx.destination);
+
+      const noiseLen = Math.floor(ctx.sampleRate * 0.05);
+      const noiseBuf = ctx.createBuffer(1, noiseLen, ctx.sampleRate);
+      const noiseData = noiseBuf.getChannelData(0);
+      for (let i = 0; i < noiseLen; i += 1) {
+        noiseData[i] = (Math.random() * 2 - 1) * (1 - i / noiseLen);
+      }
+      const noise = ctx.createBufferSource();
+      noise.buffer = noiseBuf;
+      const noiseFilter = ctx.createBiquadFilter();
+      noiseFilter.type = "bandpass";
+      noiseFilter.frequency.setValueAtTime(1600, start);
+      noiseFilter.Q.setValueAtTime(1.4, start);
+      const noiseGain = ctx.createGain();
+      noiseGain.gain.setValueAtTime(0.28, start);
+      noiseGain.gain.exponentialRampToValueAtTime(0.0001, start + 0.09);
+      noise.connect(noiseFilter);
+      noiseFilter.connect(noiseGain);
+      noiseGain.connect(master);
+      noise.start(start);
+      noise.stop(start + 0.1);
+
+      const partials = [
+        [196.0, 1.00, 3.1],
+        [392.4, 0.42, 2.5],
+        [511.0, 0.26, 2.0],
+        [784.0, 0.14, 1.5],
+        [990.0, 0.09, 1.15],
+        [1176, 0.06, 0.85],
+        [1568, 0.035, 0.55],
+      ];
+      partials.forEach(([freq, amp, decay]) => {
+        const osc = ctx.createOscillator();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(freq, start);
+        osc.frequency.exponentialRampToValueAtTime(freq * 0.986, start + decay);
+        const gain = ctx.createGain();
+        gain.gain.setValueAtTime(0.0001, start);
+        gain.gain.exponentialRampToValueAtTime(amp, start + 0.012);
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + decay);
+        osc.connect(gain);
+        gain.connect(master);
+        osc.start(start);
+        osc.stop(start + decay + 0.04);
+      });
+    }
+
+    function playTempleBellTwice() {
+      const ctx = parityAudioContext();
+      if (!ctx) return;
+      const fire = () => {
+        if (ctx.state !== "running") {
+          pendingParityBell = true;
+          return;
+        }
+        pendingParityBell = false;
+        const start = ctx.currentTime + 0.03;
+        if (start < (playTempleBellTwice._until || 0)) return;
+        playTempleBellTwice._until = start + PARITY_BELL_MIN_INTERVAL_S;
+        strikeTempleBell(ctx, start);
+        strikeTempleBell(ctx, start + PARITY_BELL_PAIR_GAP_S);
+      };
+      if (ctx.state === "running") {
+        fire();
+        return;
+      }
+      pendingParityBell = true;
+      ctx.resume().then(fire).catch(() => {});
+    }
+
+    function unlockParityAudio() {
+      const ctx = parityAudioContext();
+      if (!ctx) return;
+      ctx.resume().then(() => {
+        if (pendingParityBell) playTempleBellTwice();
+      }).catch(() => {});
+    }
+
+    function render(frame) {
+      renderIndices(frame.indices);
+      document.getElementById("atm").textContent = frame.atm_strike ?? "—";
+      const atmWrap = document.querySelector(".header-atm");
+      if (atmWrap) {
+        atmWrap.title = frame.atm_strike != null ? "Drop ATM on chart" : "ATM";
+        atmWrap.dataset.chartPrice = frame.atm_strike != null ? String(frame.atm_strike) : "";
+      }
+      const legs = [frame.ce_symbol, frame.pe_symbol]
+        .filter(Boolean)
+        .map(s => String(s).replace(/^NFO:/, ""))
+        .join(" · ");
+      document.getElementById("legs").textContent = legs;
+      document.getElementById("legs").title = [frame.ce_symbol, frame.pe_symbol].filter(Boolean).join(" · ");
+      const t = frame.ticker || {};
+      const age = t.last_tick_age_s != null ? t.last_tick_age_s + "s" : "—";
+      document.getElementById("feedPath").textContent =
+        `${t.path || (t.connected ? "ws" : "…")} · tick ${age}`;
+
+      if (frame.computed_at_ms) {
+        const tsEl = document.getElementById("timestamp");
+        tsEl.textContent = formatLiveTimestamp(frame.computed_at_ms);
+        tsEl.title = new Date(frame.computed_at_ms).toISOString();
+      }
+
+      const evaln = frame.evaluation || {};
+      const badge = document.getElementById("entryBadge");
+      const gateTotal = evaln.gates_total ?? evaln.evaluable ?? 0;
+      const gateLabel = gateTotal > 0
+        ? ` (${evaln.passed ?? 0}/${gateTotal})`
+        : "";
+      function gateStatusTitle() {
+        const parts = [];
+        if ((evaln.missing_gates || []).length) {
+          parts.push(`Missing data: ${evaln.missing_gates.join(", ")}`);
+        }
+        if ((evaln.failing_gates || []).length) {
+          parts.push(`Failing: ${evaln.failing_gates.join(", ")}`);
+        }
+        return parts.length ? parts.join(" · ") : "One or more gated entry checks are failing or missing data";
+      }
+      if (evaln.entry_ready) {
+        badge.textContent = `ENTRY READY${gateLabel}`;
+        badge.className = "badge ready";
+        badge.title = "All gated entry checks are passing";
+      } else {
+        badge.textContent = `NOT READY${gateLabel}`;
+        badge.className = "badge wait";
+        badge.title = gateStatusTitle();
+      }
+
+      updateEntryBell(evaln);
+
+      const warns = frame.live_warnings || [];
+      document.getElementById("warnings").innerHTML = warns.length
+        ? warns.map(w => `<div class="warn">${escapeHtml(w)}</div>`).join("") : "";
+
+      const rows = evaln.rows || [];
+      const now = Date.now();
+      updateStickyTicks(rows, now);
+      renderSheet(rows, now, frame.feed || {});
+      if (Array.isArray(frame.live_bars) && frame.live_bars.length) {
+        applyLiveCandleBars(frame.live_bars);
+      }
+    }
+
+    async function connect() {
+      while (true) {
+        try {
+          const resp = await fetch("/stream");
+          const reader = resp.body.getReader();
+          const dec = new TextDecoder();
+          let buf = "";
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buf += dec.decode(value, { stream: true });
+            const parts = buf.split("\n\n");
+            buf = parts.pop() || "";
+            for (const chunk of parts) {
+              const line = chunk.split("\n").find(l => l.startsWith("data: "));
+              if (!line) continue;
+              try { render(JSON.parse(line.slice(6))); } catch (_) {}
+            }
+          }
+        } catch (_) {}
+        await new Promise(r => setTimeout(r, 2000));
+      }
+    }
+    renderChartToolbar();
+    renderDrawBar();
+    const atmWrap = document.querySelector(".header-atm");
+    if (atmWrap && !atmWrap.dataset.chartLinkReady) {
+      atmWrap.dataset.chartLinkReady = "1";
+      atmWrap.addEventListener("click", () => {
+        const px = Number(atmWrap.dataset.chartPrice || document.getElementById("atm")?.textContent);
+        if (!Number.isFinite(px)) return;
+        dropChartPriceLine(px, "ATM");
+      });
+    }
+    refreshNiftyCandles();
+    startCandlePoll();
+    connect();
+  </script>
+</body>
+</html>

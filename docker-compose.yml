@@ -1,0 +1,30 @@
+services:
+  atlas-lite:
+    build: .
+    container_name: atlas-lite
+    restart: unless-stopped
+    ports:
+      - "3000:8090"
+    environment:
+      ATLAS_LITE_LOG_LEVEL: WARNING
+      ATLAS_LITE_RECORD: "1"
+      ATLAS_LITE_RECORD_START: "09:00"
+      ATLAS_LITE_RECORD_END: "15:35"
+      ATLAS_LITE_RECORD_WEEKDAYS_ONLY: "1"
+      KITE_CREDENTIALS_PATH: /secrets/kite_credentials
+    volumes:
+      - ./kite_credentials:/secrets/kite_credentials
+      - ./data:/app/data
+      - ./static:/app/static:ro
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health')",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
