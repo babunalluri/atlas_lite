@@ -66,8 +66,11 @@ from atlas_lite.iv_history import (
 )
 from atlas_lite.minute_bars import (
     MinuteBarBuilder,
+    bars_from_kite_candles,
     in_adx_seed_window,
+    kite_adx_window_start,
     load_bars,
+    ohlc_from_bar_dicts,
     save_bars,
 )
 from atlas_lite.recorder import SheetRecorder, is_record_session, record_dir, record_enabled
@@ -86,6 +89,9 @@ MAINTENANCE_LOOP_S = 60.0
 IV_GREEKS_REFRESH_S = 2.0
 # Pause 403 recoveries so a dead token does not hit Kite refresh on every 2s quote.
 AUTH_RECOVER_COOLDOWN_S = 30.0
+# ADX/DMI parity with Kite (verified Sep 2026): Kite REST closed 1m bars + WS forming
+# minute, Wilder DMI(14) in metrics.wilder_dmi_series. Do not change bar source,
+# refresh cadence, or compute path without re-verifying against Kite 1m DMI.
 ADX_REST_DAYS = 3
 ADX_SYMBOL = NIFTY_SYMBOL
 NFO_INSTRUMENTS_FILE = "nfo_instruments.csv"
@@ -99,6 +105,8 @@ MIN_BARS_FOR_ADX = 29
 ADX_TAIL_BARS = 500
 # Recompute ADX/ATR from the forming 1m bar at the SSE cadence.
 ADX_LIVE_REFRESH_S = STREAM_INTERVAL_MS / 1000.0
+# Refresh Kite REST ADX bars (3-day window) often enough to track the forming minute.
+ADX_KITE_FETCH_S = 5.0
 # WS ticks this fresh count as healthy even if REST auth is sticky-failed.
 HEALTH_TICK_MAX_AGE_S = 90.0
 
@@ -149,6 +157,8 @@ class FeedEngine:
     _adx_warnings: list[str] = field(default_factory=list, repr=False)
     _adx_tail_task: asyncio.Task[Any] | None = field(default=None, repr=False)
     _adx_live_at: float = field(default=0.0, repr=False)
+    _adx_kite_fetch_at: float = field(default=0.0, repr=False)
+    _kite_adx_bars: list[dict[str, Any]] = field(default_factory=list, repr=False)
     _credentials_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     _last_kite_auth_attempt_at: float = field(default=0.0, repr=False)
     _paper: PaperStraddle | None = field(default=None, repr=False)
@@ -504,6 +514,40 @@ class FeedEngine:
             return None
         return str(self._bar_builder.bars[-1].get("t") or "")[:10] or None
 
+    def _apply_kite_bar_authority(
+        self,
+        candles: list[list[Any]],
+        *,
+        window_floor: str,
+        tail_from: str | None = None,
+    ) -> tuple[int, int]:
+        """Merge Kite OHLC then drop orphans so ADX/ATR match Kite charts."""
+        merged = self._bar_builder.merge_kite_candles(candles)
+        if tail_from:
+            synced = self._bar_builder.drop_closed_bars_not_in_kite(
+                candles,
+                range_from=tail_from,
+            )
+        else:
+            synced = self._bar_builder.sync_closed_bars_from_kite(
+                candles,
+                window_floor=window_floor,
+            )
+        trimmed = self._trim_bars_to_kite_window()
+        return merged, synced + trimmed
+
+    def _trim_bars_to_kite_window(self, when: datetime | None = None) -> int:
+        """Keep only bars inside the same rolling window as Kite historical fetches."""
+        floor = kite_adx_window_start(when or datetime.now(IST), days=ADX_REST_DAYS)
+        dropped = self._bar_builder.drop_bars_before(floor)
+        if dropped:
+            self._log.info("ADX bars trimmed before %s dropped=%d", floor, dropped)
+        return dropped
+
+    def _rebuild_kite_adx_bars(self, candles: list[list[Any]]) -> None:
+        """ADX/ATR use Kite REST bars only — never WS tick-built OHLC."""
+        self._kite_adx_bars = bars_from_kite_candles(candles, include_forming=True)
+
     def _adx_bars_fresh(self) -> bool:
         if len(self._bar_builder.bars) < MIN_BARS_FOR_ADX:
             return False
@@ -542,7 +586,8 @@ class FeedEngine:
         live_sv = self._bar_builder._session_vol
         live_oi = self._bar_builder._oi
         builder = MinuteBarBuilder(symbol=ADX_SYMBOL)
-        builder.load_candles(candles)
+        floor = kite_adx_window_start(now, days=ADX_REST_DAYS)
+        builder.sync_closed_bars_from_kite(candles, window_floor=floor)
         if live_key and live_c is not None and live_key > (builder.last_bar_minute() or ""):
             builder._current_key = live_key
             builder._open = live_o
@@ -554,6 +599,7 @@ class FeedEngine:
             builder._oi = live_oi
         self._bar_builder = builder
         self._bar_builder.drop_non_session_bars()
+        self._rebuild_kite_adx_bars(candles)
         await self._attach_fut_volume(frm, to)
         self._adx_bars_day = today
         save_bars(self.data_dir / MINUTE_BARS_FILE, self._bar_builder)
@@ -568,13 +614,17 @@ class FeedEngine:
         # One successful Kite historical seed per IST day.
         if self._adx_kite_seed_day == today:
             dropped = self._bar_builder.drop_non_session_bars()
+            trimmed = self._trim_bars_to_kite_window()
             self._adx_bars_day = today
+            if dropped or trimmed:
+                save_bars(self.data_dir / MINUTE_BARS_FILE, self._bar_builder)
             self._log.info(
-                "ADX bars cache hit bars=%d day=%s kite_seed=%s dropped_off_session=%d",
+                "ADX bars cache hit bars=%d day=%s kite_seed=%s dropped_off_session=%d trimmed=%d",
                 self._bar_builder.bar_count(),
                 self._adx_bars_day,
                 self._adx_kite_seed_day,
                 dropped,
+                trimmed,
             )
             return
         if not in_adx_seed_window(datetime.now(IST)):
@@ -649,6 +699,13 @@ class FeedEngine:
             return
         loop.create_task(asyncio.to_thread(save_bars, path, builder))
 
+    def _schedule_kite_adx_refresh(self) -> None:
+        now = time.monotonic()
+        if now - self._adx_kite_fetch_at < ADX_KITE_FETCH_S:
+            return
+        self._adx_kite_fetch_at = now
+        self._schedule_adx_tail_refresh()
+
     def _handle_tick(self, symbol: str, row: dict[str, Any]) -> None:
         if self.universe is not None and symbol == self.universe.fut_symbol:
             self._bar_builder.ingest_volume(quote_volume(row))
@@ -667,6 +724,7 @@ class FeedEngine:
                 if now - self._adx_live_at >= ADX_LIVE_REFRESH_S:
                     self._adx_live_at = now
                     self._refresh_adx_from_bars(purge=False)
+                self._schedule_kite_adx_refresh()
 
         if symbol != NIFTY_SYMBOL or self.universe is None:
             return
@@ -727,6 +785,48 @@ class FeedEngine:
             out.append(entry)
         return out
 
+    def _kite_adx_series_bars(self) -> list[dict[str, Any]]:
+        """Kite REST history + WS tick OHLC on the forming minute (matches Kite app).
+
+        LOCKED: final Kite-parity bar series for ADX/ATR/DMI — do not alter.
+        """
+        if not self._kite_adx_bars:
+            return self._bar_builder.chart_bars()
+        bars = [dict(b) for b in self._kite_adx_bars]
+        live_tail = self._bar_builder.chart_bars()
+        if not live_tail:
+            return bars
+        live = dict(live_tail[-1])
+        live_ts = str(live.get("t") or "")
+        if not live_ts:
+            return bars
+        if bars and bars[-1]["t"] == live_ts:
+            bars[-1] = live
+        elif not bars or live_ts > bars[-1]["t"]:
+            bars.append(live)
+        return bars
+
+    def _bars_for_chart(self, limit: int) -> list[dict[str, Any]]:
+        """Bars for chart + DMI (Kite REST closed, WS forming)."""
+        return self._kite_adx_series_bars()[-max(1, limit) :]
+
+    def _bar_dict_to_candle(self, bar: dict[str, Any]) -> dict[str, Any] | None:
+        try:
+            t = datetime.strptime(str(bar.get("t") or "")[:16], "%Y-%m-%d %H:%M").replace(
+                tzinfo=IST
+            )
+        except ValueError:
+            return None
+        return {
+            "time": int(t.timestamp()),
+            "open": float(bar["o"]),
+            "high": float(bar["h"]),
+            "low": float(bar["l"]),
+            "close": float(bar["c"]),
+            "volume": float(bar.get("v") or 0),
+            "oi": float(bar.get("oi") or 0),
+        }
+
     def nifty_candles(
         self,
         limit: int = 800,
@@ -738,26 +838,40 @@ class FeedEngine:
         only bars with time >= since so the forming candle can update without
         re-sending the full window.
         """
-        raw = self._bar_builder.chart_bars()[-max(1, limit) :]
+        from atlas_lite.metrics import wilder_dmi_series
+
+        series = self._kite_adx_series_bars()
+        raw = series[-max(1, limit) :]
         bars: list[dict[str, Any]] = []
         for bar in raw:
-            try:
-                t = datetime.strptime(str(bar.get("t") or "")[:16], "%Y-%m-%d %H:%M").replace(
-                    tzinfo=IST
-                )
-            except ValueError:
-                continue
-            bars.append(
-                {
-                    "time": int(t.timestamp()),
-                    "open": float(bar["o"]),
-                    "high": float(bar["h"]),
-                    "low": float(bar["l"]),
-                    "close": float(bar["c"]),
-                    "volume": float(bar.get("v") or 0),
-                    "oi": float(bar.get("oi") or 0),
-                }
-            )
+            candle = self._bar_dict_to_candle(bar)
+            if candle is not None:
+                bars.append(candle)
+        all_candles: list[dict[str, Any]] = []
+        for bar in series:
+            candle = self._bar_dict_to_candle(bar)
+            if candle is not None:
+                all_candles.append(candle)
+        if all_candles:
+            highs = [float(b["high"]) for b in all_candles]
+            lows = [float(b["low"]) for b in all_candles]
+            closes = [float(b["close"]) for b in all_candles]
+            pdi, mdi, adx = wilder_dmi_series(highs, lows, closes)
+            dmi_by_time: dict[int, dict[str, float]] = {}
+            for idx, candle in enumerate(all_candles):
+                if adx[idx] is None:
+                    continue
+                entry: dict[str, float] = {"adx": float(adx[idx])}
+                if pdi[idx] is not None:
+                    entry["pdi"] = float(pdi[idx])
+                if mdi[idx] is not None:
+                    entry["mdi"] = float(mdi[idx])
+                dmi_by_time[int(candle["time"])] = entry
+            for candle in bars:
+                dmi = dmi_by_time.get(int(candle["time"]))
+                if not dmi:
+                    continue
+                candle.update(dmi)
         delta = since is not None
         if delta:
             bars = [b for b in bars if int(b["time"]) >= int(since)]
@@ -829,20 +943,33 @@ class FeedEngine:
         if not in_adx_seed_window(now):
             self._refresh_adx_from_bars()
             return
-        frm = (now - timedelta(minutes=tail + 5)).strftime("%Y-%m-%d %H:%M:%S")
+        frm_tail = (now - timedelta(minutes=tail + 5)).strftime("%Y-%m-%d %H:%M:%S")
+        frm_full = (now - timedelta(days=ADX_REST_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
         to = now.strftime("%Y-%m-%d %H:%M:%S")
+        floor = kite_adx_window_start(now, days=ADX_REST_DAYS)
         try:
             candles = await self.rest.historical_minute(
                 token,
-                from_date=frm,
+                from_date=frm_full,
                 to_date=to,
             )
             if candles:
-                updated = self._bar_builder.merge_kite_candles(candles)
-                vol_updated = await self._attach_fut_volume(frm, to)
-                if updated or vol_updated:
+                self._rebuild_kite_adx_bars(candles)
+                merged, synced = self._apply_kite_bar_authority(
+                    candles,
+                    window_floor=floor,
+                    tail_from=frm_tail[:16],
+                )
+                vol_updated = await self._attach_fut_volume(frm_tail, to)
+                if merged or synced or vol_updated:
                     self._persist_bars_async()
-                    self._log.info("ADX tail refreshed from Kite bars=%d vol=%d", updated, vol_updated)
+                    self._log.info(
+                        "ADX tail refreshed from Kite merged=%d synced=%d vol=%d adx_bars=%d",
+                        merged,
+                        synced,
+                        vol_updated,
+                        len(self._kite_adx_bars),
+                    )
                 # Tail success means historical API is healthy — count as today's seed
                 # so we don't thrash a full 3-day reseed every maintenance cycle.
                 if self._adx_kite_seed_day != self._today() and self._adx_bars_fresh():
@@ -944,20 +1071,17 @@ class FeedEngine:
             await asyncio.sleep(MAINTENANCE_LOOP_S)
 
     def _refresh_adx_from_bars(self, *, purge: bool = True) -> None:
-        """ADX/ATR from cash-session 1m bars; include forming minute to match live Kite."""
+        """ADX/ATR from Kite REST 1m bars (matches Kite chart; WS bars are chart-only)."""
         if purge:
             self._bar_builder.drop_non_session_bars()
-        # Include in-progress minute — Kite chart ADX updates continuously.
-        highs, lows, closes = self._bar_builder.ohlc_series(
-            closed_only=False,
-            session_only=True,
-        )
+        series = self._kite_adx_series_bars()
+        highs, lows, closes = ohlc_from_bar_dicts(series)
         if len(closes) < MIN_BARS_FOR_ADX:
             return
         adx = compute_adx(highs, lows, closes)
         atr = compute_atr(highs, lows, closes)
         bar_count = len(closes)
-        hint = f"{ADX_SYMBOL} 1m · {bar_count} session bars"
+        hint = f"{ADX_SYMBOL} 1m · {bar_count} bars · Kite+live"
         changed = False
         if adx is not None and adx != self.adx:
             self.adx = adx

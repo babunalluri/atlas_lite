@@ -1834,6 +1834,10 @@
     let niftyChartKind = "candle";
     let niftyInterval = 1;
     let niftyRawBars = [];
+    // LOCKED: server DMI from /api/candles (Kite-parity). Chart must not recalc ADX client-side.
+    let serverDmiByTime = new Map();
+    let latestFeedAdx = null;
+    let latestFeedAtr = null;
     let niftyLastBarTime = null;
     let candlePollTimer = null;
     let paperPollTimer = null;
@@ -2108,6 +2112,9 @@
         close: bar.close,
         volume: barVolume(bar),
         oi: barOi(bar),
+        adx: bar.adx,
+        pdi: bar.pdi,
+        mdi: bar.mdi,
       };
     }
 
@@ -2117,6 +2124,30 @@
       cur.close = bar.close;
       cur.volume += barVolume(bar);
       cur.oi = barOi(bar);
+      if (bar.adx != null) cur.adx = bar.adx;
+      if (bar.pdi != null) cur.pdi = bar.pdi;
+      if (bar.mdi != null) cur.mdi = bar.mdi;
+    }
+
+    function syncServerDmiMap(bars) {
+      serverDmiByTime = new Map();
+      for (const bar of bars || []) {
+        if (bar == null || bar.time == null) continue;
+        if (bar.adx == null && bar.pdi == null && bar.mdi == null) continue;
+        serverDmiByTime.set(Number(bar.time), {
+          pdi: bar.pdi ?? null,
+          mdi: bar.mdi ?? null,
+          adx: bar.adx ?? null,
+        });
+      }
+    }
+
+    function dmiLookupKey(tsMs) {
+      const t = Math.floor(Number(tsMs) / 1000);
+      if (!niftyInterval || niftyInterval <= 1) return t;
+      const bucket = niftyInterval * 60;
+      const bucketStart = Math.floor(t / bucket) * bucket;
+      return bucketStart + (niftyInterval - 1) * 60;
     }
 
     function aggregateBars(bars, minutes) {
@@ -2168,6 +2199,9 @@
         close: b.close,
         volume: barVolume(b),
         oi: barOi(b),
+        pdi: b.pdi,
+        mdi: b.mdi,
+        adx: b.adx,
       }));
     }
 
@@ -2222,6 +2256,11 @@
         });
         if (parts.length) {
           html += `<br>${parts.join("  ·  ")}`;
+        }
+      } else if (latestFeedAdx != null && Number.isFinite(Number(latestFeedAdx))) {
+        html += `<br><b>ADX</b> ${Number(latestFeedAdx).toFixed(2)}`;
+        if (latestFeedAtr != null && Number.isFinite(Number(latestFeedAtr))) {
+          html += `  ·  <b>ATR</b> ${Number(latestFeedAtr).toFixed(2)}`;
         }
       }
 
@@ -2488,6 +2527,7 @@
         });
       } catch (_) {}
       try {
+        // LOCKED: DMI display reads serverDmiByTime only (see feed_engine nifty_candles).
         klinecharts.registerIndicator({
           name: "DMI",
           shortName: "DMI",
@@ -2506,6 +2546,17 @@
             ],
           },
           calc: (dataList, indicator) => {
+            if (serverDmiByTime.size > 0) {
+              return dataList.map((k) => {
+                const hit = serverDmiByTime.get(dmiLookupKey(k.timestamp));
+                if (!hit || hit.adx == null) return {};
+                return {
+                  pdi: hit.pdi != null ? Number(hit.pdi) : undefined,
+                  mdi: hit.mdi != null ? Number(hit.mdi) : undefined,
+                  adx: Number(hit.adx),
+                };
+              });
+            }
             const period = Number(indicator.calcParams[0]) || 14;
             let sumTr = 0, sumDmPlus = 0, sumDmMinus = 0;
             let trSm = 0, dmPlusSm = 0, dmMinusSm = 0;
@@ -3197,15 +3248,19 @@
           || prev.low !== bar.low
           || prev.close !== bar.close
           || prev.volume !== bar.volume
+          || prev.adx !== bar.adx
+          || prev.pdi !== bar.pdi
+          || prev.mdi !== bar.mdi
         ) {
           changed = true;
         }
-        byTime.set(bar.time, bar);
+        byTime.set(bar.time, { ...bar });
       }
       if (!changed) return false;
       niftyRawBars = Array.from(byTime.values()).sort((a, b) => a.time - b.time);
       if (niftyRawBars.length > 2000) niftyRawBars = niftyRawBars.slice(-2000);
       niftyLastBarTime = niftyRawBars[niftyRawBars.length - 1].time;
+      syncServerDmiMap(niftyRawBars);
       return true;
     }
 
@@ -3795,6 +3850,7 @@
           if (niftyRawBars.length) {
             niftyLastBarTime = niftyRawBars[niftyRawBars.length - 1].time;
           }
+          syncServerDmiMap(niftyRawBars);
           paintChart();
         }
       } catch (_) {
@@ -4932,6 +4988,8 @@
 
       const rows = evaln.rows || [];
       const now = Date.now();
+      latestFeedAdx = frame.feed?.adx ?? null;
+      latestFeedAtr = frame.feed?.atr ?? null;
       updateStickyTicks(rows, now);
       renderSheet(rows, now, frame.feed || {});
       if (Array.isArray(frame.live_bars) && frame.live_bars.length) {

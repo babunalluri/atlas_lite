@@ -44,15 +44,23 @@ def compute_atr(
     return round(atr, 2)
 
 
-def compute_adx(
+def wilder_dmi_series(
     highs: list[float],
     lows: list[float],
     closes: list[float],
     period: int = 14,
-) -> float | None:
+) -> tuple[list[float | None], list[float | None], list[float | None]]:
+    """Wilder +DI, -DI, ADX per bar (aligned with Kite chart DMI).
+
+    LOCKED: matches Kite DMI(14,14) on NIFTY 1m — do not change smoothing or period.
+    """
     n = min(len(highs), len(lows), len(closes))
+    pdi_out: list[float | None] = [None] * n
+    mdi_out: list[float | None] = [None] * n
+    adx_out: list[float | None] = [None] * n
     if n < period * 2 + 1:
-        return None
+        return pdi_out, mdi_out, adx_out
+
     trs: list[float] = []
     plus_dm: list[float] = []
     minus_dm: list[float] = []
@@ -66,31 +74,50 @@ def compute_adx(
         plus_dm.append(up if up > down and up > 0 else 0.0)
         minus_dm.append(down if down > up and down > 0 else 0.0)
     if len(trs) < period:
-        return None
+        return pdi_out, mdi_out, adx_out
 
     atr = sum(trs[:period])
     plus = sum(plus_dm[:period])
     minus = sum(minus_dm[:period])
     dx_values: list[float] = []
+    adx: float | None = None
     for i in range(period - 1, len(trs)):
         if i >= period:
             atr = wilder_smooth(atr, trs[i], period)
             plus = wilder_smooth(plus, plus_dm[i], period)
             minus = wilder_smooth(minus, minus_dm[i], period)
+        bar_idx = i + 1
         if atr <= 0:
-            dx_values.append(0.0)
-            continue
-        plus_di = 100.0 * plus / atr
-        minus_di = 100.0 * minus / atr
-        denom = plus_di + minus_di
-        dx_values.append(0.0 if denom <= 0 else 100.0 * abs(plus_di - minus_di) / denom)
+            dx = 0.0
+            pdi_out[bar_idx] = 0.0
+            mdi_out[bar_idx] = 0.0
+        else:
+            plus_di = 100.0 * plus / atr
+            minus_di = 100.0 * minus / atr
+            pdi_out[bar_idx] = round(plus_di, 2)
+            mdi_out[bar_idx] = round(minus_di, 2)
+            denom = plus_di + minus_di
+            dx = 0.0 if denom <= 0 else 100.0 * abs(plus_di - minus_di) / denom
+        dx_values.append(dx)
+        if len(dx_values) >= period:
+            if len(dx_values) == period:
+                adx = sum(dx_values[:period]) / period
+            else:
+                assert adx is not None
+                adx = (adx * (period - 1) + dx) / period
+            adx_out[bar_idx] = round(adx, 2)
+    return pdi_out, mdi_out, adx_out
 
-    if len(dx_values) < period:
-        return None
-    adx = sum(dx_values[:period]) / period
-    for dx in dx_values[period:]:
-        adx = (adx * (period - 1) + dx) / period
-    return round(adx, 2)
+
+def compute_adx(
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    period: int = 14,
+) -> float | None:
+    _, _, adx_series = wilder_dmi_series(highs, lows, closes, period)
+    valid = [v for v in adx_series if v is not None]
+    return valid[-1] if valid else None
 
 
 def pick_float(row: dict[str, Any] | None, *keys: str) -> float | None:

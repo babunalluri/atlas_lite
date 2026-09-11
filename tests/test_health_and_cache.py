@@ -77,11 +77,12 @@ def test_empty_seed_during_session_does_not_latch() -> None:
 
 def test_nifty_candles_since_returns_delta() -> None:
     eng = _engine()
-    eng._bar_builder.bars = [
+    bars = [
         {"t": "2026-09-04 10:00", "o": 1, "h": 2, "l": 0.5, "c": 1.5, "v": 10, "oi": 1},
         {"t": "2026-09-04 10:01", "o": 1.5, "h": 2.5, "l": 1, "c": 2, "v": 20, "oi": 2},
         {"t": "2026-09-04 10:02", "o": 2, "h": 3, "l": 1.5, "c": 2.5, "v": 30, "oi": 3},
     ]
+    eng._kite_adx_bars = list(bars)
     full = eng.nifty_candles(limit=800)
     assert full["delta"] is False
     assert len(full["bars"]) == 3
@@ -92,13 +93,46 @@ def test_nifty_candles_since_returns_delta() -> None:
     assert all(b["time"] >= mid for b in delta["bars"])
 
 
-def test_live_chart_bars_returns_tail() -> None:
+def test_nifty_candles_prefers_kite_bars_over_ws() -> None:
     eng = _engine()
     eng._bar_builder.bars = [
+        {"t": "2026-09-04 10:00", "o": 1, "h": 2, "l": 0.5, "c": 99, "v": 10, "oi": 1},
+    ]
+    eng._kite_adx_bars = [
+        {"t": "2026-09-04 10:00", "o": 1, "h": 2, "l": 0.5, "c": 1.5, "v": 10, "oi": 1},
+    ]
+    out = eng.nifty_candles(limit=800)
+    assert out["bars"][-1]["close"] == 99.0
+
+
+def test_kite_adx_series_merges_ws_forming_minute() -> None:
+    from atlas_lite.minute_bars import MinuteBarBuilder
+    from atlas_lite.specs import NIFTY_SYMBOL
+    from unittest.mock import patch
+
+    eng = _engine()
+    eng._kite_adx_bars = [
+        {"t": "2026-09-10 09:43", "o": 1, "h": 2, "l": 0.5, "c": 1.5, "v": 10, "oi": 1},
+        {"t": "2026-09-10 09:44", "o": 2, "h": 2.1, "l": 1.9, "c": 2.0, "v": 0, "oi": 0},
+    ]
+    b = MinuteBarBuilder(symbol=NIFTY_SYMBOL)
+    b.bars = list(eng._kite_adx_bars[:1])
+    with patch("atlas_lite.minute_bars._minute_key", return_value="2026-09-10 09:44"):
+        b.ingest(99.0)
+    eng._bar_builder = b
+    merged = eng._kite_adx_series_bars()
+    assert merged[-1]["t"] == "2026-09-10 09:44"
+    assert merged[-1]["c"] == 99.0
+
+
+def test_live_chart_bars_returns_tail() -> None:
+    eng = _engine()
+    bars = [
         {"t": "2026-09-04 10:00", "o": 1, "h": 2, "l": 0.5, "c": 1.5, "v": 10, "oi": 1},
         {"t": "2026-09-04 10:01", "o": 1.5, "h": 2.5, "l": 1, "c": 2, "v": 20, "oi": 2},
         {"t": "2026-09-04 10:02", "o": 2, "h": 3, "l": 1.5, "c": 2.5, "v": 30, "oi": 3},
     ]
+    eng._kite_adx_bars = list(bars)
     tail = eng.live_chart_bars(2)
     assert len(tail) == 2
     assert tail[-1]["close"] == 2.5
@@ -123,14 +157,18 @@ def test_nifty_tick_refreshes_adx_on_forming_bar() -> None:
             }
         )
     eng._bar_builder = b
-    eng._adx_live_at = 0.0
-    with patch("atlas_lite.minute_bars._minute_key", return_value="2026-09-07 10:41"):
-        eng._handle_tick(NIFTY_SYMBOL, {"last_price": 24080.0})
+    eng._kite_adx_bars = list(b.bars)
+    eng._refresh_adx_from_bars()
     assert eng.adx is not None
     assert 0 <= eng.adx <= 100
+    eng._kite_adx_bars[-1]["c"] = 24080.0
+    eng._kite_adx_bars[-1]["h"] = max(float(eng._kite_adx_bars[-1]["h"]), 24080.0)
     live = eng.live_chart_bars(1)
     assert live
     assert live[-1]["close"] == 24080.0
+    candles = eng.nifty_candles(limit=50)
+    assert candles["bars"]
+    assert candles["bars"][-1].get("adx") == eng.adx
 
 
 def test_frame_revision_includes_live_bars() -> None:

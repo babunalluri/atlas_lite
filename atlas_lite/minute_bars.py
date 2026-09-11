@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -37,6 +37,55 @@ def _candle_oi(candle: list[Any] | tuple[Any, ...]) -> float:
 def _minute_key(when: datetime | None = None) -> str:
     now = when or datetime.now(IST)
     return now.strftime("%Y-%m-%d %H:%M")
+
+
+def kite_adx_window_start(when: datetime | None = None, *, days: int = 3) -> str:
+    """Earliest IST minute kept for ADX — matches Kite historical ``from`` date."""
+    now = when or datetime.now(IST)
+    return (now - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")[:16]
+
+
+def bars_from_kite_candles(
+    candles: list[list[Any]],
+    *,
+    include_forming: bool = True,
+) -> list[dict[str, Any]]:
+    """Build session 1m bars from Kite REST candles (ADX/chart authority)."""
+    current = _minute_key()
+    by_ts: dict[str, dict[str, Any]] = {}
+    for c in candles:
+        if not isinstance(c, (list, tuple)) or len(c) < 5:
+            continue
+        ts = str(c[0])[:16].replace("T", " ")
+        if not is_cash_session_minute(ts):
+            continue
+        if ts > current:
+            continue
+        if not include_forming and ts >= current:
+            continue
+        by_ts[ts] = {
+            "t": ts,
+            "o": round(float(c[1]), 4),
+            "h": round(float(c[2]), 4),
+            "l": round(float(c[3]), 4),
+            "c": round(float(c[4]), 4),
+            "v": round(_candle_volume(c), 4),
+            "oi": round(_candle_oi(c), 4),
+        }
+    return [by_ts[ts] for ts in sorted(by_ts)]
+
+
+def ohlc_from_bar_dicts(
+    bars: list[dict[str, Any]],
+) -> tuple[list[float], list[float], list[float]]:
+    highs: list[float] = []
+    lows: list[float] = []
+    closes: list[float] = []
+    for bar in bars:
+        highs.append(float(bar["h"]))
+        lows.append(float(bar["l"]))
+        closes.append(float(bar["c"]))
+    return highs, lows, closes
 
 
 def is_cash_session_minute(ts: str) -> bool:
@@ -160,6 +209,78 @@ class MinuteBarBuilder:
         """Remove bars outside NSE cash session. Returns count removed."""
         before = len(self.bars)
         self.bars = [b for b in self.bars if is_cash_session_minute(str(b.get("t") or ""))]
+        return before - len(self.bars)
+
+    def drop_bars_before(self, minute_key: str) -> int:
+        """Drop closed bars strictly before ``minute_key`` (Kite window floor)."""
+        floor = str(minute_key).replace("T", " ")[:16]
+        before = len(self.bars)
+        self.bars = [b for b in self.bars if str(b.get("t") or "") >= floor]
+        removed = before - len(self.bars)
+        if removed and len(self.bars) > MAX_BARS:
+            self.bars = self.bars[-MAX_BARS:]
+        return removed
+
+    def sync_closed_bars_from_kite(
+        self,
+        candles: list[list[Any]],
+        *,
+        window_floor: str,
+    ) -> int:
+        """Closed bars in [window_floor, now) must match Kite candles exactly."""
+        current = _minute_key()
+        floor = str(window_floor).replace("T", " ")[:16]
+        kite_by_ts: dict[str, dict[str, Any]] = {}
+        for c in candles:
+            if not isinstance(c, (list, tuple)) or len(c) < 5:
+                continue
+            ts = str(c[0])[:16].replace("T", " ")
+            if ts >= current or ts < floor or not is_cash_session_minute(ts):
+                continue
+            kite_by_ts[ts] = {
+                "t": ts,
+                "o": round(float(c[1]), 4),
+                "h": round(float(c[2]), 4),
+                "l": round(float(c[3]), 4),
+                "c": round(float(c[4]), 4),
+                "v": round(_candle_volume(c), 4),
+                "oi": round(_candle_oi(c), 4),
+            }
+        if not kite_by_ts:
+            return 0
+        before = len(self.bars)
+        self.bars = [kite_by_ts[ts] for ts in sorted(kite_by_ts)]
+        self._dedupe()
+        if len(self.bars) > MAX_BARS:
+            self.bars = self.bars[-MAX_BARS:]
+        return abs(before - len(self.bars))
+
+    def drop_closed_bars_not_in_kite(
+        self,
+        candles: list[list[Any]],
+        *,
+        range_from: str,
+    ) -> int:
+        """Drop closed bars in [range_from, now) that Kite did not return (tail reconcile)."""
+        current = _minute_key()
+        start = str(range_from).replace("T", " ")[:16]
+        allowed: set[str] = set()
+        for c in candles:
+            if not isinstance(c, (list, tuple)) or len(c) < 5:
+                continue
+            ts = str(c[0])[:16].replace("T", " ")
+            if ts >= current or ts < start or not is_cash_session_minute(ts):
+                continue
+            allowed.add(ts)
+        if not allowed:
+            return 0
+        before = len(self.bars)
+        self.bars = [
+            b
+            for b in self.bars
+            if str(b.get("t") or "") < start
+            or str(b.get("t") or "") in allowed
+        ]
         return before - len(self.bars)
 
     def load_candles(self, candles: list[list[Any]]) -> None:

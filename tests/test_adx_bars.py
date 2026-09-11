@@ -7,7 +7,7 @@ from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from atlas_lite.metrics import compute_adx, compute_atr
-from atlas_lite.minute_bars import MinuteBarBuilder, _minute_key
+from atlas_lite.minute_bars import MinuteBarBuilder, _minute_key, bars_from_kite_candles
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -73,6 +73,67 @@ def test_cash_session_filter_drops_preopen_bars() -> None:
     assert b.drop_non_session_bars() == 2
     assert len(b.bars) == 1
     assert b.bars[0]["t"] == "2026-09-07 09:20"
+
+
+def test_drop_bars_before_kite_window() -> None:
+    from atlas_lite.minute_bars import kite_adx_window_start
+
+    when = datetime(2026, 9, 10, 9, 26, tzinfo=IST)
+    floor = kite_adx_window_start(when, days=3)
+    assert floor == "2026-09-07 09:26"
+    b = MinuteBarBuilder(symbol="NSE:NIFTY 50")
+    b.bars = [
+        {"t": "2026-09-07 09:16", "o": 1, "h": 1, "l": 1, "c": 1},
+        {"t": "2026-09-07 09:26", "o": 1, "h": 1, "l": 1, "c": 1},
+        {"t": "2026-09-10 09:15", "o": 1, "h": 1, "l": 1, "c": 1},
+    ]
+    assert b.drop_bars_before(floor) == 1
+    assert [bar["t"] for bar in b.bars] == ["2026-09-07 09:26", "2026-09-10 09:15"]
+
+
+def test_sync_closed_bars_from_kite_replaces_window() -> None:
+    b = MinuteBarBuilder(symbol="NSE:NIFTY 50")
+    b.bars = [
+        {"t": "2026-09-07 09:28", "o": 9, "h": 9, "l": 9, "c": 9, "v": 1},
+        {"t": "2026-09-10 09:15", "o": 1, "h": 2, "l": 1, "c": 1.5, "v": 1},
+    ]
+    candles = [
+        ["2026-09-10 09:15:00", 1, 2, 1, 1.5, 100],
+        ["2026-09-10 09:16:00", 1.5, 2.5, 1.4, 2.0, 200],
+    ]
+    with patch("atlas_lite.minute_bars._minute_key", return_value="2026-09-10 09:17"):
+        b.sync_closed_bars_from_kite(candles, window_floor="2026-09-07 09:27")
+    assert [bar["t"] for bar in b.bars] == ["2026-09-10 09:15", "2026-09-10 09:16"]
+    assert b.bars[0]["c"] == 1.5
+
+
+def test_drop_closed_bars_not_in_kite() -> None:
+    b = MinuteBarBuilder(symbol="NSE:NIFTY 50")
+    b.bars = [
+        {"t": "2026-09-10 09:14", "o": 1, "h": 1, "l": 1, "c": 1},
+        {"t": "2026-09-10 09:15", "o": 1, "h": 1, "l": 1, "c": 1},
+        {"t": "2026-09-10 09:16", "o": 9, "h": 9, "l": 9, "c": 9},
+    ]
+    candles = [["2026-09-10 09:15:00", 1, 2, 1, 1.5, 100]]
+    with patch("atlas_lite.minute_bars._minute_key", return_value="2026-09-10 09:17"):
+        dropped = b.drop_closed_bars_not_in_kite(candles, range_from="2026-09-10 09:15")
+    assert dropped == 1
+    assert [bar["t"] for bar in b.bars] == ["2026-09-10 09:14", "2026-09-10 09:15"]
+
+
+def test_bars_from_kite_candles_includes_forming() -> None:
+    forming = "2026-09-10 09:33"
+    current = "2026-09-10 09:34"
+    candles = [
+        ["2026-09-10 09:32:00", 1, 2, 1, 1.5, 100],
+        [f"{forming}:00", 1.5, 2.5, 1.4, 2.0, 200],
+        [f"{current}:00", 9, 9, 9, 9, 0],
+    ]
+    with patch("atlas_lite.minute_bars._minute_key", return_value=current):
+        bars = bars_from_kite_candles(candles, include_forming=True)
+        assert [b["t"] for b in bars] == ["2026-09-10 09:32", forming, current]
+        closed = bars_from_kite_candles(candles, include_forming=False)
+        assert [b["t"] for b in closed] == ["2026-09-10 09:32", forming]
 
 
 def test_in_adx_seed_window_weekdays_only() -> None:
