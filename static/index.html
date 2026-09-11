@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Atlas Lite — NIFTY Entry Sheet</title>
+  <title>Atlas Lite — Entry Sheet</title>
   <style>
     :root,
     [data-theme="dark"] {
@@ -155,6 +155,29 @@
       overflow: visible;
     }
     h1 { margin: 0; font-size: 0.9375rem; font-weight: 600; }
+    .nb-switch {
+      display: inline-flex;
+      gap: 4px;
+      margin-left: 8px;
+      vertical-align: middle;
+    }
+    .nb-switch a {
+      font-size: 0.6875rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      text-decoration: none;
+      color: var(--muted);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 3px 8px;
+    }
+    .nb-switch a:hover { color: var(--text); border-color: var(--muted); }
+    .nb-switch a.active {
+      color: var(--accent);
+      border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+      background: color-mix(in srgb, var(--accent) 14%, transparent);
+    }
     .header-title-row {
       display: flex;
       align-items: center;
@@ -1480,7 +1503,11 @@
     <div class="header-top">
       <div class="header-left">
         <div class="header-title-row">
-          <h1>NIFTY 50</h1>
+          <h1 id="nbTitle">NIFTY 50</h1>
+          <span class="nb-switch" id="nbSwitch" aria-label="Notebook underlying">
+            <a href="?nb=nifty" data-nb="nifty">NIFTY</a>
+            <a href="?nb=sensex" data-nb="sensex">SENSEX</a>
+          </span>
           <span class="header-atm">ATM <strong id="atm">—</strong></span>
           <span id="legs" class="header-legs"></span>
         </div>
@@ -1554,7 +1581,7 @@
             <div style="text-align:center;color:var(--muted);padding:12px 8px">Connecting to SSE…</div>
           </div>
         </section>
-        <aside class="chart-panel" aria-label="NIFTY 50 chart">
+        <aside class="chart-panel" id="chartPanel" aria-label="Index chart">
           <div class="chart-toolbar">
             <div class="chart-toolbar-group" id="chartIntervalBar"></div>
             <div class="chart-toolbar-group" id="chartStyleBar"></div>
@@ -1706,6 +1733,41 @@
     const TICK_STICKY_MS = 3000;
     const prevValues = new Map();
     const stickyTicks = new Map();
+
+    function parseNotebookId() {
+      const raw = new URLSearchParams(window.location.search).get("nb");
+      const value = String(raw || "nifty").trim().toLowerCase();
+      return value === "sensex" ? "sensex" : "nifty";
+    }
+    let notebookId = parseNotebookId();
+    let streamAbort = null;
+
+    function notebookLabel() {
+      return notebookId === "sensex" ? "SENSEX" : "NIFTY 50";
+    }
+
+    function withNotebookQuery(path) {
+      const url = new URL(path, window.location.origin);
+      url.searchParams.set("nb", notebookId);
+      return url.pathname + "?" + url.searchParams.toString();
+    }
+
+    function applyNotebookChrome() {
+      const title = notebookLabel();
+      document.title = `Atlas Lite — ${title}`;
+      const h1 = document.getElementById("nbTitle");
+      if (h1) h1.textContent = title;
+      const panel = document.getElementById("chartPanel");
+      if (panel) panel.setAttribute("aria-label", `${title} chart`);
+      document.querySelectorAll("#nbSwitch a").forEach((a) => {
+        a.classList.toggle("active", a.dataset.nb === notebookId);
+      });
+      const paper = document.getElementById("paperBar");
+      if (paper && notebookId !== "nifty") {
+        paper.hidden = true;
+      }
+    }
+    applyNotebookChrome();
 
     const CARD_ORDER = ["adx", "atr", "vix_chg", "ivp", "iv_day_high", "ce", "pe", "pcr", "max_pain", "oi_day_high"];
     const METRIC_HEAD = {
@@ -3217,7 +3279,7 @@
       }
       const bars = toKline(viewBars());
       if (!bars.length) {
-        setChartEmpty("Waiting for Kite NIFTY 50 candles. Feed must be live.");
+        setChartEmpty(`Waiting for Kite ${notebookLabel()} candles. Feed must be live.`);
         niftyChart.applyNewData([]);
         return;
       }
@@ -3831,10 +3893,11 @@
     async function refreshNiftyCandles() {
       if (document.visibilityState === "hidden") return;
       try {
-        const qs = niftyLastBarTime != null && niftyRawBars.length
-          ? `?since=${niftyLastBarTime}`
-          : "";
-        const resp = await fetch(`/api/candles${qs}`);
+        const params = new URLSearchParams({ nb: notebookId });
+        if (niftyLastBarTime != null && niftyRawBars.length) {
+          params.set("since", String(niftyLastBarTime));
+        }
+        const resp = await fetch(`/api/candles?${params.toString()}`);
         if (!resp.ok) {
           setChartEmpty("Candle API not ready. Restart Atlas Lite (./run.sh), then refresh this page.");
           return;
@@ -3854,7 +3917,7 @@
           paintChart();
         }
       } catch (_) {
-        setChartEmpty("Could not load NIFTY 50 candles from Kite.");
+        setChartEmpty(`Could not load ${notebookLabel()} candles from Kite.`);
       }
     }
 
@@ -3888,6 +3951,10 @@
     function renderPaperBar(data) {
       const host = document.getElementById("paperBar");
       if (!host) return;
+      if (notebookId !== "nifty") {
+        host.hidden = true;
+        return;
+      }
       if (!data || data.enabled === false) {
         host.hidden = true;
         host.innerHTML = "";
@@ -3937,6 +4004,11 @@
 
     async function loadPaperSnapshot() {
       if (document.visibilityState === "hidden") return;
+      if (notebookId !== "nifty") {
+        const host = document.getElementById("paperBar");
+        if (host) host.hidden = true;
+        return;
+      }
       try {
         const resp = await fetch("/api/paper");
         if (!resp.ok) return;
@@ -4534,7 +4606,7 @@
     async function loadChainSnapshot() {
       if (document.visibilityState === "hidden") return;
       try {
-        const resp = await fetch("/api/chain");
+        const resp = await fetch(withNotebookQuery("/api/chain"));
         if (!resp.ok) {
           document.getElementById("chainMeta").textContent = "Failed to load chain";
           return;
@@ -4571,6 +4643,10 @@
       startChainPoll();
       refreshNiftyCandles();
       startCandlePoll();
+      if (notebookId === "nifty") {
+        loadPaperSnapshot();
+        startPaperPoll();
+      }
     }
 
     document.addEventListener("visibilitychange", syncPollersToVisibility);
@@ -4578,6 +4654,10 @@
     chainScrollPending = true;
     loadChainSnapshot();
     startChainPoll();
+    if (notebookId === "nifty") {
+      loadPaperSnapshot();
+      startPaperPoll();
+    }
 
     function formatOi(value) {
       if (value == null || Number.isNaN(value)) return null;
@@ -4930,6 +5010,11 @@
     }
 
     function render(frame) {
+      if (frame && frame.notebook && frame.notebook.label) {
+        const h1 = document.getElementById("nbTitle");
+        if (h1) h1.textContent = frame.notebook.label;
+        document.title = `Atlas Lite — ${frame.notebook.label}`;
+      }
       renderIndices(frame.indices);
       document.getElementById("atm").textContent = frame.atm_strike ?? "—";
       const atmWrap = document.querySelector(".header-atm");
@@ -5000,7 +5085,9 @@
     async function connect() {
       while (true) {
         try {
-          const resp = await fetch("/stream");
+          if (streamAbort) streamAbort.abort();
+          streamAbort = new AbortController();
+          const resp = await fetch(withNotebookQuery("/stream"), { signal: streamAbort.signal });
           const reader = resp.body.getReader();
           const dec = new TextDecoder();
           let buf = "";
@@ -5016,10 +5103,49 @@
               try { render(JSON.parse(line.slice(6))); } catch (_) {}
             }
           }
-        } catch (_) {}
+        } catch (err) {
+          if (err && err.name === "AbortError") {
+            await new Promise(r => setTimeout(r, 50));
+            continue;
+          }
+        }
         await new Promise(r => setTimeout(r, 2000));
       }
     }
+
+    function switchNotebook(nextId) {
+      const id = nextId === "sensex" ? "sensex" : "nifty";
+      if (id === notebookId) return;
+      notebookId = id;
+      const url = new URL(window.location.href);
+      url.searchParams.set("nb", notebookId);
+      window.history.replaceState({}, "", url.pathname + "?" + url.searchParams.toString());
+      applyNotebookChrome();
+      niftyRawBars = [];
+      niftyLastBarTime = null;
+      if (typeof serverDmiByTime !== "undefined" && serverDmiByTime && typeof serverDmiByTime.clear === "function") {
+        serverDmiByTime.clear();
+      }
+      refreshNiftyCandles();
+      loadChainSnapshot();
+      if (notebookId === "nifty") {
+        loadPaperSnapshot();
+        startPaperPoll();
+      } else {
+        stopPaperPoll();
+        const host = document.getElementById("paperBar");
+        if (host) host.hidden = true;
+      }
+      if (streamAbort) streamAbort.abort();
+    }
+
+    document.getElementById("nbSwitch")?.addEventListener("click", (event) => {
+      const link = event.target.closest("a[data-nb]");
+      if (!link) return;
+      event.preventDefault();
+      switchNotebook(link.dataset.nb);
+    });
+
     renderChartToolbar();
     renderDrawBar();
     const atmWrap = document.querySelector(".header-atm");

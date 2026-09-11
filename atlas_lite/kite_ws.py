@@ -85,9 +85,13 @@ def _parse_quote_packet(packet: bytes) -> dict[str, Any] | None:
 
 
 def _ws_mode_for_token(token: int) -> str:
+    """Kite packet mode from instrument-token segment byte.
+
+    NFO (2) and BFO (5) options need ``full`` for open interest; cash/index
+    segments use ``quote`` (LTP/OHLC only).
+    """
     segment = token & 0xFF
-    # NFO segment = 2 → full mode for OI
-    return WS_MODE_FULL if segment == 2 else WS_MODE_QUOTE
+    return WS_MODE_FULL if segment in {2, 5} else WS_MODE_QUOTE
 
 
 @dataclass

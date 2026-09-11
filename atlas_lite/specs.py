@@ -6,6 +6,8 @@ from typing import Any
 
 NIFTY_SYMBOL = "NSE:NIFTY 50"
 NIFTY_LABEL = "NIFTY 50"
+SENSEX_SYMBOL = "BSE:SENSEX"
+SENSEX_LABEL = "SENSEX"
 # ATM CE≈PE: |CE−PE|/avg ≤ this % (exact tick equality almost never happens).
 CE_PE_BALANCE_PCT = 15.0
 # FUT OI must sit on the session high; ATM IV on the session low (same band).
@@ -64,7 +66,7 @@ SHEET_SPECS: tuple[dict[str, Any], ...] = (
         "rule": "lt",
         "target": 25,
         "gates_entry": True,
-        "hint": "ADX(14) < 25 · NIFTY 50 1m",
+        "hint": "ADX(14) < 25 · index 1m",
     },
     {
         "row": 2,
@@ -74,7 +76,7 @@ SHEET_SPECS: tuple[dict[str, Any], ...] = (
         "rule": "info",
         "target": 0,
         "gates_entry": False,
-        "hint": "ATR(14) · NIFTY 50 1m",
+        "hint": "ATR(14) · index 1m",
     },
     {
         "row": 3,

@@ -14,10 +14,20 @@ from atlas_lite.nse_fo_bhav import prune_fo_bhav_cache
 
 
 def _engine() -> FeedEngine:
+    from atlas_lite.notebook import get_notebook
+    from atlas_lite.notebook_runtime import NotebookRuntime
+    from atlas_lite.minute_bars import MinuteBarBuilder
+    
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     rest = MagicMock(spec=KiteRest)
-    return FeedEngine(rest=rest, data_dir=Path("data"))
+    eng = FeedEngine(rest=rest, data_dir=Path("data"))
+    # Initialize nifty notebook for backward compatibility with tests
+    nifty_cfg = get_notebook("nifty")
+    nifty_nb = NotebookRuntime(config=nifty_cfg)
+    nifty_nb.bar_builder = MinuteBarBuilder(symbol=nifty_cfg.symbol)
+    eng.notebooks["nifty"] = nifty_nb
+    return eng
 
 
 def test_health_ok_when_ws_live_despite_auth_error() -> None:
@@ -46,22 +56,46 @@ def test_health_false_when_auth_error_and_stale_ticks() -> None:
 
 def test_maybe_reseed_skips_when_seeded_today_without_today_bar() -> None:
     eng = _engine()
-    eng._adx_kite_seed_day = eng._today()
-    eng._bar_builder.bars = [
+    nifty_nb = eng.notebooks["nifty"]
+    nifty_nb.adx_kite_seed_day = eng._today()
+    nifty_nb.bar_builder.bars = [
         {"t": "2020-01-01 15:29", "o": 1, "h": 1, "l": 1, "c": 1},
     ]
-    assert eng._adx_bars_fresh() is False
+    assert eng._adx_bars_fresh(nifty_nb) is False
     asyncio.get_event_loop().run_until_complete(eng._maybe_reseed_adx_bars())
     eng.rest.historical_minute.assert_not_called()
 
 
 def test_maybe_reseed_skips_kite_outside_session() -> None:
     eng = _engine()
-    eng._adx_kite_seed_day = ""
+    nifty_nb = eng.notebooks["nifty"]
+    nifty_nb.adx_kite_seed_day = ""
+    # Enough bars so this is not a cold-start (cold-start may fetch off-session).
+    nifty_nb.bar_builder.bars = [
+        {"t": f"2026-09-10 10:{i:02d}", "o": 1, "h": 1, "l": 1, "c": 1} for i in range(30)
+    ]
+    nifty_nb.kite_adx_bars = list(nifty_nb.bar_builder.bars)
     eng._token_index = {"NSE:NIFTY 50": 256265}
     with patch("atlas_lite.feed_engine.in_adx_seed_window", return_value=False):
         asyncio.get_event_loop().run_until_complete(eng._maybe_reseed_adx_bars())
     eng.rest.historical_minute.assert_not_called()
+
+
+def test_maybe_reseed_cold_start_fetches_outside_session() -> None:
+    eng = _engine()
+    nifty_nb = eng.notebooks["nifty"]
+    nifty_nb.adx_kite_seed_day = ""
+    nifty_nb.bar_builder.bars = []
+    nifty_nb.kite_adx_bars = []
+    eng._token_index = {"NSE:NIFTY 50": 256265}
+
+    async def _candles(*_a, **_k):
+        return [["2026-09-10 10:00:00", 1, 2, 1, 1.5, 100]]
+
+    eng.rest.historical_minute.side_effect = _candles
+    with patch("atlas_lite.feed_engine.in_adx_seed_window", return_value=False):
+        asyncio.get_event_loop().run_until_complete(eng._maybe_reseed_adx_bars())
+    eng.rest.historical_minute.assert_called()
 
 
 def test_empty_seed_during_session_does_not_latch() -> None:
@@ -69,20 +103,22 @@ def test_empty_seed_during_session_does_not_latch() -> None:
         return []
 
     eng = _engine()
+    nifty_nb = eng.notebooks["nifty"]
     eng._token_index = {"NSE:NIFTY 50": 256265}
     eng.rest.historical_minute.side_effect = _empty
-    asyncio.get_event_loop().run_until_complete(eng._seed_adx_bars_from_kite())
-    assert eng._adx_kite_seed_day == ""
+    asyncio.get_event_loop().run_until_complete(eng._seed_adx_bars_from_kite(nifty_nb))
+    assert nifty_nb.adx_kite_seed_day == ""
 
 
 def test_nifty_candles_since_returns_delta() -> None:
     eng = _engine()
+    nifty_nb = eng.notebooks["nifty"]
     bars = [
         {"t": "2026-09-04 10:00", "o": 1, "h": 2, "l": 0.5, "c": 1.5, "v": 10, "oi": 1},
         {"t": "2026-09-04 10:01", "o": 1.5, "h": 2.5, "l": 1, "c": 2, "v": 20, "oi": 2},
         {"t": "2026-09-04 10:02", "o": 2, "h": 3, "l": 1.5, "c": 2.5, "v": 30, "oi": 3},
     ]
-    eng._kite_adx_bars = list(bars)
+    nifty_nb.kite_adx_bars = list(bars)
     full = eng.nifty_candles(limit=800)
     assert full["delta"] is False
     assert len(full["bars"]) == 3
@@ -95,10 +131,11 @@ def test_nifty_candles_since_returns_delta() -> None:
 
 def test_nifty_candles_prefers_kite_bars_over_ws() -> None:
     eng = _engine()
-    eng._bar_builder.bars = [
+    nifty_nb = eng.notebooks["nifty"]
+    nifty_nb.bar_builder.bars = [
         {"t": "2026-09-04 10:00", "o": 1, "h": 2, "l": 0.5, "c": 99, "v": 10, "oi": 1},
     ]
-    eng._kite_adx_bars = [
+    nifty_nb.kite_adx_bars = [
         {"t": "2026-09-04 10:00", "o": 1, "h": 2, "l": 0.5, "c": 1.5, "v": 10, "oi": 1},
     ]
     out = eng.nifty_candles(limit=800)
@@ -111,29 +148,31 @@ def test_kite_adx_series_merges_ws_forming_minute() -> None:
     from unittest.mock import patch
 
     eng = _engine()
-    eng._kite_adx_bars = [
+    nifty_nb = eng.notebooks["nifty"]
+    nifty_nb.kite_adx_bars = [
         {"t": "2026-09-10 09:43", "o": 1, "h": 2, "l": 0.5, "c": 1.5, "v": 10, "oi": 1},
         {"t": "2026-09-10 09:44", "o": 2, "h": 2.1, "l": 1.9, "c": 2.0, "v": 0, "oi": 0},
     ]
     b = MinuteBarBuilder(symbol=NIFTY_SYMBOL)
-    b.bars = list(eng._kite_adx_bars[:1])
+    b.bars = list(nifty_nb.kite_adx_bars[:1])
     with patch("atlas_lite.minute_bars._minute_key", return_value="2026-09-10 09:44"):
         b.ingest(99.0)
-    eng._bar_builder = b
-    merged = eng._kite_adx_series_bars()
+    nifty_nb.bar_builder = b
+    merged = eng._kite_adx_series_bars(nifty_nb)
     assert merged[-1]["t"] == "2026-09-10 09:44"
     assert merged[-1]["c"] == 99.0
 
 
 def test_live_chart_bars_returns_tail() -> None:
     eng = _engine()
+    nifty_nb = eng.notebooks["nifty"]
     bars = [
         {"t": "2026-09-04 10:00", "o": 1, "h": 2, "l": 0.5, "c": 1.5, "v": 10, "oi": 1},
         {"t": "2026-09-04 10:01", "o": 1.5, "h": 2.5, "l": 1, "c": 2, "v": 20, "oi": 2},
         {"t": "2026-09-04 10:02", "o": 2, "h": 3, "l": 1.5, "c": 2.5, "v": 30, "oi": 3},
     ]
-    eng._kite_adx_bars = list(bars)
-    tail = eng.live_chart_bars(2)
+    nifty_nb.kite_adx_bars = list(bars)
+    tail = eng.live_chart_bars("nifty", 2)
     assert len(tail) == 2
     assert tail[-1]["close"] == 2.5
 
@@ -144,6 +183,7 @@ def test_nifty_tick_refreshes_adx_on_forming_bar() -> None:
     from unittest.mock import patch
 
     eng = _engine()
+    nifty_nb = eng.notebooks["nifty"]
     b = MinuteBarBuilder(symbol=NIFTY_SYMBOL)
     for i in range(40):
         px = 24000.0 + i
@@ -156,14 +196,14 @@ def test_nifty_tick_refreshes_adx_on_forming_bar() -> None:
                 "c": px + 1,
             }
         )
-    eng._bar_builder = b
-    eng._kite_adx_bars = list(b.bars)
-    eng._refresh_adx_from_bars()
-    assert eng.adx is not None
-    assert 0 <= eng.adx <= 100
-    eng._kite_adx_bars[-1]["c"] = 24080.0
-    eng._kite_adx_bars[-1]["h"] = max(float(eng._kite_adx_bars[-1]["h"]), 24080.0)
-    live = eng.live_chart_bars(1)
+    nifty_nb.bar_builder = b
+    nifty_nb.kite_adx_bars = list(b.bars)
+    eng._refresh_adx_from_bars(nifty_nb)
+    assert nifty_nb.adx is not None
+    assert 0 <= nifty_nb.adx <= 100
+    nifty_nb.kite_adx_bars[-1]["c"] = 24080.0
+    nifty_nb.kite_adx_bars[-1]["h"] = max(float(nifty_nb.kite_adx_bars[-1]["h"]), 24080.0)
+    live = eng.live_chart_bars("nifty", 1)
     assert live
     assert live[-1]["close"] == 24080.0
     candles = eng.nifty_candles(limit=50)

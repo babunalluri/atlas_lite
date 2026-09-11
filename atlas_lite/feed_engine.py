@@ -1,4 +1,8 @@
-"""Build NIFTY sheet feed from Kite WS ticks (REST for startup seed + daily maintenance)."""
+"""Build dual-notebook (NIFTY + SENSEX) sheet feed from Kite WS ticks.
+
+Both notebooks stay warm; per-client selection via nb= argument to build_frame,
+build_feed, candles, build_option_chain. Paper trading stays NIFTY-only.
+"""
 
 from __future__ import annotations
 
@@ -14,14 +18,17 @@ from zoneinfo import ZoneInfo
 from atlas_lite.config import STREAM_INTERVAL_MS, read_kite_credentials
 from atlas_lite.frame_util import frame_revision
 from atlas_lite.strategy_hint import suggest_strategy
+from atlas_lite.notebook import NotebookConfig, get_notebook, NOTEBOOK_IDS, parse_notebook
+from atlas_lite.notebook_runtime import NotebookRuntime, NotebookSession
 from atlas_lite.instruments import (
     AtmLegs,
+    IndexOptionUniverse,
     NiftyUniverse,
     build_symbol_token_index,
     full_chain_symbols,
     lookup_token,
     nifty_option_lot_size,
-    parse_nfo_csv,
+    parse_fo_csv,
     resolve_atm_legs,
     resolve_header_watch,
     token_map_for_symbols,
@@ -82,7 +89,14 @@ from atlas_lite.paper_straddle import (
     iron_fly_strikes,
     paper_enabled,
 )
-from atlas_lite.specs import HEADER_WATCHLIST, INDEX_SYMBOLS, NIFTY_SYMBOL, SHEET_SPECS, VIX_SYMBOLS
+from atlas_lite.specs import (
+    HEADER_WATCHLIST,
+    INDEX_SYMBOLS,
+    NIFTY_SYMBOL,
+    SENSEX_SYMBOL,
+    SHEET_SPECS,
+    VIX_SYMBOLS,
+)
 
 IST = ZoneInfo("Asia/Kolkata")
 MAINTENANCE_LOOP_S = 60.0
@@ -93,13 +107,11 @@ AUTH_RECOVER_COOLDOWN_S = 30.0
 # minute, Wilder DMI(14) in metrics.wilder_dmi_series. Do not change bar source,
 # refresh cadence, or compute path without re-verifying against Kite 1m DMI.
 ADX_REST_DAYS = 3
-ADX_SYMBOL = NIFTY_SYMBOL
 NFO_INSTRUMENTS_FILE = "nfo_instruments.csv"
 NSE_INSTRUMENTS_FILE = "nse_instruments.csv"
 BSE_INSTRUMENTS_FILE = "bse_instruments.csv"
 BFO_INSTRUMENTS_FILE = "bfo_instruments.csv"
 NFO_INSTRUMENTS_META = "instruments.meta.json"
-MINUTE_BARS_FILE = "minute_bars.json"
 MIN_BARS_FOR_ADX = 29
 # Overwrite tick-built OHLC with Kite REST for ~1 session+ of 1m bars.
 ADX_TAIL_BARS = 500
@@ -113,11 +125,8 @@ HEALTH_TICK_MAX_AGE_S = 90.0
 
 @dataclass
 class SessionState:
+    """Engine-level session state (VIX only; per-notebook state in NotebookRuntime.session)."""
     vix_open: float | None = None
-    fut_oi_baseline: float | None = None
-    fut_oi_day_high: float | None = None
-    iv_day_high: float | None = None
-    iv_day_low: float | None = None
     day: str = ""
 
 
@@ -126,63 +135,104 @@ class FeedEngine:
     rest: KiteRest
     book: QuoteBook = field(default_factory=QuoteBook)
     ticker: KiteTicker | None = None
-    universe: NiftyUniverse | None = None
-    atm: AtmLegs | None = None
+    notebooks: dict[str, NotebookRuntime] = field(default_factory=dict)
     token_map: dict[int, str] = field(default_factory=dict)
     session: SessionState = field(default_factory=SessionState)
-    adx: float | None = None
-    atr: float | None = None
-    adx_hint: str = ""
     iv_history: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     data_dir: Path = field(default_factory=lambda: Path("data"))
     credentials_path: Path = field(default_factory=lambda: Path("kite_credentials"))
     _tasks: list[asyncio.Task[Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
-    _nfo_csv: str = ""
     _instrument_csvs: list[str] = field(default_factory=list)
     _header_watch: list[dict[str, str]] = field(default_factory=list, repr=False)
-    _bar_builder: MinuteBarBuilder = field(default_factory=lambda: MinuteBarBuilder(symbol=ADX_SYMBOL))
-    _last_atm_strike: int | None = field(default=None, repr=False)
-    _chain_cache: tuple[list[int], list[str], list[str]] | None = field(default=None, repr=False)
     _iv_history_seeded: bool = field(default=False, repr=False)
-    _cached_atm_greeks_iv: float | None = field(default=None, repr=False)
-    _cached_atm_greeks_strike: int | None = field(default=None, repr=False)
     _kite_auth_error: str = ""
     _recorder: SheetRecorder | None = field(default=None, repr=False)
     _record_last_revision: tuple[Any, ...] | None = field(default=None, repr=False)
     _token_index: dict[str, int] = field(default_factory=dict, repr=False)
     _instruments_day: str = field(default="", repr=False)
-    _adx_bars_day: str = field(default="", repr=False)
-    _adx_kite_seed_day: str = field(default="", repr=False)
-    _adx_warnings: list[str] = field(default_factory=list, repr=False)
-    _adx_tail_task: asyncio.Task[Any] | None = field(default=None, repr=False)
-    _adx_live_at: float = field(default=0.0, repr=False)
-    _adx_kite_fetch_at: float = field(default=0.0, repr=False)
-    _kite_adx_bars: list[dict[str, Any]] = field(default_factory=list, repr=False)
     _credentials_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     _last_kite_auth_attempt_at: float = field(default=0.0, repr=False)
     _paper: PaperStraddle | None = field(default=None, repr=False)
     _log: Any = field(default_factory=lambda: get_logger("feed"), repr=False)
+
+    # Back-compat properties for tests/paper (delegate to nifty notebook)
+    @property
+    def universe(self) -> IndexOptionUniverse | None:
+        return self.notebooks["nifty"].universe if "nifty" in self.notebooks else None
+
+    @property
+    def atm(self) -> AtmLegs | None:
+        return self.notebooks["nifty"].atm if "nifty" in self.notebooks else None
+
+    @property
+    def adx(self) -> float | None:
+        return self.notebooks["nifty"].adx if "nifty" in self.notebooks else None
+
+    @property
+    def atr(self) -> float | None:
+        return self.notebooks["nifty"].atr if "nifty" in self.notebooks else None
+
+    @property
+    def adx_hint(self) -> str:
+        return self.notebooks["nifty"].adx_hint if "nifty" in self.notebooks else ""
+
+    @property
+    def _bar_builder(self) -> MinuteBarBuilder:
+        nb = self.notebooks.get("nifty")
+        if nb and nb.bar_builder:
+            return nb.bar_builder
+        return MinuteBarBuilder(symbol=NIFTY_SYMBOL)
+
+    @property
+    def _kite_adx_bars(self) -> list[dict[str, Any]]:
+        return self.notebooks["nifty"].kite_adx_bars if "nifty" in self.notebooks else []
+
+    @property
+    def _chain_cache(self) -> tuple[list[int], list[str], list[str]] | None:
+        return self.notebooks["nifty"].chain_cache if "nifty" in self.notebooks else None
+
+    @property
+    def _nfo_csv(self) -> str:
+        return self.notebooks["nifty"].fo_csv if "nifty" in self.notebooks else ""
+
+    @property
+    def _last_atm_strike(self) -> int | None:
+        return self.notebooks["nifty"].last_atm_strike if "nifty" in self.notebooks else None
+
+    def nb_runtime(self, nb: str = "nifty") -> NotebookRuntime:
+        """Get NotebookRuntime for the given notebook ID."""
+        return self.notebooks[nb]
 
     async def start(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.rest.set_auth_error_handler(self._notify_kite_auth_error)
         await self._verify_kite_session()
         self._load_iv_history()
-        self._bar_builder = load_bars(self.data_dir / MINUTE_BARS_FILE, ADX_SYMBOL)
-        self._bar_builder.drop_non_session_bars()
         self.book.on_tick = self._handle_tick
 
         await self._load_instrument_universe()
-        self._log.info(
-            "full chain expiry=%s strikes=%d",
-            self.universe.expiry,
-            len(self._chain_cache[0]),
-        )
+        
+        # Log info for enabled notebooks
+        for nb_id in NOTEBOOK_IDS:
+            nb = self.notebooks.get(nb_id)
+            if nb and nb.enabled and nb.universe:
+                self._log.info(
+                    "%s chain expiry=%s strikes=%d",
+                    nb_id.upper(),
+                    nb.universe.expiry,
+                    len(nb.chain_cache[0]) if nb.chain_cache else 0,
+                )
+        
         self._sync_subscriptions(force=True)
         await self._refresh_atm_greeks_from_kite()
-        await self._seed_adx_bars_if_needed()
-        self._refresh_adx_from_bars()
+        
+        # Seed ADX bars for all enabled notebooks
+        for nb_id in NOTEBOOK_IDS:
+            nb = self.notebooks.get(nb_id)
+            if nb and nb.enabled:
+                await self._seed_adx_bars_if_needed(nb)
+                self._refresh_adx_from_bars(nb)
 
         self.ticker = KiteTicker(self.rest.api_key, self.rest.access_token, self.book)
         self.ticker.set_symbols(self.token_map)
@@ -190,12 +240,15 @@ class FeedEngine:
         if record_enabled():
             self._recorder = SheetRecorder(record_dir(self.data_dir))
         if paper_enabled():
-            lot = nifty_option_lot_size(self._nfo_csv, expiry=self.universe.expiry)
-            self._paper = PaperStraddle(
-                path=self.data_dir / "paper_trades.jsonl",
-                lot_size=lot,
-            )
-            self._log.info("paper 1 lot qty=%d long overlay + short iron fly (no live orders)", lot)
+            # Paper stays NIFTY-only
+            nifty_nb = self.notebooks.get("nifty")
+            if nifty_nb and nifty_nb.universe:
+                lot = nifty_option_lot_size(nifty_nb.fo_csv, expiry=nifty_nb.universe.expiry)
+                self._paper = PaperStraddle(
+                    path=self.data_dir / "paper_trades.jsonl",
+                    lot_size=lot,
+                )
+                self._log.info("paper 1 lot qty=%d long overlay + short iron fly (no live orders)", lot)
         self._tasks = [
             asyncio.create_task(self._maintenance_loop()),
             asyncio.create_task(self._iv_greeks_loop()),
@@ -213,7 +266,12 @@ class FeedEngine:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         if self.ticker:
             await self.ticker.stop()
-        save_bars(self.data_dir / MINUTE_BARS_FILE, self._bar_builder)
+        # Save bars for all notebooks
+        for nb_id in NOTEBOOK_IDS:
+            nb = self.notebooks.get(nb_id)
+            if nb and nb.bar_builder:
+                bars_path = self.data_dir / nb.config.bars_file
+                save_bars(bars_path, nb.bar_builder)
         await self.rest.close()
 
     def _today(self) -> str:
@@ -354,15 +412,53 @@ class FeedEngine:
         nse_csv = await self._load_instruments_csv("NSE", NSE_INSTRUMENTS_FILE)
         bse_csv = await self._load_instruments_csv("BSE", BSE_INSTRUMENTS_FILE)
         bfo_csv = await self._try_load_instruments_csv("BFO", BFO_INSTRUMENTS_FILE)
-        self._nfo_csv = nfo_csv
         self._instrument_csvs = [nfo_csv, nse_csv, bse_csv]
         if bfo_csv:
             self._instrument_csvs.append(bfo_csv)
         self._token_index = build_symbol_token_index(self._instrument_csvs)
         self._instruments_day = self._today()
-        self.universe = parse_nfo_csv(self._nfo_csv)
-        self._chain_cache = full_chain_symbols(self.universe, self._nfo_csv)
         self._header_watch = resolve_header_watch(HEADER_WATCHLIST, self._instrument_csvs)
+        
+        # Initialize NIFTY notebook
+        nifty_cfg = get_notebook("nifty")
+        nifty_universe = parse_fo_csv(
+            nfo_csv,
+            name="NIFTY",
+            exchange=nifty_cfg.exchange,
+            fut_segment=nifty_cfg.fut_segment,
+            strike_step=nifty_cfg.strike_step,
+            hysteresis_pts=nifty_cfg.hysteresis_pts,
+        )
+        nifty_nb = NotebookRuntime(config=nifty_cfg, universe=nifty_universe, fo_csv=nfo_csv)
+        nifty_nb.chain_cache = full_chain_symbols(nifty_universe, nfo_csv)
+        nifty_nb.bar_builder = load_bars(self.data_dir / nifty_cfg.bars_file, nifty_cfg.symbol)
+        nifty_nb.bar_builder.drop_non_session_bars()
+        self.notebooks["nifty"] = nifty_nb
+        
+        # Initialize SENSEX notebook (disable if BFO missing)
+        sensex_cfg = get_notebook("sensex")
+        sensex_nb = NotebookRuntime(config=sensex_cfg, enabled=False)
+        if bfo_csv:
+            try:
+                sensex_universe = parse_fo_csv(
+                    bfo_csv,
+                    name="SENSEX",
+                    exchange=sensex_cfg.exchange,
+                    fut_segment=sensex_cfg.fut_segment,
+                    strike_step=sensex_cfg.strike_step,
+                    hysteresis_pts=sensex_cfg.hysteresis_pts,
+                )
+                sensex_nb.universe = sensex_universe
+                sensex_nb.fo_csv = bfo_csv
+                sensex_nb.chain_cache = full_chain_symbols(sensex_universe, bfo_csv)
+                sensex_nb.bar_builder = load_bars(self.data_dir / sensex_cfg.bars_file, sensex_cfg.symbol)
+                sensex_nb.bar_builder.drop_non_session_bars()
+                sensex_nb.enabled = True
+            except Exception as exc:  # noqa: BLE001
+                self._log.warning("SENSEX notebook disabled (BFO parse failed): %s", exc)
+        else:
+            self._log.warning("SENSEX notebook disabled (BFO instruments unavailable)")
+        self.notebooks["sensex"] = sensex_nb
 
     async def _load_instruments_csv(self, exchange: str, filename: str) -> str:
         path = self.data_dir / filename
@@ -396,21 +492,24 @@ class FeedEngine:
         self._log.info("instruments cache refreshed %s day=%s bytes=%d", exchange, today, len(csv))
         return csv
 
-    async def _bootstrap_iv_inputs(self) -> tuple[float | None, float | None]:
+    async def _bootstrap_iv_inputs(self, nb_id: str = "nifty") -> tuple[float | None, float | None]:
         """ATM IV + India VIX for IVP bootstrap scale (greeks, else BS from LTP)."""
-        atm_iv = self._cached_atm_greeks_iv
+        nb = self.notebooks.get(nb_id)
+        if not nb or not nb.universe:
+            return None, None
+        atm_iv = nb.cached_atm_greeks_iv
         vix_live = quote_ltp(self.book.get(VIX_SYMBOLS[0])) if VIX_SYMBOLS else None
         if atm_iv is not None and vix_live is not None:
             return atm_iv, vix_live
-        if self.universe is None or not self._instrument_csvs:
+        if not self._instrument_csvs:
             return atm_iv, vix_live
         try:
-            raw = await self.rest.quote([NIFTY_SYMBOL, *VIX_SYMBOLS])
+            raw = await self.rest.quote([nb.config.symbol, *VIX_SYMBOLS])
             quotes = normalize_quote_map(raw if isinstance(raw, dict) else {})
             vix_live = vix_live or quote_ltp(quotes.get(VIX_SYMBOLS[0]))
-            spot = quote_ltp(quotes.get(NIFTY_SYMBOL))
+            spot = quote_ltp(quotes.get(nb.config.symbol))
             if spot is not None:
-                legs = resolve_atm_legs(self.universe, spot)
+                legs = resolve_atm_legs(nb.universe, spot)
                 chain_raw = await self.rest.quote([legs.ce_symbol, legs.pe_symbol])
                 chain_q = normalize_quote_map(chain_raw if isinstance(chain_raw, dict) else {})
                 ce_row = chain_q.get(legs.ce_symbol)
@@ -418,14 +517,14 @@ class FeedEngine:
                 ce = ce_row if isinstance(ce_row, dict) else None
                 pe = pe_row if isinstance(pe_row, dict) else None
                 # Quotes often omit greeks — fall back to BS IV from LTP for scale.
-                fetched = resolve_atm_iv(ce, pe, spot, legs.strike, self.universe.expiry)
+                fetched = resolve_atm_iv(ce, pe, spot, legs.strike, nb.universe.expiry)
                 if fetched is not None:
                     atm_iv = fetched
                     if atm_greeks_iv(ce, pe) is not None:
-                        self._cached_atm_greeks_iv = fetched
-                        self._cached_atm_greeks_strike = legs.strike
+                        nb.cached_atm_greeks_iv = fetched
+                        nb.cached_atm_greeks_strike = legs.strike
         except Exception as exc:  # noqa: BLE001
-            self._log.warning("IVP bootstrap IV fetch failed: %s", exc)
+            self._log.warning("%s IVP bootstrap IV fetch failed: %s", nb_id.upper(), exc)
         return atm_iv, vix_live
 
     async def _seed_iv_history_if_needed(self) -> None:
@@ -451,12 +550,14 @@ class FeedEngine:
             self._log.warning("IVP history backfill failed: %s", exc)
 
     async def _refresh_iv_history_if_stale(self) -> None:
+        """Refresh IVP history for all enabled notebooks."""
         try:
+            # NIFTY IVP history
             removed = prune_weekend_iv_samples(self.data_dir, NIFTY_SYMBOL)
             if removed:
-                self._log.info("IVP history pruned weekend samples=%d", removed)
+                self._log.info("NIFTY IVP history pruned weekend samples=%d", removed)
             if needs_iv_history_rebuild(self.data_dir, NIFTY_SYMBOL):
-                atm_iv, vix_live = await self._bootstrap_iv_inputs()
+                atm_iv, vix_live = await self._bootstrap_iv_inputs("nifty")
                 samples = await ensure_iv_history(
                     self.rest,
                     self._instrument_csvs,
@@ -466,14 +567,16 @@ class FeedEngine:
                     vix_live=vix_live,
                 )
             else:
-                iv = self._cached_atm_greeks_iv
-                if iv is None and self.atm and self.universe:
+                nifty_nb = self.notebooks.get("nifty")
+                iv = nifty_nb.cached_atm_greeks_iv if nifty_nb else None
+                if iv is None and nifty_nb and nifty_nb.atm and nifty_nb.universe:
                     iv = self._resolve_live_iv(
-                        self.book.get(self.atm.ce_symbol),
-                        self.book.get(self.atm.pe_symbol),
-                        self._spot(),
-                        self.atm.strike,
-                        self.universe.expiry,
+                        nifty_nb,
+                        self.book.get(nifty_nb.atm.ce_symbol),
+                        self.book.get(nifty_nb.atm.pe_symbol),
+                        self._spot(nifty_nb),
+                        nifty_nb.atm.strike,
+                        nifty_nb.universe.expiry,
                     )
                 if iv is not None:
                     await record_eod_atm_iv_if_due(
@@ -485,77 +588,129 @@ class FeedEngine:
                     load_iv_history(self.data_dir / IVP_HISTORY_FILE),
                     NIFTY_SYMBOL,
                 )
+            
+            # SENSEX IVP history (same file, keyed by SENSEX_SYMBOL)
+            sensex_nb = self.notebooks.get("sensex")
+            if sensex_nb and sensex_nb.enabled:
+                removed_sensex = prune_weekend_iv_samples(self.data_dir, SENSEX_SYMBOL)
+                if removed_sensex:
+                    self._log.info("SENSEX IVP history pruned weekend samples=%d", removed_sensex)
+                if needs_iv_history_rebuild(self.data_dir, SENSEX_SYMBOL):
+                    atm_iv_sensex, vix_sensex = await self._bootstrap_iv_inputs("sensex")
+                    # Bootstrap if samples missing; else skip for v1
+                    if atm_iv_sensex is not None:
+                        await ensure_iv_history(
+                            self.rest,
+                            self._instrument_csvs,
+                            self.data_dir,
+                            symbol=SENSEX_SYMBOL,
+                            atm_iv=atm_iv_sensex,
+                            vix_live=vix_sensex,
+                        )
+                else:
+                    iv_sensex = sensex_nb.cached_atm_greeks_iv
+                    if iv_sensex is None and sensex_nb.atm and sensex_nb.universe:
+                        iv_sensex = self._resolve_live_iv(
+                            sensex_nb,
+                            self.book.get(sensex_nb.atm.ce_symbol),
+                            self.book.get(sensex_nb.atm.pe_symbol),
+                            self._spot(sensex_nb),
+                            sensex_nb.atm.strike,
+                            sensex_nb.universe.expiry,
+                        )
+                    if iv_sensex is not None:
+                        await record_eod_atm_iv_if_due(
+                            self.data_dir,
+                            SENSEX_SYMBOL,
+                            iv_sensex,
+                        )
+            
             self.iv_history = load_iv_history(self.data_dir / IVP_HISTORY_FILE)
             self._iv_history_seeded = True
-            self._log.info("IVP history refreshed samples=%d", samples)
+            self._log.info("IVP history refreshed")
         except Exception as exc:  # noqa: BLE001
             self._log.warning("IVP history refresh failed: %s", exc)
 
     async def _reload_instruments_if_needed(self) -> None:
         today = self._today()
-        if self._instruments_day == today and self.universe is not None:
+        if self._instruments_day == today and self.notebooks:
             return
-        old_expiry = self.universe.expiry if self.universe else None
+        # Capture old expiries for all notebooks
+        old_expiries = {
+            nb_id: nb.universe.expiry if nb.universe else None
+            for nb_id, nb in self.notebooks.items()
+        }
         await self._load_instrument_universe()
-        if old_expiry != self.universe.expiry:
-            self._last_atm_strike = None
-            self._cached_atm_greeks_iv = None
-            self._cached_atm_greeks_strike = None
-            self.atm = None
-        self._log.info(
-            "instruments refreshed expiry=%s strikes=%d",
-            self.universe.expiry,
-            len(self._chain_cache[0]),
-        )
+        # Reset ATM cache if expiry changed for any notebook
+        for nb_id, nb in self.notebooks.items():
+            old_exp = old_expiries.get(nb_id)
+            if nb.universe and old_exp != nb.universe.expiry:
+                nb.last_atm_strike = None
+                nb.cached_atm_greeks_iv = None
+                nb.cached_atm_greeks_strike = None
+                nb.atm = None
+                self._log.info(
+                    "%s instruments refreshed expiry=%s strikes=%d",
+                    nb_id.upper(),
+                    nb.universe.expiry,
+                    len(nb.chain_cache[0]) if nb.chain_cache else 0,
+                )
         self._sync_subscriptions(force=True)
 
-    def _last_bar_day(self) -> str | None:
-        if not self._bar_builder.bars:
+    def _last_bar_day(self, nb: NotebookRuntime) -> str | None:
+        if not nb.bar_builder or not nb.bar_builder.bars:
             return None
-        return str(self._bar_builder.bars[-1].get("t") or "")[:10] or None
+        return str(nb.bar_builder.bars[-1].get("t") or "")[:10] or None
 
     def _apply_kite_bar_authority(
         self,
+        nb: NotebookRuntime,
         candles: list[list[Any]],
         *,
         window_floor: str,
         tail_from: str | None = None,
     ) -> tuple[int, int]:
         """Merge Kite OHLC then drop orphans so ADX/ATR match Kite charts."""
-        merged = self._bar_builder.merge_kite_candles(candles)
+        if not nb.bar_builder:
+            return 0, 0
+        merged = nb.bar_builder.merge_kite_candles(candles)
         if tail_from:
-            synced = self._bar_builder.drop_closed_bars_not_in_kite(
+            synced = nb.bar_builder.drop_closed_bars_not_in_kite(
                 candles,
                 range_from=tail_from,
             )
         else:
-            synced = self._bar_builder.sync_closed_bars_from_kite(
+            synced = nb.bar_builder.sync_closed_bars_from_kite(
                 candles,
                 window_floor=window_floor,
             )
-        trimmed = self._trim_bars_to_kite_window()
+        trimmed = self._trim_bars_to_kite_window(nb)
         return merged, synced + trimmed
 
-    def _trim_bars_to_kite_window(self, when: datetime | None = None) -> int:
+    def _trim_bars_to_kite_window(self, nb: NotebookRuntime, when: datetime | None = None) -> int:
         """Keep only bars inside the same rolling window as Kite historical fetches."""
+        if not nb.bar_builder:
+            return 0
         floor = kite_adx_window_start(when or datetime.now(IST), days=ADX_REST_DAYS)
-        dropped = self._bar_builder.drop_bars_before(floor)
+        dropped = nb.bar_builder.drop_bars_before(floor)
         if dropped:
-            self._log.info("ADX bars trimmed before %s dropped=%d", floor, dropped)
+            self._log.info("%s ADX bars trimmed before %s dropped=%d", nb.id.upper(), floor, dropped)
         return dropped
 
-    def _rebuild_kite_adx_bars(self, candles: list[list[Any]]) -> None:
+    def _rebuild_kite_adx_bars(self, nb: NotebookRuntime, candles: list[list[Any]]) -> None:
         """ADX/ATR use Kite REST bars only — never WS tick-built OHLC."""
-        self._kite_adx_bars = bars_from_kite_candles(candles, include_forming=True)
+        nb.kite_adx_bars = bars_from_kite_candles(candles, include_forming=True)
 
-    def _adx_bars_fresh(self) -> bool:
-        if len(self._bar_builder.bars) < MIN_BARS_FOR_ADX:
+    def _adx_bars_fresh(self, nb: NotebookRuntime) -> bool:
+        if not nb.bar_builder or len(nb.bar_builder.bars) < MIN_BARS_FOR_ADX:
             return False
-        return self._last_bar_day() == self._today()
+        return self._last_bar_day(nb) == self._today()
 
-    async def _seed_adx_bars_from_kite(self) -> None:
-        """REST fetch of NIFTY 1m candles (Kite chart OHLC — authoritative for ADX/ATR)."""
-        token = lookup_token(self._token_index, ADX_SYMBOL)
+    async def _seed_adx_bars_from_kite(self, nb: NotebookRuntime) -> None:
+        """REST fetch of notebook's 1m candles (Kite chart OHLC — authoritative for ADX/ATR)."""
+        if not nb.bar_builder:
+            return
+        token = lookup_token(self._token_index, nb.config.symbol)
         if token is None:
             return
         now = datetime.now(IST)
@@ -566,26 +721,27 @@ class FeedEngine:
         if not candles:
             # Empty during cash session: leave latch unset so we retry until Kite has bars.
             # Off-session / weekend fetches are skipped in _maybe_reseed / tail refresh.
-            dropped = self._bar_builder.drop_non_session_bars()
+            dropped = nb.bar_builder.drop_non_session_bars()
             if dropped:
-                save_bars(self.data_dir / MINUTE_BARS_FILE, self._bar_builder)
+                save_bars(self.data_dir / nb.config.bars_file, nb.bar_builder)
             self._log.info(
-                "ADX bars seed empty from Kite day=%s dropped_off_session=%d",
+                "%s ADX bars seed empty from Kite day=%s dropped_off_session=%d",
+                nb.id.upper(),
                 today,
                 dropped,
             )
             return
-        self._adx_kite_seed_day = today
+        nb.adx_kite_seed_day = today
         # Preserve in-progress WS minute across full reseed.
-        live_key = self._bar_builder._current_key
-        live_o = self._bar_builder._open
-        live_h = self._bar_builder._high
-        live_l = self._bar_builder._low
-        live_c = self._bar_builder._close
-        live_v = self._bar_builder._volume
-        live_sv = self._bar_builder._session_vol
-        live_oi = self._bar_builder._oi
-        builder = MinuteBarBuilder(symbol=ADX_SYMBOL)
+        live_key = nb.bar_builder._current_key
+        live_o = nb.bar_builder._open
+        live_h = nb.bar_builder._high
+        live_l = nb.bar_builder._low
+        live_c = nb.bar_builder._close
+        live_v = nb.bar_builder._volume
+        live_sv = nb.bar_builder._session_vol
+        live_oi = nb.bar_builder._oi
+        builder = MinuteBarBuilder(symbol=nb.config.symbol)
         floor = kite_adx_window_start(now, days=ADX_REST_DAYS)
         builder.sync_closed_bars_from_kite(candles, window_floor=floor)
         if live_key and live_c is not None and live_key > (builder.last_bar_minute() or ""):
@@ -597,65 +753,93 @@ class FeedEngine:
             builder._volume = live_v
             builder._session_vol = live_sv
             builder._oi = live_oi
-        self._bar_builder = builder
-        self._bar_builder.drop_non_session_bars()
-        self._rebuild_kite_adx_bars(candles)
-        await self._attach_fut_volume(frm, to)
-        self._adx_bars_day = today
-        save_bars(self.data_dir / MINUTE_BARS_FILE, self._bar_builder)
+        nb.bar_builder = builder
+        nb.bar_builder.drop_non_session_bars()
+        self._rebuild_kite_adx_bars(nb, candles)
+        await self._attach_fut_volume(nb, frm, to)
+        nb.adx_bars_day = today
+        save_bars(self.data_dir / nb.config.bars_file, nb.bar_builder)
         self._log.info(
-            "ADX bars seeded from Kite closed=%d symbol=%s",
-            len(self._bar_builder.bars),
-            ADX_SYMBOL,
+            "%s ADX bars seeded from Kite closed=%d symbol=%s",
+            nb.id.upper(),
+            len(nb.bar_builder.bars),
+            nb.config.symbol,
         )
 
-    async def _seed_adx_bars_if_needed(self) -> None:
+    async def _seed_adx_bars_if_needed(self, nb: NotebookRuntime) -> None:
+        if not nb.bar_builder:
+            return
         today = self._today()
         # One successful Kite historical seed per IST day.
-        if self._adx_kite_seed_day == today:
-            dropped = self._bar_builder.drop_non_session_bars()
-            trimmed = self._trim_bars_to_kite_window()
-            self._adx_bars_day = today
+        if nb.adx_kite_seed_day == today:
+            dropped = nb.bar_builder.drop_non_session_bars()
+            trimmed = self._trim_bars_to_kite_window(nb)
+            nb.adx_bars_day = today
             if dropped or trimmed:
-                save_bars(self.data_dir / MINUTE_BARS_FILE, self._bar_builder)
+                save_bars(self.data_dir / nb.config.bars_file, nb.bar_builder)
             self._log.info(
-                "ADX bars cache hit bars=%d day=%s kite_seed=%s dropped_off_session=%d trimmed=%d",
-                self._bar_builder.bar_count(),
-                self._adx_bars_day,
-                self._adx_kite_seed_day,
+                "%s ADX bars cache hit bars=%d day=%s kite_seed=%s dropped_off_session=%d trimmed=%d",
+                nb.id.upper(),
+                nb.bar_builder.bar_count(),
+                nb.adx_bars_day,
+                nb.adx_kite_seed_day,
                 dropped,
                 trimmed,
             )
             return
         if not in_adx_seed_window(datetime.now(IST)):
-            dropped = self._bar_builder.drop_non_session_bars()
-            if dropped:
-                save_bars(self.data_dir / MINUTE_BARS_FILE, self._bar_builder)
+            # After hours / weekend: skip normal seed so we do not day-latch empty
+            # overnight and miss the 09:15 fill. Exception: cold start with too few
+            # bars (new notebook like SENSEX) — pull Kite history once so chart/ADX work.
+            cold = nb.bar_builder.bar_count() < MIN_BARS_FOR_ADX and len(nb.kite_adx_bars) < MIN_BARS_FOR_ADX
+            if not cold:
+                dropped = nb.bar_builder.drop_non_session_bars()
+                if dropped:
+                    save_bars(self.data_dir / nb.config.bars_file, nb.bar_builder)
+                self._log.info(
+                    "%s ADX bars seed skipped off-session day=%s dropped_off_session=%d",
+                    nb.id.upper(),
+                    today,
+                    dropped,
+                )
+                return
             self._log.info(
-                "ADX bars seed skipped off-session day=%s dropped_off_session=%d",
-                today,
-                dropped,
+                "%s ADX cold-start seed off-session bars=%d",
+                nb.id.upper(),
+                nb.bar_builder.bar_count(),
             )
-            return
-        await self._seed_adx_bars_from_kite()
+        await self._seed_adx_bars_from_kite(nb)
 
     async def _maybe_reseed_adx_bars(self) -> None:
-        """Re-seed once per IST day from Kite (or after historical API recovers)."""
+        """Re-seed once per IST day from Kite for all enabled notebooks."""
         today = self._today()
-        if self._adx_kite_seed_day == today:
-            return
-        if not in_adx_seed_window(datetime.now(IST)):
-            dropped = self._bar_builder.drop_non_session_bars()
-            if dropped:
-                save_bars(self.data_dir / MINUTE_BARS_FILE, self._bar_builder)
-            return
-        await self._seed_adx_bars_if_needed()
-        self._refresh_adx_from_bars()
+        for nb in self.notebooks.values():
+            if not nb.enabled:
+                continue
+            if nb.adx_kite_seed_day == today:
+                continue
+            if not in_adx_seed_window(datetime.now(IST)):
+                cold = (
+                    nb.bar_builder is not None
+                    and nb.bar_builder.bar_count() < MIN_BARS_FOR_ADX
+                    and len(nb.kite_adx_bars) < MIN_BARS_FOR_ADX
+                )
+                if not cold:
+                    if nb.bar_builder:
+                        dropped = nb.bar_builder.drop_non_session_bars()
+                        if dropped:
+                            save_bars(self.data_dir / nb.config.bars_file, nb.bar_builder)
+                    continue
+            await self._seed_adx_bars_if_needed(nb)
+            self._refresh_adx_from_bars(nb)
 
     def _reset_session_if_new_day(self) -> None:
         today = self._today()
         if self.session.day != today:
             self.session = SessionState(day=today)
+        for nb in self.notebooks.values():
+            if nb.session.day != today:
+                nb.session = NotebookSession(day=today)
 
     def _load_iv_history(self) -> None:
         self.iv_history = load_iv_history(self.data_dir / IVP_HISTORY_FILE)
@@ -665,33 +849,37 @@ class FeedEngine:
 
     def _greeks_iv(
         self,
+        nb: NotebookRuntime,
         ce_row: dict[str, Any] | None,
         pe_row: dict[str, Any] | None,
     ) -> float | None:
         if (
-            self.atm is not None
-            and self._cached_atm_greeks_iv is not None
-            and self._cached_atm_greeks_strike == self.atm.strike
+            nb.atm is not None
+            and nb.cached_atm_greeks_iv is not None
+            and nb.cached_atm_greeks_strike == nb.atm.strike
         ):
-            return self._cached_atm_greeks_iv
+            return nb.cached_atm_greeks_iv
         return atm_greeks_iv(ce_row, pe_row)
 
     def _resolve_live_iv(
         self,
+        nb: NotebookRuntime,
         ce_row: dict[str, Any] | None,
         pe_row: dict[str, Any] | None,
         spot: float | None,
         strike: int | None,
         expiry: date | None,
     ) -> float | None:
-        greeks_iv = self._greeks_iv(ce_row, pe_row)
+        greeks_iv = self._greeks_iv(nb, ce_row, pe_row)
         if greeks_iv is not None:
             return greeks_iv
         return resolve_atm_iv(ce_row, pe_row, spot, strike, expiry)
 
-    def _persist_bars_async(self) -> None:
-        path = self.data_dir / MINUTE_BARS_FILE
-        builder = self._bar_builder
+    def _persist_bars_async(self, nb: NotebookRuntime) -> None:
+        if not nb.bar_builder:
+            return
+        path = self.data_dir / nb.config.bars_file
+        builder = nb.bar_builder
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -699,65 +887,80 @@ class FeedEngine:
             return
         loop.create_task(asyncio.to_thread(save_bars, path, builder))
 
-    def _schedule_kite_adx_refresh(self) -> None:
+    def _schedule_kite_adx_refresh(self, nb: NotebookRuntime) -> None:
         now = time.monotonic()
-        if now - self._adx_kite_fetch_at < ADX_KITE_FETCH_S:
+        if now - nb.adx_kite_fetch_at < ADX_KITE_FETCH_S:
             return
-        self._adx_kite_fetch_at = now
-        self._schedule_adx_tail_refresh()
+        nb.adx_kite_fetch_at = now
+        self._schedule_adx_tail_refresh(nb)
 
     def _handle_tick(self, symbol: str, row: dict[str, Any]) -> None:
-        if self.universe is not None and symbol == self.universe.fut_symbol:
-            self._bar_builder.ingest_volume(quote_volume(row))
-            self._bar_builder.ingest_oi(quote_oi(row))
-        if symbol == NIFTY_SYMBOL:
+        # Dispatch FUT volume/OI to owning notebook
+        for nb_id, nb in self.notebooks.items():
+            if nb.enabled and nb.universe and symbol == nb.universe.fut_symbol:
+                if nb.bar_builder:
+                    nb.bar_builder.ingest_volume(quote_volume(row))
+                    nb.bar_builder.ingest_oi(quote_oi(row))
+        
+        # Dispatch spot tick to owning notebook for bars + ATM
+        for nb_id, nb in self.notebooks.items():
+            if not nb.enabled or not nb.universe or symbol != nb.config.symbol:
+                continue
             ltp = quote_ltp(row)
-            finalized = self._bar_builder.ingest(ltp)
-            if finalized:
-                # Closed bar: persist + overwrite OHLC from Kite REST for chart parity.
-                self._adx_live_at = 0.0
-                self._refresh_adx_from_bars()
-                self._persist_bars_async()
-                self._schedule_adx_tail_refresh()
-            else:
-                now = time.monotonic()
-                if now - self._adx_live_at >= ADX_LIVE_REFRESH_S:
-                    self._adx_live_at = now
-                    self._refresh_adx_from_bars(purge=False)
-                self._schedule_kite_adx_refresh()
+            if nb.bar_builder and ltp is not None:
+                finalized = nb.bar_builder.ingest(ltp)
+                if finalized:
+                    # Closed bar: persist + overwrite OHLC from Kite REST for chart parity.
+                    nb.adx_live_at = 0.0
+                    self._refresh_adx_from_bars(nb)
+                    self._persist_bars_async(nb)
+                    self._schedule_adx_tail_refresh(nb)
+                else:
+                    now = time.monotonic()
+                    if now - nb.adx_live_at >= ADX_LIVE_REFRESH_S:
+                        nb.adx_live_at = now
+                        self._refresh_adx_from_bars(nb, purge=False)
+                    self._schedule_kite_adx_refresh(nb)
+            
+            # Update ATM if needed
+            spot = ltp
+            if spot is None:
+                continue
+            ref = spot
+            if nb.atm is not None:
+                ce_ltp = quote_ltp(self.book.get(nb.atm.ce_symbol))
+                pe_ltp = quote_ltp(self.book.get(nb.atm.pe_symbol))
+                ref = atm_ref_price(spot, float(nb.atm.strike), ce_ltp, pe_ltp)
+            legs = resolve_atm_legs(
+                nb.universe,
+                spot,
+                current_strike=nb.last_atm_strike,
+                ref_price=ref,
+            )
+            if nb.last_atm_strike == legs.strike:
+                continue
+            nb.last_atm_strike = legs.strike
+            nb.atm = legs
+            nb.cached_atm_greeks_iv = None
+            nb.cached_atm_greeks_strike = None
+            self._sync_subscriptions(force=True)
 
-        if symbol != NIFTY_SYMBOL or self.universe is None:
-            return
-        spot = self._spot()
-        if spot is None:
-            return
-        ref = spot
-        if self.atm is not None:
-            ce_ltp = quote_ltp(self.book.get(self.atm.ce_symbol))
-            pe_ltp = quote_ltp(self.book.get(self.atm.pe_symbol))
-            ref = atm_ref_price(spot, float(self.atm.strike), ce_ltp, pe_ltp)
-        legs = resolve_atm_legs(
-            self.universe,
-            spot,
-            current_strike=self._last_atm_strike,
-            ref_price=ref,
-        )
-        if self._last_atm_strike == legs.strike:
-            return
-        self._last_atm_strike = legs.strike
-        self.atm = legs
-        self._cached_atm_greeks_iv = None
-        self._cached_atm_greeks_strike = None
-        self._sync_subscriptions(force=True)
-
-    def _spot(self) -> float | None:
-        return quote_ltp(self.book.get(NIFTY_SYMBOL))
+    def _spot(self, nb: NotebookRuntime | None = None) -> float | None:
+        """Get spot LTP for a notebook (defaults to nifty for back-compat)."""
+        if nb is None:
+            nb = self.notebooks.get("nifty")
+        if nb is None:
+            return None
+        return quote_ltp(self.book.get(nb.config.symbol))
 
     def _bootstrap_symbols(self) -> list[str]:
-        assert self.universe is not None
+        """Bootstrap symbols: header watch + VIX + all enabled notebook FUT symbols."""
         watch = self._header_watch or list(HEADER_WATCHLIST)
         symbols = [item["symbol"] for item in watch if item.get("symbol")]
-        symbols.extend([*VIX_SYMBOLS, self.universe.fut_symbol])
+        symbols.extend(VIX_SYMBOLS)
+        for nb in self.notebooks.values():
+            if nb.enabled and nb.universe:
+                symbols.append(nb.universe.fut_symbol)
         return list(dict.fromkeys(symbols))
 
     def _build_indices(self) -> list[dict[str, Any]]:
@@ -785,15 +988,17 @@ class FeedEngine:
             out.append(entry)
         return out
 
-    def _kite_adx_series_bars(self) -> list[dict[str, Any]]:
+    def _kite_adx_series_bars(self, nb: NotebookRuntime) -> list[dict[str, Any]]:
         """Kite REST history + WS tick OHLC on the forming minute (matches Kite app).
 
         LOCKED: final Kite-parity bar series for ADX/ATR/DMI — do not alter.
         """
-        if not self._kite_adx_bars:
-            return self._bar_builder.chart_bars()
-        bars = [dict(b) for b in self._kite_adx_bars]
-        live_tail = self._bar_builder.chart_bars()
+        if not nb.bar_builder:
+            return []
+        if not nb.kite_adx_bars:
+            return nb.bar_builder.chart_bars()
+        bars = [dict(b) for b in nb.kite_adx_bars]
+        live_tail = nb.bar_builder.chart_bars()
         if not live_tail:
             return bars
         live = dict(live_tail[-1])
@@ -806,9 +1011,9 @@ class FeedEngine:
             bars.append(live)
         return bars
 
-    def _bars_for_chart(self, limit: int) -> list[dict[str, Any]]:
+    def _bars_for_chart(self, nb: NotebookRuntime, limit: int) -> list[dict[str, Any]]:
         """Bars for chart + DMI (Kite REST closed, WS forming)."""
-        return self._kite_adx_series_bars()[-max(1, limit) :]
+        return self._kite_adx_series_bars(nb)[-max(1, limit) :]
 
     def _bar_dict_to_candle(self, bar: dict[str, Any]) -> dict[str, Any] | None:
         try:
@@ -827,12 +1032,13 @@ class FeedEngine:
             "oi": float(bar.get("oi") or 0),
         }
 
-    def nifty_candles(
+    def candles(
         self,
+        nb: str = "nifty",
         limit: int = 800,
         since: int | None = None,
     ) -> dict[str, Any]:
-        """NIFTY 50 1-minute OHLC from Kite (same bars as ADX/ATR).
+        """1-minute OHLC from Kite for a notebook (same bars as ADX/ATR).
 
         When ``since`` is set (unix seconds of the client's last bar), return
         only bars with time >= since so the forming candle can update without
@@ -840,7 +1046,11 @@ class FeedEngine:
         """
         from atlas_lite.metrics import wilder_dmi_series
 
-        series = self._kite_adx_series_bars()
+        runtime = self.notebooks.get(nb)
+        if not runtime or not runtime.enabled:
+            return {"ok": False, "error": f"Notebook {nb} not enabled"}
+        
+        series = self._kite_adx_series_bars(runtime)
         raw = series[-max(1, limit) :]
         bars: list[dict[str, Any]] = []
         for bar in raw:
@@ -877,71 +1087,85 @@ class FeedEngine:
             bars = [b for b in bars if int(b["time"]) >= int(since)]
         return {
             "ok": True,
-            "symbol": NIFTY_SYMBOL,
-            "label": "NIFTY 50",
+            "symbol": runtime.config.symbol,
+            "label": runtime.config.label,
             "bars": bars,
             "delta": delta,
         }
 
-    def live_chart_bars(self, limit: int = 2) -> list[dict[str, Any]]:
+    def nifty_candles(
+        self,
+        limit: int = 800,
+        since: int | None = None,
+    ) -> dict[str, Any]:
+        """NIFTY 50 1-minute OHLC (back-compat wrapper for candles("nifty"))."""
+        return self.candles("nifty", limit=limit, since=since)
+
+    def live_chart_bars(self, nb: str = "nifty", limit: int = 2) -> list[dict[str, Any]]:
         """Last 1m bars (including forming) for SSE chart paint."""
-        return list(self.nifty_candles(limit=max(1, limit)).get("bars") or [])
+        return list(self.candles(nb, limit=max(1, limit)).get("bars") or [])
 
-    def _metrics_chain(self) -> tuple[list[int], list[str], list[str]]:
-        assert self.universe is not None
-        if self._chain_cache is None:
-            self._chain_cache = full_chain_symbols(self.universe, self._nfo_csv)
-        return self._chain_cache
+    def _metrics_chain(self, nb: NotebookRuntime) -> tuple[list[int], list[str], list[str]]:
+        if nb.chain_cache is None and nb.universe:
+            nb.chain_cache = full_chain_symbols(nb.universe, nb.fo_csv)
+        return nb.chain_cache or ([], [], [])
 
-    def _full_symbols(self, legs: AtmLegs) -> list[str]:
-        assert self.universe is not None
-        _strikes, ce_syms, pe_syms = self._metrics_chain()
-        symbols = [
-            *self._bootstrap_symbols(),
-            legs.ce_symbol,
-            legs.pe_symbol,
-            *ce_syms,
-            *pe_syms,
-        ]
+    def _full_symbols(self) -> list[str]:
+        """Union of bootstrap + all enabled notebooks' full chains (when ATM set)."""
+        symbols = self._bootstrap_symbols()
+        for nb in self.notebooks.values():
+            if not nb.enabled or not nb.universe or not nb.atm:
+                continue
+            if nb.chain_cache:
+                _strikes, ce_syms, pe_syms = nb.chain_cache
+                symbols.extend([nb.atm.ce_symbol, nb.atm.pe_symbol, *ce_syms, *pe_syms])
         return list(dict.fromkeys(symbols))
 
     def _sync_subscriptions(self, *, force: bool = False) -> None:
-        if not self._token_index or self.universe is None:
+        """Subscribe to union of bootstrap + all enabled notebooks' full chains."""
+        if not self._token_index:
             return
+        # Always start with bootstrap
         symbols = self._bootstrap_symbols()
-        if self.atm:
-            symbols = self._full_symbols(self.atm)
+        # If any notebook has ATM set, use full union
+        has_atm = any(nb.atm for nb in self.notebooks.values() if nb.enabled)
+        if has_atm:
+            symbols = self._full_symbols()
         elif force:
-            spot = self._spot()
-            if spot is not None:
-                legs = resolve_atm_legs(self.universe, spot)
-                self._last_atm_strike = legs.strike
-                self.atm = legs
-                symbols = self._full_symbols(legs)
+            # Force ATM resolution for all enabled notebooks
+            for nb in self.notebooks.values():
+                if not nb.enabled or not nb.universe:
+                    continue
+                spot = self._spot(nb)
+                if spot is not None:
+                    legs = resolve_atm_legs(nb.universe, spot)
+                    nb.last_atm_strike = legs.strike
+                    nb.atm = legs
+            symbols = self._full_symbols()
         token_map = token_map_for_symbols(self._token_index, symbols)
         if token_map and token_map != self.token_map:
             self.token_map = token_map
             if self.ticker:
                 self.ticker.set_symbols(token_map)
 
-    def _schedule_adx_tail_refresh(self) -> None:
+    def _schedule_adx_tail_refresh(self, nb: NotebookRuntime) -> None:
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        if self._adx_tail_task is not None and not self._adx_tail_task.done():
+        if nb.adx_tail_task is not None and not nb.adx_tail_task.done():
             return
-        self._adx_tail_task = loop.create_task(self._refresh_adx_tail_from_kite())
+        nb.adx_tail_task = loop.create_task(self._refresh_adx_tail_from_kite(nb))
 
-    async def _refresh_adx_tail_from_kite(self, tail: int = ADX_TAIL_BARS) -> None:
+    async def _refresh_adx_tail_from_kite(self, nb: NotebookRuntime, tail: int = ADX_TAIL_BARS) -> None:
         """Replace recent closed 1m bars with Kite REST candles (chart parity)."""
-        token = lookup_token(self._token_index, ADX_SYMBOL)
+        token = lookup_token(self._token_index, nb.config.symbol)
         if token is None:
-            self._refresh_adx_from_bars()
+            self._refresh_adx_from_bars(nb)
             return
         now = datetime.now(IST)
         if not in_adx_seed_window(now):
-            self._refresh_adx_from_bars()
+            self._refresh_adx_from_bars(nb)
             return
         frm_tail = (now - timedelta(minutes=tail + 5)).strftime("%Y-%m-%d %H:%M:%S")
         frm_full = (now - timedelta(days=ADX_REST_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
@@ -954,39 +1178,41 @@ class FeedEngine:
                 to_date=to,
             )
             if candles:
-                self._rebuild_kite_adx_bars(candles)
+                self._rebuild_kite_adx_bars(nb, candles)
                 merged, synced = self._apply_kite_bar_authority(
+                    nb,
                     candles,
                     window_floor=floor,
                     tail_from=frm_tail[:16],
                 )
-                vol_updated = await self._attach_fut_volume(frm_tail, to)
+                vol_updated = await self._attach_fut_volume(nb, frm_tail, to)
                 if merged or synced or vol_updated:
-                    self._persist_bars_async()
+                    self._persist_bars_async(nb)
                     self._log.info(
-                        "ADX tail refreshed from Kite merged=%d synced=%d vol=%d adx_bars=%d",
+                        "%s ADX tail refreshed from Kite merged=%d synced=%d vol=%d adx_bars=%d",
+                        nb.id.upper(),
                         merged,
                         synced,
                         vol_updated,
-                        len(self._kite_adx_bars),
+                        len(nb.kite_adx_bars),
                     )
                 # Tail success means historical API is healthy — count as today's seed
                 # so we don't thrash a full 3-day reseed every maintenance cycle.
-                if self._adx_kite_seed_day != self._today() and self._adx_bars_fresh():
-                    self._adx_kite_seed_day = self._today()
-                    self._adx_bars_day = self._today()
+                if nb.adx_kite_seed_day != self._today() and self._adx_bars_fresh(nb):
+                    nb.adx_kite_seed_day = self._today()
+                    nb.adx_bars_day = self._today()
         except Exception as exc:  # noqa: BLE001
-            self._log.warning("ADX tail refresh failed: %s", exc)
+            self._log.warning("%s ADX tail refresh failed: %s", nb.id.upper(), exc)
             # Historical down (e.g. 403) — clear kite seed so we reseed when API recovers.
             if "403" in str(exc):
-                self._adx_kite_seed_day = ""
-        self._refresh_adx_from_bars()
+                nb.adx_kite_seed_day = ""
+        self._refresh_adx_from_bars(nb)
 
-    async def _attach_fut_volume(self, from_date: str, to_date: str) -> int:
-        """Fill zero index volume from NIFTY FUT 1m candles."""
-        if self.universe is None:
+    async def _attach_fut_volume(self, nb: NotebookRuntime, from_date: str, to_date: str) -> int:
+        """Fill zero index volume from notebook's FUT 1m candles."""
+        if not nb.bar_builder or not nb.universe:
             return 0
-        token = lookup_token(self._token_index, self.universe.fut_symbol)
+        token = lookup_token(self._token_index, nb.universe.fut_symbol)
         if token is None:
             return 0
         try:
@@ -997,17 +1223,17 @@ class FeedEngine:
                 oi=1,
             )
         except Exception as exc:  # noqa: BLE001
-            self._log.warning("FUT volume merge failed: %s", exc)
+            self._log.warning("%s FUT volume merge failed: %s", nb.id.upper(), exc)
             return 0
         if not candles:
             return 0
-        updated = self._bar_builder.merge_volume_from_candles(candles)
+        updated = nb.bar_builder.merge_volume_from_candles(candles)
         if updated:
-            self._log.info("FUT volume merged bars=%d", updated)
+            self._log.info("%s FUT volume merged bars=%d", nb.id.upper(), updated)
         return updated
 
     async def _iv_greeks_loop(self) -> None:
-        """Overlay Kite REST greeks.iv on ATM legs (WS ticks have no IV)."""
+        """Overlay Kite REST greeks.iv on ATM legs for all enabled notebooks."""
         while True:
             try:
                 await self._refresh_atm_greeks_from_kite()
@@ -1016,12 +1242,16 @@ class FeedEngine:
             await asyncio.sleep(IV_GREEKS_REFRESH_S)
 
     async def _refresh_atm_greeks_from_kite(self) -> None:
-        if not self.atm:
+        """Refresh greeks for all enabled notebooks' ATM legs."""
+        all_symbols: list[str] = []
+        for nb in self.notebooks.values():
+            if nb.enabled and nb.atm:
+                all_symbols.extend([nb.atm.ce_symbol, nb.atm.pe_symbol])
+        if not all_symbols:
             return
-        symbols = [self.atm.ce_symbol, self.atm.pe_symbol]
-        raw = await self.rest.quote(symbols)
+        raw = await self.rest.quote(all_symbols)
         quotes = normalize_quote_map(raw)
-        for sym in symbols:
+        for sym in all_symbols:
             row = quotes.get(sym)
             if not isinstance(row, dict):
                 continue
@@ -1035,15 +1265,19 @@ class FeedEngine:
                 overlay["open_interest"] = row.get("open_interest", oi)
             if overlay:
                 self.book.merge(sym, overlay)
-        ce_row = quotes.get(self.atm.ce_symbol)
-        pe_row = quotes.get(self.atm.pe_symbol)
-        greeks_iv = atm_greeks_iv(
-            ce_row if isinstance(ce_row, dict) else None,
-            pe_row if isinstance(pe_row, dict) else None,
-        )
-        if greeks_iv is not None:
-            self._cached_atm_greeks_iv = greeks_iv
-            self._cached_atm_greeks_strike = self.atm.strike
+        # Update cached IV for each notebook
+        for nb in self.notebooks.values():
+            if not nb.enabled or not nb.atm:
+                continue
+            ce_row = quotes.get(nb.atm.ce_symbol)
+            pe_row = quotes.get(nb.atm.pe_symbol)
+            greeks_iv = atm_greeks_iv(
+                ce_row if isinstance(ce_row, dict) else None,
+                pe_row if isinstance(pe_row, dict) else None,
+            )
+            if greeks_iv is not None:
+                nb.cached_atm_greeks_iv = greeks_iv
+                nb.cached_atm_greeks_strike = nb.atm.strike
 
     async def _maintenance_loop(self) -> None:
         """Daily instruments/IVP refresh only — ADX updates from WS minute bars."""
@@ -1063,36 +1297,45 @@ class FeedEngine:
                 await self._maybe_reseed_adx_bars()
             except Exception as exc:  # noqa: BLE001
                 warnings.append(f"ADX bar seed failed: {exc}")
-            try:
-                await self._refresh_adx_tail_from_kite()
-            except Exception as exc:  # noqa: BLE001
-                warnings.append(f"ADX tail refresh failed: {exc}")
-            self._adx_warnings = warnings
+            # Tail refresh for all enabled notebooks
+            for nb in self.notebooks.values():
+                if nb.enabled:
+                    try:
+                        await self._refresh_adx_tail_from_kite(nb)
+                    except Exception as exc:  # noqa: BLE001
+                        warnings.append(f"{nb.id.upper()} ADX tail refresh failed: {exc}")
+            # Shared maintenance issues only — do not accumulate stale feed warnings
+            # (WS blips during dual-chain resubscribe used to stick forever).
+            for nb in self.notebooks.values():
+                if nb.enabled:
+                    nb.adx_warnings = list(warnings)
             await asyncio.sleep(MAINTENANCE_LOOP_S)
 
-    def _refresh_adx_from_bars(self, *, purge: bool = True) -> None:
+    def _refresh_adx_from_bars(self, nb: NotebookRuntime, *, purge: bool = True) -> None:
         """ADX/ATR from Kite REST 1m bars (matches Kite chart; WS bars are chart-only)."""
+        if not nb.bar_builder:
+            return
         if purge:
-            self._bar_builder.drop_non_session_bars()
-        series = self._kite_adx_series_bars()
+            nb.bar_builder.drop_non_session_bars()
+        series = self._kite_adx_series_bars(nb)
         highs, lows, closes = ohlc_from_bar_dicts(series)
         if len(closes) < MIN_BARS_FOR_ADX:
             return
         adx = compute_adx(highs, lows, closes)
         atr = compute_atr(highs, lows, closes)
         bar_count = len(closes)
-        hint = f"{ADX_SYMBOL} 1m · {bar_count} bars · Kite+live"
+        hint = f"{nb.config.symbol} 1m · {bar_count} bars · Kite+live"
         changed = False
-        if adx is not None and adx != self.adx:
-            self.adx = adx
-            self._log.info("derived adx=%.2f bars=%d", adx, bar_count)
+        if adx is not None and adx != nb.adx:
+            nb.adx = adx
+            self._log.info("%s derived adx=%.2f bars=%d", nb.id.upper(), adx, bar_count)
             changed = True
-        if atr is not None and atr != self.atr:
-            self.atr = atr
-            self._log.info("derived atr=%.2f bars=%d", atr, bar_count)
+        if atr is not None and atr != nb.atr:
+            nb.atr = atr
+            self._log.info("%s derived atr=%.2f bars=%d", nb.id.upper(), atr, bar_count)
             changed = True
-        if hint != self.adx_hint:
-            self.adx_hint = hint
+        if hint != nb.adx_hint:
+            nb.adx_hint = hint
             changed = True
         if changed:
             self.book.notify_update()
@@ -1194,10 +1437,15 @@ class FeedEngine:
         body["iv_chg_5d"] = feed.get("iv_chg_5d")
         return body
 
-    def build_feed(self) -> dict[str, Any]:
+    def build_feed(self, nb: str = "nifty") -> dict[str, Any]:
+        """Build feed for a specific notebook (nifty or sensex)."""
         self._reset_session_if_new_day()
+        runtime = self.notebooks.get(nb)
+        if not runtime or not runtime.enabled:
+            return {"error": f"Notebook {nb} not enabled"}
+        
         feed: dict[str, Any] = {}
-        warnings: list[str] = list(self._adx_warnings)
+        warnings: list[str] = []
 
         for feed_key, symbol in INDEX_SYMBOLS.items():
             row = self.book.get(symbol)
@@ -1208,16 +1456,19 @@ class FeedEngine:
             if pts is not None:
                 feed[feed_key.replace("_chg", "_pts")] = pts
 
-        spot = self._spot()
+        spot = self._spot(runtime)
         if spot is not None:
-            feed["nifty_ltp"] = spot
+            feed["spot"] = spot
+            # Back-compat: keep nifty_ltp for nifty notebook (paper reads this)
+            if nb == "nifty":
+                feed["nifty_ltp"] = spot
 
-        if self.atm and self.universe:
-            feed["atm"] = self.atm.strike
-            feed["ce_symbol"] = self.atm.ce_symbol
-            feed["pe_symbol"] = self.atm.pe_symbol
-            ce_row = self.book.get(self.atm.ce_symbol)
-            pe_row = self.book.get(self.atm.pe_symbol)
+        if runtime.atm and runtime.universe:
+            feed["atm"] = runtime.atm.strike
+            feed["ce_symbol"] = runtime.atm.ce_symbol
+            feed["pe_symbol"] = runtime.atm.pe_symbol
+            ce_row = self.book.get(runtime.atm.ce_symbol)
+            pe_row = self.book.get(runtime.atm.pe_symbol)
             ce_ltp = quote_ltp(ce_row)
             pe_ltp = quote_ltp(pe_row)
             if ce_ltp is not None:
@@ -1231,21 +1482,22 @@ class FeedEngine:
             if pe_oi is not None:
                 feed["pe_oi"] = pe_oi
             iv = self._resolve_live_iv(
+                runtime,
                 ce_row,
                 pe_row,
                 spot,
-                self.atm.strike,
-                self.universe.expiry,
+                runtime.atm.strike,
+                runtime.universe.expiry,
             )
             if iv is not None:
                 feed["iv"] = iv
 
-        if self.adx is not None:
-            feed["adx"] = self.adx
-        if self.atr is not None:
-            feed["atr"] = self.atr
-        if self.adx_hint:
-            feed["adx_hint"] = self.adx_hint
+        if runtime.adx is not None:
+            feed["adx"] = runtime.adx
+        if runtime.atr is not None:
+            feed["atr"] = runtime.atr
+        if runtime.adx_hint:
+            feed["adx_hint"] = runtime.adx_hint
 
         for vix_sym in VIX_SYMBOLS:
             vix_row = self.book.get(vix_sym)
@@ -1261,30 +1513,30 @@ class FeedEngine:
             feed["vix_chg"] = round(vix_ltp - float(self.session.vix_open), 3)
             break
 
-        assert self.universe is not None
-        fut_row = self.book.get(self.universe.fut_symbol)
-        fut_oi = quote_oi(fut_row)
-        if fut_oi is not None:
-            feed["fut_oi"] = fut_oi
-        if fut_oi is not None and fut_oi > 0:
-            if self.session.fut_oi_baseline is None:
-                self.session.fut_oi_baseline = fut_oi
-            base = self.session.fut_oi_baseline
-            if base is not None:
-                feed["fut_oi_base"] = base
-            if base and base > 0:
-                feed["oi_pct_chg"] = round((fut_oi - base) / base * 100, 2)
-            kite_high = quote_oi_day_high(fut_row)
-            high = update_oi_day_high(fut_oi, kite_high, self.session.fut_oi_day_high)
-            if high is not None:
-                self.session.fut_oi_day_high = high
-                feed["fut_oi_day_high"] = high
-                pct = oi_pct_of_day_high(fut_oi, high)
-                if pct is not None:
-                    feed["oi_vs_day_high"] = pct
+        if runtime.universe:
+            fut_row = self.book.get(runtime.universe.fut_symbol)
+            fut_oi = quote_oi(fut_row)
+            if fut_oi is not None:
+                feed["fut_oi"] = fut_oi
+            if fut_oi is not None and fut_oi > 0:
+                if runtime.session.fut_oi_baseline is None:
+                    runtime.session.fut_oi_baseline = fut_oi
+                base = runtime.session.fut_oi_baseline
+                if base is not None:
+                    feed["fut_oi_base"] = base
+                if base and base > 0:
+                    feed["oi_pct_chg"] = round((fut_oi - base) / base * 100, 2)
+                kite_high = quote_oi_day_high(fut_row)
+                high = update_oi_day_high(fut_oi, kite_high, runtime.session.fut_oi_day_high)
+                if high is not None:
+                    runtime.session.fut_oi_day_high = high
+                    feed["fut_oi_day_high"] = high
+                    pct = oi_pct_of_day_high(fut_oi, high)
+                    if pct is not None:
+                        feed["oi_vs_day_high"] = pct
 
-        if self.atm and self.universe:
-            strikes, ce_syms, pe_syms = self._metrics_chain()
+        if runtime.atm and runtime.universe:
+            strikes, ce_syms, pe_syms = self._metrics_chain(runtime)
             chain = chain_pcr_max_pain(
                 strikes,
                 [self.book.get(s) for s in ce_syms],
@@ -1295,22 +1547,24 @@ class FeedEngine:
         if feed.get("iv") is not None:
             iv = float(feed["iv"])
             if iv > 0:
-                if self.session.iv_day_high is None or iv > self.session.iv_day_high:
-                    self.session.iv_day_high = iv
-                if self.session.iv_day_low is None or iv < self.session.iv_day_low:
-                    self.session.iv_day_low = iv
-                feed["iv_day_high"] = self.session.iv_day_high
-                feed["iv_day_low"] = self.session.iv_day_low
-                pct = iv_pct_of_day_low(iv, self.session.iv_day_low)
+                if runtime.session.iv_day_high is None or iv > runtime.session.iv_day_high:
+                    runtime.session.iv_day_high = iv
+                if runtime.session.iv_day_low is None or iv < runtime.session.iv_day_low:
+                    runtime.session.iv_day_low = iv
+                feed["iv_day_high"] = runtime.session.iv_day_high
+                feed["iv_day_low"] = runtime.session.iv_day_low
+                pct = iv_pct_of_day_low(iv, runtime.session.iv_day_low)
                 if pct is not None:
                     feed["iv_vs_day_low"] = pct
 
-        samples = self._ivp_samples()
+        # IVP from notebook's IVP key
+        samples = ivp_sample_values(self.iv_history, runtime.config.ivp_key)
         iv_for_ivp = None
-        if self.atm and self.universe:
+        if runtime.atm and runtime.universe:
             iv_for_ivp = self._greeks_iv(
-                self.book.get(self.atm.ce_symbol),
-                self.book.get(self.atm.pe_symbol),
+                runtime,
+                self.book.get(runtime.atm.ce_symbol),
+                self.book.get(runtime.atm.pe_symbol),
             )
         if iv_for_ivp is None and feed.get("iv") is not None:
             iv_for_ivp = float(feed["iv"])
@@ -1323,7 +1577,7 @@ class FeedEngine:
             chg = iv_change_n_days(self.iv_history, iv_for_ivp, n=5)
             if chg is not None:
                 feed["iv_chg_5d"] = chg
-        ivp_stats = ivp_history_stats(self.iv_history)
+        ivp_stats = ivp_history_stats(self.iv_history, runtime.config.ivp_key)
         if ivp_stats["total"] > 0:
             feed["ivp_proxy_days"] = ivp_stats["proxy"]
             feed["ivp_real_days"] = ivp_stats["real"]
@@ -1347,10 +1601,11 @@ class FeedEngine:
             elif not self.book.connected:
                 warnings.append("Kite WebSocket disconnected — check network or refresh token")
             else:
-                warnings.append("Waiting for NIFTY tick…")
-        if self.adx is None:
+                warnings.append(f"Waiting for {runtime.config.label} tick…")
+        if runtime.adx is None:
             warnings.append("Warming ADX from Kite 1m closed bars…")
 
+        runtime.adx_warnings = list(warnings)
         self.warnings = warnings
         log_feed_snapshot(self._log, feed)
         return feed
@@ -1387,12 +1642,15 @@ class FeedEngine:
                 body["error"] = auth_error
         return body
 
-    def build_option_chain(self, *, wing_strikes: int | None = None) -> dict[str, Any]:
-        """Live option chain snapshot from Kite WS quote book."""
-        assert self.universe is not None
-        spot = self._spot()
-        atm_strike = self.atm.strike if self.atm else None
-        strikes, ce_syms, pe_syms = self._metrics_chain()
+    def build_option_chain(self, nb: str = "nifty", *, wing_strikes: int | None = None) -> dict[str, Any]:
+        """Live option chain snapshot from Kite WS quote book for a notebook."""
+        runtime = self.notebooks.get(nb)
+        if not runtime or not runtime.enabled or not runtime.universe:
+            return {"ok": False, "error": f"Notebook {nb} not available"}
+        
+        spot = self._spot(runtime)
+        atm_strike = runtime.atm.strike if runtime.atm else None
+        strikes, ce_syms, pe_syms = self._metrics_chain(runtime)
         ce_rows = [self.book.get(s) for s in ce_syms]
         pe_rows = [self.book.get(s) for s in pe_syms]
         chain_metrics = chain_pcr_max_pain(strikes, ce_rows, pe_rows)
@@ -1406,8 +1664,8 @@ class FeedEngine:
         totals = chain_accumulated_totals(rows)
         return {
             "ok": True,
-            "underlying": NIFTY_SYMBOL,
-            "expiry": self.universe.expiry.isoformat(),
+            "underlying": runtime.config.symbol,
+            "expiry": runtime.universe.expiry.isoformat(),
             "spot": spot,
             "atm_strike": atm_strike,
             "pcr": chain_metrics.get("pcr"),
@@ -1418,28 +1676,45 @@ class FeedEngine:
             "computed_at_ms": int(time.time() * 1000),
         }
 
-    def build_frame(self) -> dict[str, Any]:
-        feed = self.build_feed()
-        warnings: list[str] = list(self.warnings)
-        if feed.get("nifty_ltp") is None and "Waiting for NIFTY tick…" not in warnings:
-            warnings.append("Waiting for NIFTY tick…")
+    def build_frame(self, nb: str = "nifty") -> dict[str, Any]:
+        """Build frame for a specific notebook (nifty or sensex)."""
+        runtime = self.notebooks.get(nb)
+        if not runtime or not runtime.enabled:
+            return {
+                "ok": False,
+                "error": f"Notebook {nb} not enabled",
+                "computed_at_ms": int(time.time() * 1000),
+            }
+        
+        feed = self.build_feed(nb)
+        warnings: list[str] = list(runtime.adx_warnings)
+        spot = feed.get("spot")
+        if spot is None and feed.get("nifty_ltp") is not None:
+            spot = feed.get("nifty_ltp")
+        if spot is None and f"Waiting for {runtime.config.label} tick…" not in warnings:
+            warnings.append(f"Waiting for {runtime.config.label} tick…")
         age = self.book.last_tick_age_s()
         path = "ws" if self.book.connected else "…"
         hint = suggest_strategy(feed)
         return {
             "ok": True,
-            "underlying": {"symbol": NIFTY_SYMBOL, "label": "NIFTY 50"},
+            "notebook": {
+                "id": runtime.config.id,
+                "label": runtime.config.label,
+                "symbol": runtime.config.symbol,
+            },
+            "underlying": {"symbol": runtime.config.symbol, "label": runtime.config.label},
             "engine_enabled": True,
-            "engine_computing": feed.get("nifty_ltp") is None,
+            "engine_computing": spot is None,
             "feed": feed,
             "specs": [dict(s) for s in SHEET_SPECS],
             "live_warnings": warnings,
-            "spot": feed.get("nifty_ltp"),
+            "spot": spot,
             "atm_strike": feed.get("atm"),
             "ce_symbol": feed.get("ce_symbol"),
             "pe_symbol": feed.get("pe_symbol"),
-            "adx_hint": self.adx_hint,
-            "live_bars": self.live_chart_bars(2),
+            "adx_hint": runtime.adx_hint,
+            "live_bars": self.live_chart_bars(nb, 2),
             "strategy_hint": hint,
             "indices": self._build_indices(),
             "ticker": {

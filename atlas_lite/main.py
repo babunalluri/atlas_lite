@@ -18,6 +18,7 @@ from atlas_lite.frame_util import frame_revision
 from atlas_lite.kite_rest import KiteRest
 from atlas_lite.log_util import setup_logging
 from atlas_lite.metrics import evaluate_sheet
+from atlas_lite.notebook import notebook_list, parse_notebook
 from atlas_lite.recorder import (
     list_recording_files,
     read_recording_day,
@@ -76,8 +77,18 @@ async def health() -> JSONResponse:
     return JSONResponse(body)
 
 
+@app.get("/api/notebooks")
+async def api_notebooks() -> dict[str, Any]:
+    """Available notebook underlyings (NIFTY / SENSEX). No global active switch."""
+    return {"ok": True, "default": "nifty", "available": notebook_list()}
+
+
 @app.get("/stream")
-async def stream() -> StreamingResponse:
+async def stream(
+    nb: str = Query(default="nifty", description="Notebook: nifty | sensex"),
+) -> StreamingResponse:
+    notebook = parse_notebook(nb)
+
     async def event_gen():
         last_revision: tuple[Any, ...] | None = None
         interval = STREAM_INTERVAL_MS / 1000.0
@@ -87,7 +98,7 @@ async def stream() -> StreamingResponse:
                 yield f"data: {json.dumps(payload)}\n\n"
                 await asyncio.sleep(1.0)
                 continue
-            frame = _engine.build_frame()
+            frame = _engine.build_frame(notebook)
             frame["evaluation"] = evaluate_sheet(frame.get("feed") or {})
             rev = frame_revision(frame)
             if rev != last_revision:
@@ -112,12 +123,13 @@ async def stream() -> StreamingResponse:
 @app.get("/api/chain")
 async def api_option_chain(
     wings: int = Query(default=0, ge=0, le=50),
+    nb: str = Query(default="nifty", description="Notebook: nifty | sensex"),
 ) -> dict[str, Any]:
-    """Live NIFTY option chain (Kite WS). wings=0 returns full listed chain."""
+    """Live option chain (Kite WS). wings=0 returns full listed chain."""
     if _engine is None:
         raise HTTPException(status_code=503, detail="engine not started")
     wing_strikes = None if wings == 0 else wings
-    return _engine.build_option_chain(wing_strikes=wing_strikes)
+    return _engine.build_option_chain(parse_notebook(nb), wing_strikes=wing_strikes)
 
 
 @app.get("/api/paper")
@@ -129,18 +141,19 @@ async def api_paper() -> dict[str, Any]:
 
 
 @app.get("/api/candles")
-async def api_nifty_candles(
+async def api_candles(
     limit: int = Query(default=800, ge=50, le=2000),
     since: Optional[int] = Query(
         default=None,
         ge=0,
         description="Unix seconds of last bar; returns bars with time >= since",
     ),
+    nb: str = Query(default="nifty", description="Notebook: nifty | sensex"),
 ) -> dict[str, Any]:
-    """NIFTY 50 1m candles from Kite (not TradingView)."""
+    """Index 1m candles from Kite (NIFTY or SENSEX)."""
     if _engine is None:
         raise HTTPException(status_code=503, detail="engine not started")
-    return _engine.nifty_candles(limit=limit, since=since)
+    return _engine.candles(parse_notebook(nb), limit=limit, since=since)
 
 
 @app.get("/api/recordings")
