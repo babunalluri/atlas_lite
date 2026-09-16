@@ -1,16 +1,21 @@
-"""Paper-only NIFTY options: 1 lot, never Kite orders.
+"""Paper-only NIFTY strategy: Rich-IV Iron Fly (never Kite orders).
 
 Sheet + bell stay on the customer notebook 7/7. Do not change those.
 
-Main book: defined-risk short iron fly (ATM short straddle + 250-pt wings)
-when implied is still rich vs realized and vol is not exploding.
-Credit must be >= 100 and < 250 pts (max loss <= ~Rs 9,750 on 2L).
-Overlay: long ATM straddle on the rare cheap-vol tape (IVP < 40 and RV > IV).
-One position at a time; long wins if both fire. Soft metrics (ADX, PCR, VIX,
-OI%, BANKNIFTY, SENSEX) are not AND gates.
+This book is intentionally NOT the notebook gate set. From Sep 2026
+session recordings (ATM-straddle proxy on ~11 cash days):
 
-Paper P&L is always net of Kite NSE options charges (₹20/order, STT, exchange,
-GST, SEBI, stamp). Stops/targets still fire on premium P&L.
+* Edge came from **selling** rich implied vs 1m-ATR realized vol.
+* Long straddle overlay was rare and mixed → **removed** from the live book.
+* Structure kept as **short iron fly** (ATM short + 250-pt wings) for
+  defined risk on ₹2L / 1 lot (credit ≥ 100, max loss bounded by wing width).
+* Entries only **09:20–14:00**; flatten by **15:14**. Skip open noise; leave
+  time for theta. Day-trend filter ``|NIFTY chg| ≤ 0.75%``.
+
+Soft sheet metrics (ADX, PCR, VIX, BN, SENSEX) are display-only — not ANDs.
+
+Paper P&L is always net of Kite NSE options charges. Stops/targets fire on
+premium P&L (½ credit target / ½ defined-loss stop).
 """
 
 from __future__ import annotations
@@ -35,30 +40,36 @@ CAPITAL = 200_000.0
 TARGET_PCT = 0.06
 STOP_PCT = -0.04
 STOP_PTS = 10.0
-ENTRY_AFTER = (9, 15)
-ENTRY_UNTIL = (15, 14)
+# Skip open auction; cut new risk by 14:00 so theta has room before 15:14 SQ.
+ENTRY_AFTER = (9, 20)
+ENTRY_UNTIL = (14, 0)
 SQUARE_OFF = (15, 14)
 DEFAULT_LOT_SIZE = 65
-PAPER_IVP_LT = 40.0
+PAPER_IVP_LT = 40.0  # legacy long-overlay helper only (not used for entries)
 PAPER_CE_PE_PCT = 15.0
-PAPER_INDEX_ABS = 0.49
+# Was 0.49; recording grid peaked near 0.75 with more fills and similar WR.
+PAPER_INDEX_ABS = 0.75
 PAPER_OI_MIN = 50_000.0
 PAPER_BARS_PER_DAY = 375.0
 PAPER_TRADING_DAYS = 252.0
 PAPER_TRAIL_PCT = 0.02
 PAPER_TRAIL_PTS = 4.0
-PAPER_GATES = "tape"
+PAPER_GATES = "rich_iv_fly"
 PAPER_INDEX_KEYS: tuple[tuple[str, str], ...] = (
     ("NIFTY 50", "index_nifty_chg"),
 )
-STRATEGY_LONG = "long_straddle"
+STRATEGY_LONG = "long_straddle"  # kept for ledger replay only — not opened
 STRATEGY_FLY = "short_iron_fly"
 FLY_WING_PTS = 250
 FLY_CREDIT_MIN = 100.0
-FLY_IVP_MAX = 80.0
-FLY_VOL_OF_VOL_PTS = 3.0
+FLY_IVP_MAX = 90.0
+FLY_VOL_OF_VOL_PTS = 5.0
+# Require IV at least this many points rich vs RV (sell premium only when paid).
+FLY_MIN_IV_RICH = 0.5
 FLY_STOP_FRAC = 0.50
 FLY_TARGET_FRAC = 0.50
+# Long overlay disabled — recordings did not support it as a profit book.
+PAPER_ENABLE_LONG = False
 
 
 class QuoteSource(Protocol):
@@ -268,7 +279,7 @@ def evaluate_paper_entry(
         "ready": evaluable_ok,
         "failing_gates": failing,
         "missing_gates": missing,
-        "gates": PAPER_GATES,
+        "gates": "tape",  # diagnostic only — live book does not open longs
         "realised_vol": realised,
         "implied_vol": implied,
         "straddle_edge": edge,
@@ -319,11 +330,12 @@ def evaluate_paper_fly(
     *,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Calm short iron-fly AND. Independent of notebook ``evaluate_sheet``.
+    """Short iron-fly AND. Independent of notebook ``evaluate_sheet``.
 
-    Sell defined-risk when RV < IV (implied still rich) and IV is not a
-    crisis spike. Skip vol-of-vol (IV up > 3 pts in 5 days). Missing 5-day
-    IV change does not block. Long overlay is a separate function.
+    Sell defined-risk when IV is rich vs RV by ``FLY_MIN_IV_RICH`` points,
+    |NIFTY day chg| is moderate, and IV is not a crisis spike. Skip
+    vol-of-vol when 5-day IV change exceeds ``FLY_VOL_OF_VOL_PTS``. Missing
+    5-day IV change does not block. Long overlay is a separate function.
     """
     _ = now
     feed = feed if isinstance(feed, dict) else {}
@@ -354,11 +366,12 @@ def evaluate_paper_fly(
     else:
         _need("Liquidity", min(ce_oi, pe_oi) >= PAPER_OI_MIN)
 
-    realised, implied, rv_gt_iv = _vol_edge(feed)
-    if rv_gt_iv is None:
+    realised, implied, _rv_gt_iv = _vol_edge(feed)
+    if realised is None or implied is None:
         _need("RV vs IV", None)
     else:
-        _need("RV vs IV", not rv_gt_iv)
+        # Sell only when implied is meaningfully rich (study: negative edge won).
+        _need("RV vs IV", (implied - realised) >= FLY_MIN_IV_RICH)
 
     iv_chg = _f(feed.get("iv_chg_5d"))
     if iv_chg is not None and iv_chg > FLY_VOL_OF_VOL_PTS:
@@ -385,11 +398,11 @@ def evaluate_paper_regime(
     *,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Pick one paper structure. Long overlay wins over the fly. Else sit."""
+    """Rich-IV iron fly only. Long overlay is off (``PAPER_ENABLE_LONG``)."""
     long_ev = evaluate_paper_entry(feed, now=now)
     fly_ev = evaluate_paper_fly(feed, now=now)
     strategy = None
-    if long_ev.get("ready"):
+    if PAPER_ENABLE_LONG and long_ev.get("ready"):
         strategy = STRATEGY_LONG
     elif fly_ev.get("ready"):
         strategy = STRATEGY_FLY
@@ -397,9 +410,10 @@ def evaluate_paper_regime(
         "strategy": strategy,
         "long": long_ev,
         "fly": fly_ev,
-        "realised_vol": long_ev.get("realised_vol"),
-        "implied_vol": long_ev.get("implied_vol"),
-        "straddle_edge": long_ev.get("straddle_edge"),
+        "realised_vol": fly_ev.get("realised_vol") if strategy == STRATEGY_FLY else long_ev.get("realised_vol"),
+        "implied_vol": fly_ev.get("implied_vol") if strategy == STRATEGY_FLY else long_ev.get("implied_vol"),
+        "straddle_edge": fly_ev.get("straddle_edge") if strategy == STRATEGY_FLY else long_ev.get("straddle_edge"),
+        "book": "rich_iv_fly",
     }
 
 
@@ -794,8 +808,10 @@ class PaperStraddle:
             now = now.astimezone(IST)
         want: str | None = None
         if strategy in (STRATEGY_LONG, STRATEGY_FLY):
+            # Explicit strategy from regime (fly) or unit tests / ledger replay.
             want = strategy
         elif entry_ready:
+            # Legacy test helper path — live paper always passes strategy= from regime.
             want = STRATEGY_LONG
         day = now.strftime("%Y-%m-%d")
         if self.position is not None and self.position.day != day:
@@ -895,7 +911,7 @@ class PaperStraddle:
             "event": "open",
             "mode": "paper",
             "strategy": "long_straddle",
-            "gates": PAPER_GATES,
+            "gates": "tape",
             "ts": now.isoformat(),
             "day": pos.day,
             "entry_n": self.entries_today,

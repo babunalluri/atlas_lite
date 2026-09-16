@@ -39,8 +39,12 @@ def _minute_key(when: datetime | None = None) -> str:
     return now.strftime("%Y-%m-%d %H:%M")
 
 
-def kite_adx_window_start(when: datetime | None = None, *, days: int = 3) -> str:
-    """Earliest IST minute kept for ADX — matches Kite historical ``from`` date."""
+def kite_adx_window_start(when: datetime | None = None, *, days: int = 5) -> str:
+    """Earliest IST minute kept for ADX — matches Kite historical ``from`` date.
+
+    ``days`` is calendar days (see feed_engine.ADX_REST_DAYS). Default 5 so a
+    weekend + holiday still retains prior cash-session bars for Wilder warmup.
+    """
     now = when or datetime.now(IST)
     return (now - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")[:16]
 

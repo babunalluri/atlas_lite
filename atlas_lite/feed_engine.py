@@ -106,7 +106,10 @@ AUTH_RECOVER_COOLDOWN_S = 30.0
 # ADX/DMI parity with Kite (verified Sep 2026): Kite REST closed 1m bars + WS forming
 # minute, Wilder DMI(14) in metrics.wilder_dmi_series. Do not change bar source,
 # refresh cadence, or compute path without re-verifying against Kite 1m DMI.
-ADX_REST_DAYS = 3
+# Calendar lookback (not trading days): 5 covers weekend + a mid-week holiday so
+# Wilder(14) still has prior-session bars (3 calendar days collapsed to "today only"
+# after Sat–Mon off, e.g. 2026-09-15).
+ADX_REST_DAYS = 5
 NFO_INSTRUMENTS_FILE = "nfo_instruments.csv"
 NSE_INSTRUMENTS_FILE = "nse_instruments.csv"
 BSE_INSTRUMENTS_FILE = "bse_instruments.csv"
@@ -1370,7 +1373,7 @@ class FeedEngine:
                 await asyncio.sleep(1.0)
 
     async def _paper_loop(self) -> None:
-        """Paper long overlay or short iron fly. No broker orders. Bell stays notebook."""
+        """Paper Rich-IV iron fly only. No broker orders. Bell stays notebook."""
         if self._paper is None:
             return
         interval = STREAM_INTERVAL_MS / 1000.0

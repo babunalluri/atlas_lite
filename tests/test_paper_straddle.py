@@ -115,11 +115,11 @@ def test_tape_requires_rv_vs_iv_and_index_band() -> None:
     assert "RV vs IV" in result["missing_gates"]
     no_spot = evaluate_paper_entry({k: v for k, v in _tape_feed().items() if k != "nifty_ltp"})
     assert "RV vs IV" in no_spot["missing_gates"]
-    stretched = evaluate_paper_entry(_tape_feed(index_nifty_chg=0.5))
+    stretched = evaluate_paper_entry(_tape_feed(index_nifty_chg=0.76))
     assert stretched["ready"] is False
     assert "NIFTY 50" in stretched["failing_gates"]
     at_band = evaluate_paper_entry(
-        _tape_feed(index_nifty_chg=0.49, index_banknifty_chg=0.9, index_sensex_chg=0.9)
+        _tape_feed(index_nifty_chg=0.75, index_banknifty_chg=0.9, index_sensex_chg=0.9)
     )
     assert at_band["ready"] is True
     assert "BANKNIFTY" not in at_band["failing_gates"]
@@ -431,7 +431,7 @@ def test_paper_square_off_at_1514(tmp_path: Path) -> None:
     assert bot.last_event["equity"] == 200000.0 + event["pnl"]
 
 
-def test_paper_no_entry_before_0915(tmp_path: Path) -> None:
+def test_paper_no_entry_before_0920(tmp_path: Path) -> None:
     bot = _trader(tmp_path)
     book = _Book(
         {
@@ -440,7 +440,7 @@ def test_paper_no_entry_before_0915(tmp_path: Path) -> None:
         }
     )
     event = bot.on_frame(
-        now=_now("09:14"),
+        now=_now("09:19"),
         entry_ready=True,
         feed={},
         book=book,
@@ -452,7 +452,7 @@ def test_paper_no_entry_before_0915(tmp_path: Path) -> None:
     assert bot.position is None
 
 
-def test_paper_still_opens_at_1513(tmp_path: Path) -> None:
+def test_paper_still_opens_at_1400(tmp_path: Path) -> None:
     bot = _trader(tmp_path)
     book = _Book(
         {
@@ -461,7 +461,7 @@ def test_paper_still_opens_at_1513(tmp_path: Path) -> None:
         }
     )
     event = bot.on_frame(
-        now=_now("15:13"),
+        now=_now("14:00"),
         entry_ready=True,
         feed={},
         book=book,
@@ -493,11 +493,12 @@ def test_paper_no_new_entry_at_1514(tmp_path: Path) -> None:
     )
     assert (event is None) or (event.get("event") == "day_pnl")
     assert bot.position is None
-    assert in_paper_entry_window(_now("15:13")) is True
+    assert in_paper_entry_window(_now("14:00")) is True
+    assert in_paper_entry_window(_now("14:01")) is False
     assert in_paper_entry_window(_now("15:14")) is False
 
 
-def test_paper_opens_at_0915(tmp_path: Path) -> None:
+def test_paper_no_new_entry_after_1400(tmp_path: Path) -> None:
     bot = _trader(tmp_path)
     book = _Book(
         {
@@ -506,7 +507,28 @@ def test_paper_opens_at_0915(tmp_path: Path) -> None:
         }
     )
     event = bot.on_frame(
-        now=_now("09:15"),
+        now=_now("14:01"),
+        entry_ready=True,
+        feed={},
+        book=book,
+        ce_symbol="NFO:CE",
+        pe_symbol="NFO:PE",
+        atm=24000,
+    )
+    assert event is None
+    assert bot.position is None
+
+
+def test_paper_opens_at_0920(tmp_path: Path) -> None:
+    bot = _trader(tmp_path)
+    book = _Book(
+        {
+            "NFO:CE": {"last_price": 100.0},
+            "NFO:PE": {"last_price": 100.0},
+        }
+    )
+    event = bot.on_frame(
+        now=_now("09:20"),
         entry_ready=True,
         feed={},
         book=book,
@@ -882,8 +904,8 @@ def test_snapshot_marks_open_trade_against_2l(tmp_path: Path) -> None:
     assert snap["open_pnl"] == round(650.0 - snap["charges"], 2)
     assert snap["mtm_pnl"] == snap["open_pnl"]
     assert snap["equity"] == round(200000.0 + snap["open_pnl"], 2)
-    assert snap["entry_filters"] == "tape"
-    assert snap["entry_window"] == "09:15-15:14"
+    assert snap["entry_filters"] == "rich_iv_fly"
+    assert snap["entry_window"] == "09:20-14:00"
     assert snap["square_off"] == "15:14"
 
 
@@ -931,16 +953,24 @@ def test_fly_gates_ready_when_implied_rich() -> None:
     assert result["straddle_edge"] < 0
     regime = evaluate_paper_regime(_fly_feed())
     assert regime["strategy"] == "short_iron_fly"
-    long_wins = evaluate_paper_regime(_tape_feed())
-    assert long_wins["strategy"] == "long_straddle"
-    hot = evaluate_paper_fly(_fly_feed(iv_chg_5d=3.1))
+    assert regime["book"] == "rich_iv_fly"
+    # Long overlay is intentionally off — cheap-vol tape must not open a long.
+    long_off = evaluate_paper_regime(_tape_feed())
+    assert long_off["strategy"] is None
+    hot = evaluate_paper_fly(_fly_feed(iv_chg_5d=5.1))
     assert hot["ready"] is False
     assert "Vol-of-vol" in hot["failing_gates"]
-    crisis = evaluate_paper_fly(_fly_feed(ivp=80.0))
+    crisis = evaluate_paper_fly(_fly_feed(ivp=90.0))
     assert crisis["ready"] is False
     assert "IV Percentile" in crisis["failing_gates"]
     missing_chg = evaluate_paper_fly(_fly_feed())
     assert "Vol-of-vol" not in missing_chg["failing_gates"]
+    # Need IV at least 0.5 pts rich vs RV (~12.40 at atr=10 / spot=24800)
+    barely_rich = evaluate_paper_fly(_fly_feed(iv=12.95))
+    assert barely_rich["ready"] is True
+    not_rich = evaluate_paper_fly(_fly_feed(iv=12.5, atr=10.5))  # RV≈13.02 → not rich
+    assert not_rich["ready"] is False
+    assert "RV vs IV" in not_rich["failing_gates"]
 
 
 def test_iron_fly_strikes_are_250_wide() -> None:

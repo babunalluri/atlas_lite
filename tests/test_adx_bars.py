@@ -91,6 +91,19 @@ def test_drop_bars_before_kite_window() -> None:
     assert [bar["t"] for bar in b.bars] == ["2026-09-07 09:26", "2026-09-10 09:15"]
 
 
+def test_kite_adx_window_spans_weekend_and_holiday() -> None:
+    """Tue after Sat–Mon off: default 5 calendar days still reaches prior Friday."""
+    from atlas_lite.feed_engine import ADX_REST_DAYS
+    from atlas_lite.minute_bars import kite_adx_window_start
+
+    when = datetime(2026, 9, 15, 10, 40, tzinfo=IST)
+    floor = kite_adx_window_start(when, days=ADX_REST_DAYS)
+    assert ADX_REST_DAYS >= 5
+    assert floor.startswith("2026-09-10")
+    # 3 calendar days would start Sep 12 and miss Fri Sep 11 cash bars.
+    assert kite_adx_window_start(when, days=3).startswith("2026-09-12")
+
+
 def test_sync_closed_bars_from_kite_replaces_window() -> None:
     b = MinuteBarBuilder(symbol="NSE:NIFTY 50")
     b.bars = [
