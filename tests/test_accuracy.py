@@ -255,6 +255,27 @@ def test_black76_atm_iv_ce_pe_agree_on_synthetic_forward() -> None:
     assert abs(ce_iv - pe_iv) < 0.05
 
 
+def test_black76_theta_is_per_trading_day() -> None:
+    import math
+
+    from atlas_lite.metrics import TRADING_DAYS_PER_YEAR, black76_greeks
+
+    forward = 24000.0
+    strike = 24000.0
+    tte = 3.0 / TRADING_DAYS_PER_YEAR
+    sigma = 0.12
+    greeks = black76_greeks(forward, strike, tte, sigma, call=True)
+    assert greeks
+    sqrt_t = math.sqrt(tte)
+    d1 = (0.5 * sigma * sigma * tte) / (sigma * sqrt_t)
+    nd1 = math.exp(-0.5 * d1 * d1) / math.sqrt(2.0 * math.pi)
+    raw = -forward * nd1 * sigma / (2.0 * sqrt_t)
+    trading = raw / TRADING_DAYS_PER_YEAR
+    calendar = raw / 365.0
+    assert abs(greeks["theta"] - round(trading, 4)) < 1e-9
+    assert abs(greeks["theta"] - calendar) > abs(greeks["theta"] - trading)
+
+
 def test_atm_iv_from_ltp_uses_black76() -> None:
     from datetime import date
     from unittest.mock import patch
@@ -308,13 +329,23 @@ def test_full_mode_tick_parses_oi_day_high() -> None:
     struct.pack_into(">i", packet, 4, 2400000)
     for off in (28, 32, 36, 40):
         struct.pack_into(">i", packet, off, 2400000)
+    struct.pack_into(">I", packet, 16, 50_000)
     struct.pack_into(">I", packet, 48, 10_000_000)
     struct.pack_into(">I", packet, 52, 10_200_000)
     struct.pack_into(">I", packet, 56, 9_800_000)
+    struct.pack_into(">i", packet, 64, 25)
+    struct.pack_into(">i", packet, 68, 2_400_000)
+    struct.pack_into(">H", packet, 72, 3)
+    struct.pack_into(">i", packet, 124, 18)
+    struct.pack_into(">i", packet, 128, 2_401_000)
+    struct.pack_into(">H", packet, 132, 2)
     payload = struct.pack(">HH", 1, 184) + bytes(packet)
     ticks = parse_binary_ticks(payload)
     assert len(ticks) == 1
     row = ticks[0]
+    assert row["volume"] == 50_000
+    assert row["bid"] == 24000.0
+    assert row["ask"] == 24010.0
     assert row["oi"] == 10_000_000
     assert row["oi_day_high"] == 10_200_000
     assert row["oi_day_low"] == 9_800_000

@@ -139,7 +139,7 @@ def quote_ltp(row: dict[str, Any] | None) -> float | None:
 
 
 def quote_session_open(row: dict[str, Any] | None) -> float | None:
-    """Session open from Kite ohlc.open (falls back to first tick LTP if missing)."""
+    """Session open from Kite ``ohlc.open``. Returns None if the quote has no open yet."""
     if not row:
         return None
     ohlc = row.get("ohlc") if isinstance(row.get("ohlc"), dict) else {}
@@ -193,6 +193,131 @@ def quote_volume(row: dict[str, Any] | None) -> float | None:
     return pick_float(row, "volume", "volume_traded")
 
 
+def _depth_top_level(row: dict[str, Any] | None, side: str) -> dict[str, Any] | None:
+    if not row:
+        return None
+    depth = row.get("depth") if isinstance(row.get("depth"), dict) else {}
+    levels = depth.get(side) if isinstance(depth, dict) else None
+    if not isinstance(levels, list) or not levels:
+        return None
+    top = levels[0] if isinstance(levels[0], dict) else None
+    if not top:
+        return None
+    qty = pick_float(top, "quantity", "qty")
+    if qty is not None and qty <= 0:
+        return None
+    return top
+
+
+def _depth_top_price(row: dict[str, Any] | None, side: str) -> float | None:
+    top = _depth_top_level(row, side)
+    if not top:
+        return None
+    return pick_float(top, "price")
+
+
+def _depth_top_qty(row: dict[str, Any] | None, side: str) -> float | None:
+    top = _depth_top_level(row, side)
+    if not top:
+        return None
+    return pick_float(top, "quantity", "qty")
+
+
+def quote_bid(row: dict[str, Any] | None) -> float | None:
+    return pick_float(row, "bid", "best_bid", "buy_price") or _depth_top_price(row, "buy")
+
+
+def quote_ask(row: dict[str, Any] | None) -> float | None:
+    return pick_float(row, "ask", "best_ask", "sell_price") or _depth_top_price(row, "sell")
+
+
+def quote_bid_qty(row: dict[str, Any] | None) -> float | None:
+    """Best-bid size from depth; None when top-of-book is missing/empty."""
+    return _depth_top_qty(row, "buy")
+
+
+def quote_ask_qty(row: dict[str, Any] | None) -> float | None:
+    """Best-ask size from depth; None when top-of-book is missing/empty."""
+    return _depth_top_qty(row, "sell")
+
+
+def quote_buy_qty(row: dict[str, Any] | None) -> float | None:
+    """Total buy quantity from the quote packet (all visible interest)."""
+    return pick_float(row, "buy_quantity", "total_buy_quantity")
+
+
+def quote_sell_qty(row: dict[str, Any] | None) -> float | None:
+    """Total sell quantity from the quote packet (all visible interest)."""
+    return pick_float(row, "sell_quantity", "total_sell_quantity")
+
+
+def _compact_depth_side(row: dict[str, Any] | None, side: str) -> list[list[float]]:
+    """Up to 5 [price, qty] levels with qty > 0."""
+    if not row:
+        return []
+    depth = row.get("depth") if isinstance(row.get("depth"), dict) else {}
+    levels = depth.get(side) if isinstance(depth, dict) else None
+    if not isinstance(levels, list):
+        return []
+    out: list[list[float]] = []
+    for level in levels[:5]:
+        if not isinstance(level, dict):
+            continue
+        qty = pick_float(level, "quantity", "qty")
+        px = pick_float(level, "price")
+        if qty is None or qty <= 0 or px is None:
+            continue
+        out.append([px, qty])
+    return out
+
+
+def top_of_book(row: dict[str, Any] | None) -> dict[str, Any]:
+    """Best bid/ask + sizes, totals, 5-level depth, and exchange timestamps."""
+    exch = row.get("exchange_timestamp") if row else None
+    trade = row.get("last_trade_time") if row else None
+    try:
+        exch_ts = int(exch) if exch is not None else None
+    except (TypeError, ValueError):
+        exch_ts = None
+    try:
+        trade_ts = int(trade) if trade is not None else None
+    except (TypeError, ValueError):
+        trade_ts = None
+    return {
+        "ltp": quote_ltp(row),
+        "bid": quote_bid(row),
+        "ask": quote_ask(row),
+        "bid_qty": quote_bid_qty(row),
+        "ask_qty": quote_ask_qty(row),
+        "buy_qty": quote_buy_qty(row),
+        "sell_qty": quote_sell_qty(row),
+        "buy": _compact_depth_side(row, "buy"),
+        "sell": _compact_depth_side(row, "sell"),
+        "exch_ts": exch_ts,
+        "trade_ts": trade_ts,
+    }
+
+
+def quote_greek(row: dict[str, Any] | None, name: str) -> float | None:
+    if not row:
+        return None
+    greeks = row.get("greeks") if isinstance(row.get("greeks"), dict) else {}
+    if isinstance(greeks, dict):
+        val = pick_float(greeks, name)
+        if val is not None:
+            return val
+    return pick_float(row, name)
+
+
+def strike_pcr(ce_oi: float | None, pe_oi: float | None) -> float | None:
+    if ce_oi is None or pe_oi is None:
+        return None
+    ce = float(ce_oi)
+    if ce <= 0:
+        return None
+    return round(float(pe_oi) / ce, 3)
+
+
 def quote_iv(row: dict[str, Any] | None) -> float | None:
     if not row:
         return None
@@ -221,6 +346,7 @@ def atm_greeks_iv(
 
 
 def quote_change_pct(row: dict[str, Any] | None) -> float | None:
+    """% change vs previous session close (Kite ohlc.close)."""
     if not row:
         return None
     ltp = quote_ltp(row)
@@ -232,6 +358,17 @@ def quote_change_pct(row: dict[str, Any] | None) -> float | None:
             prev = ltp - net
     if ltp is not None and prev not in (None, 0):
         return round((ltp - prev) / prev * 100, 3)
+    return None
+
+
+def quote_change_from_open_pct(row: dict[str, Any] | None) -> float | None:
+    """% change vs today's session open — intraday direction (not vs yesterday)."""
+    if not row:
+        return None
+    ltp = quote_ltp(row)
+    open_px = quote_session_open(row)
+    if ltp is not None and open_px not in (None, 0):
+        return round((ltp - open_px) / open_px * 100, 3)
     return None
 
 
@@ -263,6 +400,36 @@ def merge_option_iv(ce_row: dict[str, Any] | None, pe_row: dict[str, Any] | None
 
 def _norm_cdf(x: float) -> float:
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def _norm_pdf(x: float) -> float:
+    return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
+
+
+def black76_greeks(
+    forward: float,
+    strike: float,
+    tte_years: float,
+    sigma: float,
+    *,
+    call: bool,
+) -> dict[str, float]:
+    """Black-76 greeks on forward F. Vega is per 1 vol point; theta is per trading day (252)."""
+    if tte_years <= 0 or sigma <= 0 or forward <= 0 or strike <= 0:
+        return {}
+    sqrt_t = math.sqrt(tte_years)
+    d1 = (math.log(forward / strike) + 0.5 * sigma * sigma * tte_years) / (sigma * sqrt_t)
+    nd1 = _norm_pdf(d1)
+    delta = _norm_cdf(d1) if call else _norm_cdf(d1) - 1.0
+    gamma = nd1 / (forward * sigma * sqrt_t)
+    vega = forward * nd1 * sqrt_t / 100.0
+    theta = -forward * nd1 * sigma / (2.0 * sqrt_t) / TRADING_DAYS_PER_YEAR
+    return {
+        "delta": round(delta, 4),
+        "gamma": round(gamma, 6),
+        "vega": round(vega, 4),
+        "theta": round(theta, 4),
+    }
 
 
 def _black76_price(
@@ -332,6 +499,47 @@ def synthetic_forward(
     ):
         return float(strike) + float(ce_ltp) - float(pe_ltp)
     return float(spot)
+
+
+CARRY_RATE_ANNUAL = 0.065
+
+
+def option_carry_from_fut(
+    spot: float,
+    fut: float | None,
+    *,
+    option_dte: float | None,
+    fut_dte: float | None = None,
+    carry_rate: float = CARRY_RATE_ANNUAL,
+) -> tuple[float | None, float | None]:
+    """Carry / forward matched to *option* expiry, not monthly fut expiry.
+
+    Monthly fut basis overstates weekly carry. Scale:
+    ``carry = (fut − spot) × option_dte / fut_dte``.
+    Falls back to ``spot × r × option_dte / 365`` when fut/dte missing.
+    Returns ``(forward, carry_pts)``.
+    """
+    try:
+        s = float(spot)
+    except (TypeError, ValueError):
+        return None, None
+    odte = None if option_dte is None else max(0.0, float(option_dte))
+    fdte = None if fut_dte is None else max(0.0, float(fut_dte))
+    carry: float | None = None
+    if fut is not None and odte is not None and fdte is not None and fdte > 0:
+        carry = (float(fut) - s) * odte / fdte
+    elif fut is not None and (odte is None or fdte is None or fdte <= 0):
+        # No safe scale → do not use full monthly basis; estimate from rate if possible.
+        if odte is not None:
+            carry = s * float(carry_rate) * odte / 365.0
+        else:
+            carry = float(fut) - s
+    elif odte is not None:
+        carry = s * float(carry_rate) * odte / 365.0
+    else:
+        return s, 0.0
+    carry = round(float(carry), 2)
+    return round(s + carry, 2), carry
 
 
 # Ignore option-implied forward when cash is the better ATM (thin/close quotes).
@@ -506,7 +714,42 @@ def _option_leg_snapshot(row: dict[str, Any] | None) -> dict[str, float | None]:
         "oi": quote_oi(row),
         "chg_pct": quote_change_pct(row),
         "iv": quote_iv(row),
+        "vol": quote_volume(row),
+        "bid": quote_bid(row),
+        "ask": quote_ask(row),
+        "delta": quote_greek(row, "delta"),
+        "theta": quote_greek(row, "theta"),
+        "vega": quote_greek(row, "vega"),
+        "gamma": quote_greek(row, "gamma"),
     }
+
+
+def _fill_model_greeks(
+    leg: dict[str, float | None],
+    *,
+    call: bool,
+    forward: float,
+    strike: float,
+    expiry: date,
+) -> None:
+    """Fill missing IV/greeks from Black-76. Never overwrites Kite values."""
+    ltp = leg.get("ltp")
+    if ltp is None or ltp <= 0 or forward <= 0 or strike <= 0:
+        return
+    tte = trading_years_to_expiry(expiry)
+    iv_pct = leg.get("iv")
+    if iv_pct is None:
+        iv_pct = implied_volatility(float(ltp), forward, strike, tte, call=call)
+        if iv_pct is not None:
+            leg["iv"] = iv_pct
+    if iv_pct is None:
+        return
+    if all(leg.get(k) is not None for k in ("delta", "theta", "vega", "gamma")):
+        return
+    greeks = black76_greeks(forward, strike, tte, float(iv_pct) / 100.0, call=call)
+    for key, val in greeks.items():
+        if leg.get(key) is None:
+            leg[key] = val
 
 
 def option_chain_rows(
@@ -517,6 +760,9 @@ def option_chain_rows(
     atm_strike: int | None = None,
     wing_strikes: int | None = None,
     strike_step: int = 50,
+    extras: bool = False,
+    spot: float | None = None,
+    expiry: date | None = None,
 ) -> list[dict[str, Any]]:
     """Build UI rows for NIFTY option chain (CE | strike | PE)."""
     pairs = list(zip(strikes, ce_rows, pe_rows))
@@ -527,12 +773,19 @@ def option_chain_rows(
 
     rows: list[dict[str, Any]] = []
     for strike, ce_row, pe_row in pairs:
+        ce_leg = _option_leg_snapshot(ce_row)
+        pe_leg = _option_leg_snapshot(pe_row)
+        if extras and spot is not None and expiry is not None:
+            fwd = synthetic_forward(float(spot), float(strike), ce_leg.get("ltp"), pe_leg.get("ltp"))
+            _fill_model_greeks(ce_leg, call=True, forward=fwd, strike=float(strike), expiry=expiry)
+            _fill_model_greeks(pe_leg, call=False, forward=fwd, strike=float(strike), expiry=expiry)
         rows.append(
             {
                 "strike": strike,
                 "is_atm": strike == atm_strike,
-                "ce": _option_leg_snapshot(ce_row),
-                "pe": _option_leg_snapshot(pe_row),
+                "pcr": strike_pcr(ce_leg.get("oi"), pe_leg.get("oi")),
+                "ce": ce_leg,
+                "pe": pe_leg,
             }
         )
     return rows

@@ -23,6 +23,7 @@ class NotebookSession:
 class NotebookRuntime:
     config: NotebookConfig
     universe: IndexOptionUniverse | None = None
+    next_universe: IndexOptionUniverse | None = None
     atm: AtmLegs | None = None
     fo_csv: str = ""
     chain_cache: tuple[list[int], list[str], list[str]] | None = None
@@ -30,9 +31,12 @@ class NotebookRuntime:
     session: NotebookSession = field(default_factory=NotebookSession)
     adx: float | None = None
     atr: float | None = None
+    pdi: float | None = None  # +DI (directional; ADX alone has no side)
+    mdi: float | None = None  # -DI
     adx_hint: str = ""
     bar_builder: MinuteBarBuilder | None = None
     kite_adx_bars: list[dict[str, Any]] = field(default_factory=list)
+    kite_adx_rev: int = 0
     adx_bars_day: str = ""
     adx_kite_seed_day: str = ""
     adx_warnings: list[str] = field(default_factory=list)

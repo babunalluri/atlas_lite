@@ -64,6 +64,8 @@ def test_cash_session_filter_drops_preopen_bars() -> None:
     assert not is_cash_session_minute("2026-09-07 08:59")
     assert not is_cash_session_minute("2026-09-07 07:30")
     assert not is_cash_session_minute("2026-09-07 15:30")
+    assert not is_cash_session_minute("2026-09-26 10:22")  # Saturday
+    assert not is_cash_session_minute("2026-09-27 12:30")  # Sunday
     b = MinuteBarBuilder(symbol="NSE:NIFTY 50")
     b.bars = [
         {"t": "2026-09-07 07:30", "o": 1, "h": 2, "l": 1, "c": 1.5},
@@ -210,6 +212,91 @@ def test_chart_bars_includes_live_minute() -> None:
     assert bars[-1]["c"] == 24111.0
 
 
+def test_chart_series_fingerprint_stable_across_ticks() -> None:
+    b = _seed_bars(2)
+    with patch("atlas_lite.minute_bars._minute_key", return_value="2026-09-02 10:45"):
+        b.ingest(24111.0)
+        fp1 = b.chart_series_fingerprint()
+        b.ingest(24199.0)
+        fp2 = b.chart_series_fingerprint()
+        live = b.forming_or_last_bar()
+    assert fp1 == fp2
+    assert live is not None and live["c"] == 24199.0
+
+
+def test_forming_bar_wick_visible_fingerprint_stable() -> None:
+    """Closed-bar fingerprint ignores a recovered wick; forming H/L keeps it."""
+    b = _seed_bars(2)
+    with patch("atlas_lite.minute_bars._minute_key", return_value="2026-09-02 10:45"):
+        b.ingest(24111.0)
+        fp1 = b.chart_series_fingerprint()
+        live1 = b.forming_or_last_bar()
+        b.ingest(24050.0)
+        fp2 = b.chart_series_fingerprint()
+        live2 = b.forming_or_last_bar()
+        b.ingest(24111.0)
+        fp3 = b.chart_series_fingerprint()
+        live3 = b.forming_or_last_bar()
+    assert fp1 == fp2 == fp3
+    assert live1 is not None and live2 is not None and live3 is not None
+    assert live2["l"] < live1["l"]
+    assert live3["l"] == live2["l"]
+    assert live3["c"] == 24111.0
+
+
+def test_chart_series_fingerprint_changes_on_rollover() -> None:
+    b = _seed_bars(2)
+    with patch("atlas_lite.minute_bars._minute_key", return_value="2026-09-02 10:45"):
+        b.ingest(24111.0)
+        fp1 = b.chart_series_fingerprint()
+    with patch("atlas_lite.minute_bars._minute_key", return_value="2026-09-02 10:46"):
+        b.ingest(24120.0)
+        fp2 = b.chart_series_fingerprint()
+    assert fp1 != fp2
+
+
+def test_chart_series_fingerprint_changes_on_closed_bar_correction() -> None:
+    b = _seed_bars(2)
+    fp1 = b.chart_series_fingerprint()
+    b.bars[-1] = dict(b.bars[-1])
+    b.bars[-1]["c"] = float(b.bars[-1]["c"]) + 12.5
+    fp2 = b.chart_series_fingerprint()
+    assert fp1 != fp2
+
+
+def test_chart_series_fingerprint_changes_on_mid_series_volume_merge() -> None:
+    b = MinuteBarBuilder(symbol="NSE:NIFTY 50")
+    b.bars = [
+        {"t": "2026-09-02 10:00", "o": 1, "h": 1, "l": 1, "c": 1, "v": 0, "oi": 0},
+        {"t": "2026-09-02 10:01", "o": 1, "h": 1, "l": 1, "c": 1, "v": 50, "oi": 0},
+        {"t": "2026-09-02 10:02", "o": 1, "h": 1, "l": 1, "c": 1, "v": 50, "oi": 0},
+    ]
+    fp1 = b.chart_series_fingerprint()
+    updated = b.merge_volume_from_candles(
+        [["2026-09-02 10:00:00", 1, 1, 1, 1, 900]]
+    )
+    assert updated == 1
+    fp2 = b.chart_series_fingerprint()
+    assert fp1 != fp2
+
+
+def test_chart_series_fingerprint_changes_on_mid_series_kite_ohlc_merge() -> None:
+    b = MinuteBarBuilder(symbol="NSE:NIFTY 50")
+    b.bars = [
+        {"t": "2026-09-02 10:00", "o": 1, "h": 1, "l": 1, "c": 1, "v": 0, "oi": 0},
+        {"t": "2026-09-02 10:01", "o": 1, "h": 1, "l": 1, "c": 1, "v": 50, "oi": 0},
+        {"t": "2026-09-02 10:02", "o": 1, "h": 1, "l": 1, "c": 1, "v": 50, "oi": 0},
+    ]
+    fp1 = b.chart_series_fingerprint()
+    with patch("atlas_lite.minute_bars._minute_key", return_value="2026-09-02 10:03"):
+        updated = b.merge_kite_candles(
+            [["2026-09-02 10:00:00", 1, 2, 0.5, 1.5, 10]]
+        )
+    assert updated == 1
+    fp2 = b.chart_series_fingerprint()
+    assert fp1 != fp2
+
+
 def test_load_candles_keeps_volume() -> None:
     b = MinuteBarBuilder(symbol="NSE:NIFTY 50")
     b.load_candles(
@@ -220,6 +307,29 @@ def test_load_candles_keeps_volume() -> None:
     )
     assert b.bars[0]["v"] == 1200
     assert b.bars[1]["v"] == 800
+
+
+def test_merge_kite_index_preserves_existing_volume() -> None:
+    b = MinuteBarBuilder(symbol="NSE:NIFTY 50")
+    b.bars = [
+        {
+            "t": "2026-09-02 10:00",
+            "o": 100,
+            "h": 101,
+            "l": 99,
+            "c": 100.5,
+            "v": 50000.0,
+            "oi": 900.0,
+        }
+    ]
+    with patch("atlas_lite.minute_bars._minute_key", return_value="2026-09-02 10:05"):
+        updated = b.merge_kite_candles(
+            [["2026-09-02 10:00:00", 100, 102, 98, 101.0]],
+        )
+    assert updated == 1
+    assert b.bars[0]["c"] == 101.0
+    assert b.bars[0]["v"] == 50000.0
+    assert b.bars[0]["oi"] == 900.0
 
 
 def test_merge_volume_fills_zero_bars() -> None:
@@ -269,3 +379,31 @@ def test_ingest_oi_carries_into_live_bar() -> None:
         b.ingest_oi(125000)
         bars = b.chart_bars()
     assert bars[-1]["oi"] == 125000
+
+
+def test_fingerprint_changes_on_mid_series_kite_correction() -> None:
+    """Same len / same tail, different middle bar → fingerprint must move."""
+    from atlas_lite.minute_bars import MinuteBarBuilder as _MBB
+
+    b = _MBB(symbol="NIFTY 50")
+    b.load_candles(
+        [
+            ["2026-09-17 10:00:00", 1, 2, 1, 1.5, 0],
+            ["2026-09-17 10:01:00", 1, 2, 1, 1.5, 0],
+            ["2026-09-17 10:02:00", 1, 2, 1, 1.5, 0],
+        ]
+    )
+    fp1 = b.chart_series_fingerprint()
+    assert b.merge_kite_candles([["2026-09-17 10:01:00", 1, 9, 1, 1, 0]]) == 1
+    fp2 = b.chart_series_fingerprint()
+    assert fp2 != fp1
+    # No-op merge (identical bar) still touches — cheap and safe — but a pure
+    # re-read with no change must not.
+    assert b.sync_closed_bars_from_kite(
+        [["2026-09-17 10:01:00", 1, 9, 1, 1, 0]], window_floor="2026-09-17 10:01"
+    ) >= 0
+    fp3 = b.chart_series_fingerprint()
+    assert b.drop_closed_bars_not_in_kite(
+        [["2026-09-17 10:01:00", 1, 9, 1, 1, 0]], range_from="2026-09-17 10:01"
+    ) == 0
+    assert b.chart_series_fingerprint() == fp3

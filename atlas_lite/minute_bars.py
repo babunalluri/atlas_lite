@@ -16,6 +16,28 @@ CASH_SESSION_START = (9, 15)
 CASH_SESSION_END = (15, 29)  # last closed 1m bar starts 15:29
 
 
+def hm_ge(now: datetime, hhmm: tuple[int, int]) -> bool:
+    return (now.hour, now.minute) >= hhmm
+
+
+def hm_lt(now: datetime, hhmm: tuple[int, int]) -> bool:
+    return (now.hour, now.minute) < hhmm
+
+
+def hm_le(now: datetime, hhmm: tuple[int, int]) -> bool:
+    return (now.hour, now.minute) <= hhmm
+
+
+def bar_tip(bar: dict[str, Any] | None) -> str:
+    """Compact OHLC fingerprint for paper/VWAP cache keys."""
+    if not bar:
+        return ""
+    return (
+        f"{bar.get('o')}|{bar.get('h')}|{bar.get('l')}|{bar.get('c')}|"
+        f"{bar.get('v')}|{bar.get('oi')}"
+    )
+
+
 def _candle_volume(candle: list[Any] | tuple[Any, ...]) -> float:
     if len(candle) < 6:
         return 0.0
@@ -93,14 +115,17 @@ def ohlc_from_bar_dicts(
 
 
 def is_cash_session_minute(ts: str) -> bool:
-    """True for NSE cash minutes YYYY-MM-DD HH:MM in [09:15, 15:29]."""
+    """True for NSE cash minutes YYYY-MM-DD HH:MM in [09:15, 15:29] on weekdays."""
     raw = str(ts).replace("T", " ")[:16]
     if len(raw) < 16:
         return False
     try:
+        day = datetime.strptime(raw[:10], "%Y-%m-%d").date()
         hour = int(raw[11:13])
         minute = int(raw[14:16])
     except ValueError:
+        return False
+    if day.weekday() >= 5:
         return False
     start_m = CASH_SESSION_START[0] * 60 + CASH_SESSION_START[1]
     end_m = CASH_SESSION_END[0] * 60 + CASH_SESSION_END[1]
@@ -134,6 +159,24 @@ class MinuteBarBuilder:
     _volume: float = field(default=0.0, repr=False)
     _session_vol: float | None = field(default=None, repr=False)
     _oi: float = field(default=0.0, repr=False)
+    # Bumped when closed-bar history mutates (not on live LTP ticks). Every
+    # write to `bars` goes through `_set_bars` / `_touch` so the fingerprint
+    # cannot miss a mutation that leaves len/last/tip unchanged.
+    _rev: int = field(default=0, repr=False)
+
+    def _touch(self) -> None:
+        """Closed-bar history changed in place — invalidate fingerprint consumers."""
+        self._rev += 1
+
+    def _set_bars(self, new_bars: list[dict[str, Any]]) -> None:
+        """Replace the closed-bar list, bumping `_rev` only on a real change."""
+        if new_bars != self.bars:
+            self.bars = new_bars
+            self._rev += 1
+
+    def _cap(self) -> None:
+        if len(self.bars) > MAX_BARS:
+            self._set_bars(self.bars[-MAX_BARS:])
 
     def ingest(self, ltp: float | None, ohlc: dict[str, Any] | None = None) -> bool:
         """Update current minute bar from tick LTP. Returns True if a bar was finalized.
@@ -193,7 +236,24 @@ class MinuteBarBuilder:
             self._session_vol = None
             self._oi = 0.0
             return
-        bar = {
+        bar = self._live_bar()
+        assert bar is not None  # session + OHLC already gated above
+        if self.bars and self.bars[-1].get("t") == bar["t"]:
+            self.bars[-1] = bar
+        else:
+            self.bars.append(bar)
+        self._touch()
+        self._cap()
+
+    def _live_bar(self) -> dict[str, Any] | None:
+        """In-progress session minute as an OHLC dict, or None."""
+        if (
+            self._current_key is None
+            or self._close is None
+            or not is_cash_session_minute(self._current_key)
+        ):
+            return None
+        return {
             "t": self._current_key,
             "o": round(float(self._open or self._close), 4),
             "h": round(float(self._high or self._close), 4),
@@ -202,27 +262,23 @@ class MinuteBarBuilder:
             "v": round(float(self._volume), 4),
             "oi": round(float(self._oi), 4),
         }
-        if self.bars and self.bars[-1].get("t") == bar["t"]:
-            self.bars[-1] = bar
-        else:
-            self.bars.append(bar)
-        if len(self.bars) > MAX_BARS:
-            self.bars = self.bars[-MAX_BARS:]
 
     def drop_non_session_bars(self) -> int:
         """Remove bars outside NSE cash session. Returns count removed."""
         before = len(self.bars)
-        self.bars = [b for b in self.bars if is_cash_session_minute(str(b.get("t") or ""))]
+        self._set_bars(
+            [b for b in self.bars if is_cash_session_minute(str(b.get("t") or ""))]
+        )
         return before - len(self.bars)
 
     def drop_bars_before(self, minute_key: str) -> int:
         """Drop closed bars strictly before ``minute_key`` (Kite window floor)."""
         floor = str(minute_key).replace("T", " ")[:16]
         before = len(self.bars)
-        self.bars = [b for b in self.bars if str(b.get("t") or "") >= floor]
+        self._set_bars([b for b in self.bars if str(b.get("t") or "") >= floor])
         removed = before - len(self.bars)
-        if removed and len(self.bars) > MAX_BARS:
-            self.bars = self.bars[-MAX_BARS:]
+        if removed:
+            self._cap()
         return removed
 
     def sync_closed_bars_from_kite(
@@ -253,10 +309,8 @@ class MinuteBarBuilder:
         if not kite_by_ts:
             return 0
         before = len(self.bars)
-        self.bars = [kite_by_ts[ts] for ts in sorted(kite_by_ts)]
-        self._dedupe()
-        if len(self.bars) > MAX_BARS:
-            self.bars = self.bars[-MAX_BARS:]
+        self._set_bars([kite_by_ts[ts] for ts in sorted(kite_by_ts)])
+        self._cap()
         return abs(before - len(self.bars))
 
     def drop_closed_bars_not_in_kite(
@@ -279,22 +333,25 @@ class MinuteBarBuilder:
         if not allowed:
             return 0
         before = len(self.bars)
-        self.bars = [
-            b
-            for b in self.bars
-            if str(b.get("t") or "") < start
-            or str(b.get("t") or "") in allowed
-        ]
+        self._set_bars(
+            [
+                b
+                for b in self.bars
+                if str(b.get("t") or "") < start
+                or str(b.get("t") or "") in allowed
+            ]
+        )
         return before - len(self.bars)
 
     def load_candles(self, candles: list[list[Any]]) -> None:
+        added: list[dict[str, Any]] = []
         for c in candles:
             if not isinstance(c, (list, tuple)) or len(c) < 5:
                 continue
             ts = str(c[0])[:16].replace("T", " ")
             if not is_cash_session_minute(ts):
                 continue
-            self.bars.append(
+            added.append(
                 {
                     "t": ts,
                     "o": round(float(c[1]), 4),
@@ -305,10 +362,11 @@ class MinuteBarBuilder:
                     "oi": round(_candle_oi(c), 4),
                 }
             )
+        if added:
+            self._set_bars(self.bars + added)
         self._dedupe()
         self.trim_incomplete_current_bar()
-        if len(self.bars) > MAX_BARS:
-            self.bars = self.bars[-MAX_BARS:]
+        self._cap()
 
     def trim_incomplete_current_bar(self) -> bool:
         """Drop the last bar if it is the current IST minute (Kite REST includes it in-progress)."""
@@ -317,6 +375,7 @@ class MinuteBarBuilder:
         current = _minute_key()
         if str(self.bars[-1].get("t") or "") == current:
             self.bars.pop()
+            self._touch()
             return True
         return False
 
@@ -325,13 +384,40 @@ class MinuteBarBuilder:
             return None
         return str(self.bars[-1].get("t") or "") or None
 
+    def chart_series_fingerprint(self) -> str:
+        """Cheap identity for paper VWAP cache (no full bar copy).
+
+        Includes last closed OHLC so same-shape Kite corrections invalidate the key.
+        """
+        n = len(self.bars)
+        last = self.last_bar_minute() or ""
+        tip = ""
+        if self.bars:
+            tip = bar_tip(self.bars[-1])
+        live = self._live_bar()
+        if live is not None:
+            if live["t"] != last:
+                n += 1
+            last = str(live["t"])
+            # Keep tip on last *closed* OHLC only — live LTP would bust the cache every tick.
+        return f"{last}|{n}|{tip}|{self._rev}"
+
+    def forming_or_last_bar(self) -> dict[str, Any] | None:
+        """Live forming minute, else last closed bar — no full series copy."""
+        live = self._live_bar()
+        if live is not None:
+            return live
+        if not self.bars:
+            return None
+        return dict(self.bars[-1])
+
     def _dedupe(self) -> None:
         seen: dict[str, dict[str, Any]] = {}
         for bar in self.bars:
             key = str(bar.get("t") or "")
             if key:
                 seen[key] = bar
-        self.bars = [seen[k] for k in sorted(seen.keys())]
+        self._set_bars([seen[k] for k in sorted(seen.keys())])
 
     def merge_kite_candles(self, candles: list[list[Any]]) -> int:
         """Replace closed minute bars with Kite REST OHLC (authoritative vs tick build)."""
@@ -345,26 +431,44 @@ class MinuteBarBuilder:
                 continue
             if not is_cash_session_minute(ts):
                 continue
-            bar = {
-                "t": ts,
-                "o": round(float(c[1]), 4),
-                "h": round(float(c[2]), 4),
-                "l": round(float(c[3]), 4),
-                "c": round(float(c[4]), 4),
-                "v": round(_candle_volume(c), 4),
-                "oi": round(_candle_oi(c), 4),
-            }
+            vol = round(_candle_volume(c), 4)
+            oi = round(_candle_oi(c), 4)
             replaced = False
             for i, existing in enumerate(self.bars):
                 if str(existing.get("t") or "") == ts:
-                    self.bars[i] = bar
+                    # Index candles carry no volume/OI — keep the live/FUT values.
+                    if vol <= 0:
+                        vol = round(float(existing.get("v") or 0), 4)
+                    if oi <= 0:
+                        oi = round(float(existing.get("oi") or 0), 4)
+                    self.bars[i] = {
+                        "t": ts,
+                        "o": round(float(c[1]), 4),
+                        "h": round(float(c[2]), 4),
+                        "l": round(float(c[3]), 4),
+                        "c": round(float(c[4]), 4),
+                        "v": vol,
+                        "oi": oi,
+                    }
                     replaced = True
                     updated += 1
                     break
             if not replaced:
-                self.bars.append(bar)
+                self.bars.append(
+                    {
+                        "t": ts,
+                        "o": round(float(c[1]), 4),
+                        "h": round(float(c[2]), 4),
+                        "l": round(float(c[3]), 4),
+                        "c": round(float(c[4]), 4),
+                        "v": vol,
+                        "oi": oi,
+                    }
+                )
                 updated += 1
         if updated:
+            # In-place OHLC replace — `_set_bars` cannot see it, so touch explicitly.
+            self._touch()
             self._dedupe()
             self.drop_non_session_bars()
         return updated
@@ -394,6 +498,8 @@ class MinuteBarBuilder:
             if oi is not None and float(bar.get("oi") or 0) <= 0:
                 bar["oi"] = round(oi, 4)
                 updated += 1
+        if updated:
+            self._touch()
         return updated
 
     def ohlc_series(
@@ -433,20 +539,8 @@ class MinuteBarBuilder:
         bars = [dict(bar) for bar in self.bars]
         # Keep chart timeline aligned to NSE cash session; hide off-session
         # live bars (for example, stale WS ticks after market close).
-        if (
-            self._current_key
-            and self._close is not None
-            and is_cash_session_minute(self._current_key)
-        ):
-            live = {
-                "t": self._current_key,
-                "o": round(float(self._open or self._close), 4),
-                "h": round(float(self._high or self._close), 4),
-                "l": round(float(self._low or self._close), 4),
-                "c": round(float(self._close), 4),
-                "v": round(float(self._volume), 4),
-                "oi": round(float(self._oi), 4),
-            }
+        live = self._live_bar()
+        if live is not None:
             if bars and bars[-1].get("t") == live["t"]:
                 bars[-1] = live
             else:

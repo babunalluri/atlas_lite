@@ -31,6 +31,7 @@
       --control-border: #4a627e;
       --control-shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
       --header-control-h: 28px;
+      --chain-itm: color-mix(in srgb, var(--warn) 8%, var(--card-bg-bottom));
     }
     [data-theme="light"] {
       color-scheme: light;
@@ -57,6 +58,7 @@
       --control-border: #b8c5d6;
       --control-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
       --header-control-h: 28px;
+      --chain-itm: color-mix(in srgb, var(--warn) 10%, var(--card-bg-bottom));
     }
     * { box-sizing: border-box; }
     .no-scrollbar {
@@ -546,6 +548,7 @@
     .badge.wait { background: var(--warn-bg); color: var(--warn); }
     main { padding: 0; flex: 1; min-height: 0; overflow: hidden; }
     .page-layout {
+      position: relative;
       display: grid;
       grid-template-columns: min-content minmax(0, 1fr);
       gap: 10px;
@@ -553,8 +556,11 @@
       padding: 10px 12px;
       height: 100%;
       min-height: 0;
+      overflow: hidden;
     }
     .chain-panel {
+      z-index: 20;
+      overflow: visible;
       min-width: 0;
       width: min-content;
       max-width: 100%;
@@ -567,6 +573,10 @@
       border: 1px solid var(--line);
       border-radius: 10px;
       padding: 8px 8px 6px;
+      position: relative;
+    }
+    .chain-panel.extras-open {
+      z-index: 28;
     }
     .chain-bar {
       display: flex;
@@ -829,6 +839,36 @@
       flex-shrink: 0;
     }
     .chart-menu-item input { margin: 0; accent-color: var(--accent); }
+    .chart-template-btn {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 2px;
+      width: 100%;
+      margin: 0 0 4px;
+      padding: 7px 8px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: color-mix(in srgb, var(--accent) 8%, transparent);
+      color: var(--ink);
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+    .chart-template-btn:hover {
+      border-color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 16%, transparent);
+    }
+    .chart-template-btn strong {
+      font-size: 0.75rem;
+      font-weight: 800;
+    }
+    .chart-template-btn span {
+      font-size: 0.625rem;
+      color: var(--muted);
+      font-weight: 600;
+      line-height: 1.35;
+    }
     .chart-indicator-panel {
       min-width: 17rem;
       max-height: min(460px, 68vh);
@@ -949,7 +989,7 @@
     .chart-empty[hidden] { display: none; }
     .chart-hud {
       position: absolute;
-      top: 8px;
+      top: var(--chart-hud-top, 8px);
       left: 10px;
       z-index: 5;
       pointer-events: none;
@@ -1008,22 +1048,131 @@
       border-radius: 10px;
       padding: 7px 8px 8px;
       width: 100%;
+      position: relative;
+    }
+    .sheet-board-head {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 0;
+      min-height: 0;
+      margin: 0;
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      z-index: 2;
+    }
+    .sheet-board.collapsed {
+      padding: 4px 6px;
+      min-height: 0;
+    }
+    .sheet-board.collapsed .sheet-board-head {
+      position: static;
+      justify-content: center;
+      margin: 0;
+    }
+    .sheet-board.collapsed .sheet-board-body {
+      display: none;
+    }
+    .sheet-warn-badge {
+      display: none;
+      min-width: 16px;
+      height: 16px;
+      padding: 0 4px;
+      margin-left: 4px;
+      border-radius: 8px;
+      background: #b45309;
+      color: #fff;
+      font: 700 10px/16px ui-sans-serif, system-ui, sans-serif;
+      align-items: center;
+      justify-content: center;
+    }
+    .sheet-board.collapsed .sheet-warn-badge.has-warn {
+      display: inline-flex;
+    }
+    .sheet-board-toggle,
+    .chain-collapse-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      padding: 0;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      background: var(--panel);
+      color: var(--muted);
+      cursor: pointer;
+      box-shadow: var(--control-shadow);
+    }
+    .sheet-board-toggle:hover,
+    .chain-collapse-btn:hover {
+      color: var(--ink);
+      border-color: var(--control-border);
+      background: color-mix(in srgb, var(--panel) 70%, var(--line));
+    }
+    .sheet-board-toggle:focus-visible,
+    .chain-collapse-btn:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 1px;
+    }
+    .sheet-board-toggle .chev,
+    .chain-collapse-btn .chev {
+      width: 14px;
+      height: 14px;
+      fill: currentColor;
+      transition: transform 0.15s ease;
+    }
+    .sheet-board.collapsed .sheet-board-toggle .chev {
+      transform: rotate(-90deg);
+    }
+    .sheet-board-body {
+      padding-top: 0;
+    }
+    .chain-collapse-btn {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      /* Above .chain-bar (26) and .chain-split (8); otherwise clicks never reach this button. */
+      z-index: 30;
+    }
+    .page-layout.chain-collapsed {
+      grid-template-columns: 36px minmax(0, 1fr);
+    }
+    .page-layout.chain-collapsed .chain-panel {
+      width: 36px;
+      min-width: 36px;
+      padding: 8px 4px;
+      overflow: hidden;
+    }
+    .page-layout.chain-collapsed .chain-bar,
+    .page-layout.chain-collapsed .chain-table-wrap,
+    .page-layout.chain-collapsed .chain-extras-drawer {
+      display: none;
+    }
+    .page-layout.chain-collapsed .chain-collapse-btn {
+      right: 6px;
+      top: 8px;
+      transform: none;
+    }
+    .page-layout.chain-collapsed .chain-collapse-btn .chev {
+      transform: rotate(180deg);
+    }
+    .page-layout.chain-collapsed .chain-panel::after {
+      content: "CHAIN";
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%) rotate(-90deg);
+      font-size: 0.5625rem;
+      font-weight: 800;
+      letter-spacing: 0.12em;
+      color: var(--muted);
+      pointer-events: none;
+      white-space: nowrap;
     }
     #warnings:empty { display: none; }
     #warnings { margin-bottom: 6px; }
-    .paper-bar {
-      display: none;
-    }
-    .paper-bar[hidden] { display: none; }
-    .paper-bar .paper-k {
-      color: var(--muted);
-      font-weight: 700;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-      font-size: 0.625rem;
-    }
-    .paper-bar .paper-up { color: var(--pass); }
-    .paper-bar .paper-dn { color: var(--fail); }
     @media (max-width: 1100px) {
       body { height: auto; overflow: auto; }
       main { flex: none; overflow: visible; }
@@ -1032,10 +1181,41 @@
         flex-direction: column;
         height: auto;
       }
+      .page-layout.chain-collapsed {
+        grid-template-columns: unset;
+      }
+      .page-layout.chain-collapsed .chain-panel {
+        width: 100%;
+        min-width: 0;
+        max-height: 48px;
+        padding: 8px;
+      }
+      .page-layout.chain-collapsed .chain-panel::after {
+        transform: none;
+        top: 50%;
+        left: 16px;
+        rotate: none;
+      }
+      .page-layout.chain-collapsed .chain-collapse-btn {
+        right: 8px;
+        top: 50%;
+        transform: translateY(-50%);
+      }
+      .chain-collapse-btn {
+        right: 8px;
+        top: 8px;
+      }
       .chain-panel {
         width: 100%;
         min-width: 0;
         max-height: 280px;
+      }
+      .chain-panel.extras-open {
+        width: 100%;
+        max-width: 100%;
+      }
+      .chain-split {
+        display: none !important;
       }
       .chain-bar {
         width: 100%;
@@ -1320,10 +1500,90 @@
     .hist-pass { color: var(--pass); }
     .hist-fail { color: var(--fail); }
     .hist-muted { color: var(--muted); }
+    .history-table td.trades-book {
+      text-decoration: underline dotted;
+      text-underline-offset: 3px;
+      cursor: help;
+      color: var(--ink);
+    }
+    .trades-float-tip {
+      position: fixed;
+      z-index: 10050;
+      max-width: min(440px, 86vw);
+      max-height: min(420px, 60vh);
+      overflow: auto;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--card-bg-top);
+      color: var(--ink);
+      font-size: 0.72rem;
+      line-height: 1.35;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+      pointer-events: none;
+    }
+    .trades-tip-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    .trades-tip-table th {
+      text-align: left;
+      vertical-align: top;
+      padding: 4px 10px 4px 0;
+      color: var(--muted);
+      font-weight: 600;
+      white-space: nowrap;
+      width: 4.5rem;
+    }
+    .trades-tip-table td {
+      text-align: left;
+      vertical-align: top;
+      padding: 4px 0;
+      word-break: break-word;
+    }
+    .trades-tip-kv {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 0;
+    }
+    .trades-tip-kv td {
+      padding: 1px 0;
+      font-family: ui-monospace, monospace;
+      font-size: 0.7rem;
+    }
+    .trades-tip-kv td:first-child {
+      color: var(--muted);
+      padding-right: 10px;
+      white-space: nowrap;
+      width: 1%;
+    }
+    .chain-toggle {
+      flex-shrink: 0;
+      width: var(--header-control-h);
+      height: var(--header-control-h);
+      padding: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      background: var(--panel);
+      color: var(--muted);
+      cursor: pointer;
+      box-shadow: var(--control-shadow);
+    }
+    .chain-toggle svg {
+      width: 14px;
+      height: 14px;
+      fill: currentColor;
+    }
     .chain-toggle:hover,
     .chain-toggle.active {
       color: var(--ink);
       border-color: var(--accent);
+    }
+    .chain-toggle.active {
+      background: color-mix(in srgb, var(--accent) 16%, var(--panel));
     }
     .chain-summary {
       display: flex;
@@ -1366,6 +1626,101 @@
       border: 1px solid var(--line);
       border-radius: 8px;
     }
+    .chain-bar {
+      position: relative;
+      z-index: 26;
+    }
+    .chain-extras-drawer {
+      position: absolute;
+      top: calc(var(--header-control-h) + 14px);
+      left: 0;
+      bottom: 0;
+      z-index: 24;
+      display: flex;
+      flex-direction: column;
+      width: var(--chain-extras-w, max-content);
+      min-width: 100%;
+      max-width: min(78vw, calc(100vw - 280px));
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      box-shadow: 14px 0 32px color-mix(in srgb, #000 42%, transparent);
+      transform: translateX(-110%);
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transition: transform 0.2s ease, opacity 0.16s ease;
+      overflow: hidden;
+    }
+    .chain-panel.extras-open .chain-extras-drawer {
+      transform: none;
+      opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
+    }
+    .chain-extras-drawer .chain-table-wrap {
+      flex: 1;
+      width: max-content;
+      max-width: none;
+      min-height: 0;
+      height: 100%;
+      border: 0;
+      border-radius: 10px;
+      padding-right: 10px;
+    }
+    .chain-extras-drawer .chain-table {
+      width: max-content;
+      font-size: 0.68rem;
+    }
+    .chain-extras-drawer .chain-table th,
+    .chain-extras-drawer .chain-table td {
+      padding: 3px 3px;
+    }
+    .chain-split {
+      display: none;
+      position: absolute;
+      top: 0;
+      right: 0;
+      width: 10px;
+      bottom: 0;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      cursor: col-resize;
+      z-index: 8;
+      touch-action: none;
+      background: color-mix(in srgb, var(--accent) 16%, var(--panel));
+      align-items: center;
+      justify-content: center;
+    }
+    .chain-panel.extras-open .chain-split {
+      display: flex;
+    }
+    .chain-split-grip {
+      width: 3px;
+      height: 42px;
+      border-radius: 2px;
+      background: var(--accent);
+      box-shadow: -3px 0 0 color-mix(in srgb, var(--accent) 55%, transparent);
+    }
+    .chain-split:hover .chain-split-grip,
+    .chain-panel.chain-resizing .chain-split-grip {
+      background: var(--ink);
+    }
+    .page-layout.chain-collapsed .chain-split {
+      display: none;
+    }
+    .chain-panel.chain-resizing .chain-extras-drawer {
+      transition: none;
+    }
+    body.chain-resizing {
+      cursor: col-resize;
+      user-select: none;
+    }
+    body.chain-resizing iframe,
+    body.chain-resizing canvas {
+      pointer-events: none;
+    }
     .chain-table-wrap,
     .history-dialog,
     .history-table-wrap,
@@ -1387,6 +1742,13 @@
       font-size: 0.75rem;
       font-family: ui-monospace, monospace;
       font-variant-numeric: tabular-nums;
+    }
+    table.chain-table.extras-on {
+      font-size: 0.68rem;
+    }
+    .chain-table.extras-on th,
+    .chain-table.extras-on td {
+      padding: 3px 3px;
     }
     .chain-table th,
     .chain-table td {
@@ -1431,10 +1793,49 @@
     .chain-table td.pe-side {
       background: color-mix(in srgb, var(--fail) 4%, transparent);
     }
+    .chain-table td.ce-side.itm,
+    .chain-table td.pe-side.itm {
+      background: var(--chain-itm);
+    }
+    .chain-table tbody tr[data-strike] {
+      cursor: pointer;
+    }
     .chain-table tr.atm-row td {
       background: color-mix(in srgb, var(--accent) 12%, var(--card-bg-bottom));
       box-shadow: inset 0 1px 0 color-mix(in srgb, var(--accent) 35%, transparent),
         inset 0 -1px 0 color-mix(in srgb, var(--accent) 35%, transparent);
+    }
+    .chain-table tr.atm-row td.ce-side.itm,
+    .chain-table tr.atm-row td.pe-side.itm {
+      background: color-mix(in srgb, var(--accent) 8%, var(--chain-itm));
+    }
+    .chain-table tbody tr[data-strike]:hover td {
+      background: color-mix(in srgb, var(--warn) 10%, var(--card-bg-bottom));
+    }
+    .chain-table tbody tr[data-strike]:hover td.ce-side {
+      background: color-mix(in srgb, var(--warn) 9%, color-mix(in srgb, var(--pass) 6%, var(--card-bg-bottom)));
+    }
+    .chain-table tbody tr[data-strike]:hover td.pe-side {
+      background: color-mix(in srgb, var(--warn) 9%, color-mix(in srgb, var(--fail) 6%, var(--card-bg-bottom)));
+    }
+    .chain-table tbody tr.chain-sel td,
+    .chain-table tbody tr.chain-sel:hover td {
+      background: color-mix(in srgb, var(--warn) 18%, var(--card-bg-bottom));
+      box-shadow: inset 0 1px 0 color-mix(in srgb, var(--warn) 45%, transparent),
+        inset 0 -1px 0 color-mix(in srgb, var(--warn) 45%, transparent);
+    }
+    .chain-table tbody tr.chain-sel td.ce-side,
+    .chain-table tbody tr.chain-sel:hover td.ce-side {
+      background: color-mix(in srgb, var(--warn) 16%, color-mix(in srgb, var(--pass) 6%, var(--card-bg-bottom)));
+    }
+    .chain-table tbody tr.chain-sel td.pe-side,
+    .chain-table tbody tr.chain-sel:hover td.pe-side {
+      background: color-mix(in srgb, var(--warn) 16%, color-mix(in srgb, var(--fail) 6%, var(--card-bg-bottom)));
+    }
+    .chain-table tbody tr.chain-sel td.strike-col,
+    .chain-table tbody tr.chain-sel:hover td.strike-col {
+      background: color-mix(in srgb, var(--warn) 26%, var(--card-bg-bottom));
+      color: var(--warn);
     }
     .chain-table tr.max-pain-row td.strike-col {
       color: var(--warn);
@@ -1535,6 +1936,13 @@
         <div class="header-meta-end">
           <div class="header-actions">
             <button type="button" class="theme-toggle" id="themeToggle" title="Switch theme" aria-label="Switch theme">☀</button>
+            <button type="button" class="header-btn history-toggle" id="tradesToggle" title="View paper trades">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18v2H3V5zm0 6h12v2H3v-2zm0 6h18v2H3v-2z"/><path d="M17 11h4v2h-4z" opacity=".55"/></svg>
+              Trades
+            </button>
+            <button type="button" class="header-btn history-toggle" id="agentToggle" title="Paper trading agent">
+              Agent
+            </button>
             <button type="button" class="header-btn history-toggle" id="historyToggle" title="View recorded snapshots">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3a9 9 0 1 0 9 9h-2a7 7 0 1 1-2.05-4.95L15 9h6V3l-2.76 2.76A8.96 8.96 0 0 0 13 3zm-1 5h2v5h-5V11h3V8z"/></svg>
               History
@@ -1546,15 +1954,19 @@
     </div>
   </header>
   <main>
-    <div class="page-layout">
-      <aside class="chain-panel" aria-label="Option chain">
+    <div class="page-layout" id="pageLayout">
+      <aside class="chain-panel" id="chainPanel" aria-label="Option chain">
+        <button type="button" class="chain-collapse-btn" id="chainCollapseBtn" title="Collapse option chain" aria-expanded="true" aria-controls="chainTableWrap" aria-label="Collapse option chain">
+          <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M15.4 7.4 10.8 12l4.6 4.6L14 18l-6-6 6-6z"/></svg>
+        </button>
         <div class="chain-bar">
           <div class="chain-summary" id="chainSummary"></div>
+          <button type="button" class="chain-toggle" id="chainExtrasBtn" aria-pressed="false" aria-label="Show Vol, Bid, Ask, IV, greeks, strike PCR" title="Show Vol, Bid, Ask, IV, greeks, strike PCR"></button>
           <span class="chain-meta" id="chainMeta"></span>
         </div>
         <div class="chain-table-wrap" id="chainTableWrap">
-          <table class="chain-table">
-            <thead>
+          <table class="chain-table" id="chainTable">
+            <thead id="chainHead">
               <tr>
                 <th class="ce-head">OI</th>
                 <th class="ce-head">%</th>
@@ -1571,14 +1983,35 @@
             <tfoot id="chainTotals"></tfoot>
           </table>
         </div>
+        <div class="chain-extras-drawer" id="chainExtrasDrawer" aria-hidden="true">
+          <div class="chain-table-wrap" id="chainExtrasWrap">
+            <table class="chain-table" id="chainExtrasTable">
+              <thead id="chainExtrasHead"></thead>
+              <tbody id="chainExtrasRows">
+                <tr><td colspan="24" class="chain-muted" style="text-align:center">Loading extras…</td></tr>
+              </tbody>
+              <tfoot id="chainExtrasTotals"></tfoot>
+            </table>
+          </div>
+          <button type="button" class="chain-split" id="chainSplit" aria-orientation="vertical" aria-label="Drag to resize extras" title="Drag to resize extras">
+            <span class="chain-split-grip" aria-hidden="true"></span>
+          </button>
+        </div>
       </aside>
       <div class="main-stage">
-        <section class="sheet-board">
-          <div class="watch-strips" id="indexStrip"></div>
-          <div class="paper-bar" id="paperBar" hidden>Paper…</div>
-          <div id="warnings"></div>
-          <div class="sheet-groups" id="sheetGroups">
-            <div style="text-align:center;color:var(--muted);padding:12px 8px">Connecting to SSE…</div>
+        <section class="sheet-board" id="sheetBoard">
+          <div class="sheet-board-head">
+            <button type="button" class="sheet-board-toggle" id="sheetBoardToggle" aria-expanded="true" aria-controls="sheetBoardBody" title="Hide watch and metrics" aria-label="Hide watch and metrics">
+              <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M7.4 8.6 12 13.2l4.6-4.6L18 10l-6 6-6-6z"/></svg>
+            </button>
+            <span id="sheetWarnBadge" class="sheet-warn-badge" hidden title=""></span>
+          </div>
+          <div class="sheet-board-body" id="sheetBoardBody">
+            <div class="watch-strips" id="indexStrip"></div>
+            <div id="warnings"></div>
+            <div class="sheet-groups" id="sheetGroups">
+              <div style="text-align:center;color:var(--muted);padding:12px 8px">Connecting to SSE…</div>
+            </div>
           </div>
         </section>
         <aside class="chart-panel" id="chartPanel" aria-label="Index chart">
@@ -1638,6 +2071,102 @@
       </div>
     </div>
   </main>
+  <div class="history-modal" id="tradesModal" aria-hidden="true">
+    <div class="history-backdrop" id="tradesBackdrop"></div>
+    <section class="history-dialog" id="tradesPanel" role="dialog" aria-modal="true" aria-label="Paper trades">
+      <div class="history-head">
+        <h2>Paper trades</h2>
+        <button type="button" class="history-close" id="tradesClose">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+          Close
+        </button>
+      </div>
+      <div class="history-toolbar">
+        <label for="tradesDayFilter">Day</label>
+        <select id="tradesDayFilter" title="Filter by IST day">
+          <option value="" selected>All days</option>
+        </select>
+        <button type="button" id="tradesRefresh">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+          Refresh
+        </button>
+        <span class="history-meta" id="tradesMeta">Paper only · latest first</span>
+      </div>
+      <div class="history-table-wrap" style="max-height:160px;margin-bottom:8px;">
+        <table class="history-table" id="tradesBookDayTable">
+          <thead>
+            <tr>
+              <th>Day</th>
+              <th>Book</th>
+              <th>Closed</th>
+              <th>Open</th>
+              <th>PnL</th>
+            </tr>
+          </thead>
+          <tbody id="tradesBookDayRows">
+            <tr><td colspan="5" class="hist-muted">Book×day PnL loads with Trades</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="history-table-wrap">
+        <table class="history-table" id="tradesTable">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Book</th>
+              <th>Event</th>
+              <th>Side</th>
+              <th>Symbol</th>
+              <th>Entry</th>
+              <th>Exit</th>
+              <th>PnL</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody id="tradesRows">
+            <tr><td colspan="9" class="hist-muted">Open Trades to load fills</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="history-detail" id="tradesDetail">Paper only · hover Book for entry/exit gates · latest first</div>
+      <div class="trades-float-tip" id="tradesFloatTip" hidden role="tooltip"></div>
+    </section>
+  </div>
+  <div class="history-modal" id="agentModal" aria-hidden="true">
+    <div class="history-backdrop" id="agentBackdrop"></div>
+    <section class="history-dialog" id="agentPanel" role="dialog" aria-modal="true" aria-label="Paper AI agent">
+      <div class="history-head">
+        <h2>Paper trading agent</h2>
+        <button type="button" class="history-close" id="agentClose">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+          Close
+        </button>
+      </div>
+      <div class="history-toolbar">
+        <button type="button" id="agentAdviseBtn">Run trade cycle</button>
+        <button type="button" id="agentRefreshBtn">Refresh</button>
+        <label class="history-meta" for="agentApiToken" style="display:inline-flex;align-items:center;gap:6px;">
+          API token
+          <input type="password" id="agentApiToken" autocomplete="off" placeholder="X-Atlas-Token" style="min-width:10rem;padding:4px 8px;" />
+        </label>
+        <button type="button" id="agentTokenSaveBtn">Save token</button>
+        <span class="history-meta" id="agentMeta">Paper fills only · agent opens CE/PE · no live orders</span>
+      </div>
+      <div class="history-detail" id="agentPositionLine">Agent book: —</div>
+      <div class="history-detail" id="agentMacroLine">Macro: —</div>
+      <div class="history-detail" id="agentDecision">Last cycle: —</div>
+      <div class="history-table-wrap">
+        <table class="history-table" id="agentGatesTable">
+          <thead>
+            <tr><th>Book</th><th>Mode</th><th>Source</th><th>Until</th><th>Reason</th><th></th></tr>
+          </thead>
+          <tbody id="agentGatesRows">
+            <tr><td colspan="6" class="hist-muted">Open Agent to load gates</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
   <div class="history-modal" id="historyModal" aria-hidden="true">
     <div class="history-backdrop" id="historyBackdrop"></div>
     <section class="history-dialog" id="historyPanel" role="dialog" aria-modal="true" aria-label="Recording history">
@@ -1729,6 +2258,9 @@
   </div>
   </div>
   <script src="https://cdn.jsdelivr.net/npm/klinecharts@9.8.5/dist/umd/klinecharts.min.js"></script>
+  <script src="/pred30.js"></script>
+  <script src="/orderflow.js"></script>
+  <script src="/levels.js"></script>
   <script>
     const TICK_STICKY_MS = 3000;
     const prevValues = new Map();
@@ -1762,10 +2294,6 @@
       document.querySelectorAll("#nbSwitch a").forEach((a) => {
         a.classList.toggle("active", a.dataset.nb === notebookId);
       });
-      const paper = document.getElementById("paperBar");
-      if (paper && notebookId !== "nifty") {
-        paper.hidden = true;
-      }
     }
     applyNotebookChrome();
 
@@ -1776,6 +2304,9 @@
       oi_day_high: "OI vs high",
     };
     const THEME_KEY = "atlas-lite-theme";
+    const SHEET_COLLAPSE_KEY = "atlas-lite-sheet-collapsed";
+    const CHAIN_COLLAPSE_KEY = "atlas-lite-chain-collapsed";
+    const CHAIN_EXTRAS_W_KEY = "atlas-lite-chain-full-w";
     const PARITY_CLOSE_PCT = 2;
     const PARITY_BELL_PAIR_GAP_S = 0.9;
     const PARITY_BELL_MIN_INTERVAL_S = 60;
@@ -1850,27 +2381,51 @@
       "horizontalSegment",
       "priceLine",
     ]);
-    const OVERLAY_INDICATORS = ["SESSION", "VWAP", "ST", "ATRB", "VP", "MA", "EMA", "SMA", "BBI", "BOLL", "SAR", "AVP"];
+    const OVERLAY_INDICATORS = ["COMBO", "OF", "PRED30", "SESSION", "PIVOT", "FIB", "SR", "SD", "VWAP", "ST", "ATRB", "VP", "MA", "EMA", "SMA", "BBI", "BOLL", "SAR", "AVP"];
     const PANE_INDICATORS = [
       "FUTOI",
+      "CVD",
       "MACD", "RSI", "KDJ", "DMI", "CCI", "WR", "BIAS", "ROC",
       "TRIX", "DMA", "AO", "PSY", "MTM", "EMV",
       "OBV", "PVT", "VR", "CR", "BRAR",
     ];
+    // One-click stacks: overlays on candle + pane oscillators (VOL stays).
+    const CHART_TEMPLATES = [
+      {
+        id: "confluence",
+        title: "Confluence B/S",
+        blurb: "VWAP+BOLL bands · COMBO marks only · DMI · RSI · MACD",
+        // showMarks=0 on VWAP/BOLL so only COMBO draws B/S triangles.
+        overlays: [
+          { name: "VWAP", calcParams: [0] },
+          { name: "BOLL", calcParams: [20, 2, 0] },
+          { name: "COMBO" },
+        ],
+        panes: ["DMI", "RSI", "MACD"],
+      },
+    ];
     const INDICATOR_NAMES = {
+      COMBO: "Confluence B/S (VWAP+BOLL+RSI+MACD+ADX)",
+      OF: "Order flow B/S (1m FUT Δ / CVD; impulse flip + divergence)",
+      PRED30: "30m target and range (slope, or vote lean if slope disagrees)",
       SESSION: "Session open / prev close",
-      VWAP: "Session VWAP + bands",
-      ST: "Supertrend",
+      PIVOT: "Classic floor pivots (prior IST H/L/C)",
+      FIB: "Auto Fibonacci (last swing pair)",
+      SR: "Support / resistance (fractal clusters)",
+      SD: "Supply / demand (RBR · DBD · DBR · RBD)",
+      VWAP: "Session VWAP + B/S (−0.5σ entry)",
+      ST: "Supertrend + B/S",
       ATRB: "ATR bands",
       VP: "Volume profile / POC",
       MA: "Moving Average",
       EMA: "Exponential MA",
       SMA: "Simple MA",
       BBI: "Bull & Bear Index",
-      BOLL: "Bollinger Bands",
+      BOLL: "Bollinger + B/S",
       SAR: "Parabolic SAR",
       AVP: "Average Price",
       FUTOI: "FUT Open Interest",
+      CVD: "Cumulative volume delta",
       MACD: "MACD",
       RSI: "Relative Strength",
       KDJ: "KDJ Stochastic",
@@ -1900,10 +2455,9 @@
     let serverDmiByTime = new Map();
     let latestFeedAdx = null;
     let latestFeedAtr = null;
+    let pred30Snap = { iv: null, ce: null, pe: null, spot: null, expiry: null };
     let niftyLastBarTime = null;
     let candlePollTimer = null;
-    let paperPollTimer = null;
-    const PAPER_POLL_MS = 2000;
     let chartHasFullData = false;
     let chartResizeObs = null;
     let chartHasVol = false;
@@ -1945,7 +2499,14 @@
     };
 
     const INDICATOR_ICONS = {
+      COMBO: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 18V9h2.2v9zm4.6 0V6h2.2v12zm4.6 0v-7h2.2v7zM18 18v-4h2.2v4z"/><path d="M3 5h18v1.4H3z"/></svg>',
+      OF: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 12h2.2v7H4zm3.6-5h2.2v12H7.6zm3.6 3h2.2v9h-2.2zm3.6-6h2.2v15h-2.2zM18 10h2.2v9H18z"/></svg>',
+      PRED30: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 12 20 5v14z" opacity=".35"/><path d="M4 12 20 8v8z"/><path d="M4 12h16" opacity=".8"/></svg>',
       SESSION: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 7h18v1.5H3zm0 8.5h18V17H3z"/><path d="M11 4h2v16h-2z"/></svg>',
+      PIVOT: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.5h18v1.4H3zm0 5.85h18v1.4H3zm0 5.85h18v1.4H3z"/><path d="M11 3h2v18h-2z" opacity=".45"/></svg>',
+      FIB: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 4.5h18v1.2H3zm0 4h18v1.2H3zm0 3.2h18v1.2H3zm0 2.4h18v1.2H3zm0 4.2h18v1.2H3z" opacity=".85"/><path d="M3 11.7h18v1.5H3z"/></svg>',
+      SR: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 7h18v1.5H3zM3 15.5h18V17H3z"/><path d="M5 9.2h2.2v5.6H5zm11.8 0H19v5.6h-2.2z" opacity=".5"/></svg>',
+      SD: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 4h16v6H4zm0 10h16v6H4z" opacity=".4"/><path d="M4 4h16v1.4H4zM4 8.6h16V10H4zM4 14h16v1.4H4zM4 18.6h16V20H4z"/></svg>',
       VWAP: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 7h18v1.4H3zm0 4.3h18v1.4H3zm0 4.3h18v1.4H3z"/><path d="M3 12.2 8 9.4l4 4.2 4.2-6.2L21 11v1.6l-5.2-3.2-4 6-4.2-4.4L3 13.6z"/></svg>',
       ST: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 16h6v1.6H3zm6-5h6v1.6H9zm6-5h6v1.6h-6z"/><path d="M8.2 16.8 9.8 15l4.2.2 1.4-4.8 4.8.2-.4 1.6-3.2-.2-1.4 4.8-4.4-.2z"/></svg>',
       ATRB: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.5h18v1.5H3zm0 5.75h18v1.5H3zm0 5.75h18v1.5H3z"/></svg>',
@@ -1958,6 +2519,7 @@
       SAR: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="16" r="1.7"/><circle cx="9" cy="12.5" r="1.7"/><circle cx="13" cy="9.2" r="1.7"/><circle cx="17" cy="7" r="1.7"/><circle cx="20.2" cy="5.2" r="1.5"/></svg>',
       AVP: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 12h18v1.6H3z"/><path d="M7 7h1.6v10H7zm8.4 0H17v10h-1.6z"/></svg>',
       FUTOI: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 18V10h2.2v8zm4.6 0V7h2.2v11zm4.6 0V12h2.2v6zM18 18v-4h2.2v4z"/></svg>',
+      CVD: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 12h18v1.4H3z"/><path d="M4 12.7 8.2 7.4 12 13l4-6.2L21 11v1.6l-4.8-3.6-4 6.2-4-5.6L4 14z"/></svg>',
       MACD: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 13h2.2v5H4zm3.6-4h2.2v9H7.6zm3.6 2h2.2v7h-2.2zm3.6-6h2.2v13h-2.2zM18 10h2.2v7H18z"/></svg>',
       RSI: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 6h18v1.2H3zM3 16.8h18V18H3z"/><path d="M3 14.2 8 9.6l4.2 4 4-6.2L21 10v1.6l-4.6-2.4-4 6.2-4.4-4.2L3 15.6z"/></svg>',
       KDJ: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 15.2 8.2 9.6 13 13.2 21 6.4V8l-7.6 6.4-4.8-3.6L3 16.8z"/><path d="M3 17.4 9 12.2l4.4 3.2L21 9.2v1.6l-7.4 5.8-4.4-3.2L3 19z" opacity=".55"/></svg>',
@@ -2015,6 +2577,9 @@
     const priceAlertArmed = new Map();
     const chartOverlayIndicators = new Set();
     const chartPaneIndicators = new Set();
+    // Optional calcParams per overlay (e.g. VWAP/BOLL showMarks). Survives disposeChart
+    // because chartOverlayIndicators also survives — restoreIndicators re-reads this map.
+    const chartOverlayParams = new Map();
     const chartIndicatorPanes = {};
 
     function klineStyles(theme) {
@@ -2072,6 +2637,7 @@
           tickText: { color: text },
         },
         yAxis: {
+          type: "normal",
           axisLine: { color: grid },
           tickLine: { color: grid },
           tickText: { color: text },
@@ -2286,6 +2852,19 @@
       });
     }
 
+    function syncChartHudOffset() {
+      const el = document.getElementById("chartOhlcHud");
+      if (!el) return;
+      // Native overlay legends paint one row each at the top of the candle pane.
+      // Count only overlays that actually got a pane (failed restores stay in the set).
+      let rows = 0;
+      chartOverlayIndicators.forEach((name) => {
+        if (chartIndicatorPanes[name]) rows += 1;
+      });
+      const top = 8 + rows * 20;
+      el.style.setProperty("--chart-hud-top", `${top}px`);
+    }
+
     function renderOhlcHud(k, crosshairData) {
       const el = document.getElementById("chartOhlcHud");
       if (!el) return;
@@ -2339,6 +2918,50 @@
       setTimeout(() => el.remove(), 4500);
     }
 
+    // Shared B/S triangle markers for price-pane indicators (VWAP, ST, BOLL, COMBO, OF).
+    // `pick(row)` returns { side: "B" | "S", color } or null to skip the bar.
+    function drawSignalMarkers({ ctx, kLineDataList, result, visibleRange, xAxis, yAxis }, pick) {
+      if (!xAxis || !yAxis || !kLineDataList.length || !visibleRange) return false;
+      const from = Math.max(0, visibleRange.from | 0);
+      const to = Math.min(kLineDataList.length - 1, visibleRange.to | 0);
+      ctx.save();
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.font = "bold 11px ui-sans-serif, system-ui, sans-serif";
+      for (let i = from; i <= to; i += 1) {
+        const row = result[i];
+        const candle = kLineDataList[i];
+        if (!row || !candle) continue;
+        const mark = pick(row);
+        if (!mark) continue;
+        const x = xAxis.convertToPixel(i);
+        const buy = mark.side === "B";
+        // Buy: upward triangle below the low. Sell: downward triangle above the high.
+        const y = buy
+          ? yAxis.convertToPixel(Number(candle.low)) + 16
+          : yAxis.convertToPixel(Number(candle.high)) - 16;
+        const dir = buy ? 1 : -1;
+        ctx.beginPath();
+        ctx.moveTo(x, y - 8 * dir);
+        ctx.lineTo(x - 7, y + 4 * dir);
+        ctx.lineTo(x + 7, y + 4 * dir);
+        ctx.closePath();
+        if (mark.outline) {
+          ctx.strokeStyle = mark.color;
+          ctx.lineWidth = 1.4;
+          ctx.stroke();
+          ctx.fillStyle = mark.color;
+        } else {
+          ctx.fillStyle = mark.color;
+          ctx.fill();
+          ctx.fillStyle = "#ffffff";
+        }
+        ctx.fillText(mark.side, x, y + dir);
+      }
+      ctx.restore();
+      return false;
+    }
+
     function calcAtrSeries(dataList, period) {
       const out = new Array(dataList.length).fill(null);
       let prevClose = null;
@@ -2377,6 +3000,545 @@
         prevClose = c;
       }
       return out;
+    }
+
+    // Band / vote helpers: static/pred30.js (loaded above). Keep chart-state glue here.
+
+    function pred30IvOrStraddle(barTs, isLast) {
+      if (!isLast) return null;
+      const spot = pred30Num(pred30Snap.spot);
+      const iv = pred30Num(pred30Snap.iv);
+      const ivW = pred30IvWidth(spot, iv);
+      if (ivW != null) return ivW;
+      const ce = pred30Num(pred30Snap.ce);
+      const pe = pred30Num(pred30Snap.pe);
+      if (ce == null || pe == null) return null;
+      const tte = pred30TradingMinutesToExpiry(pred30Snap.expiry, barTs);
+      return pred30StraddleWidth(ce + pe, tte);
+    }
+
+    function updatePred30Snap(feed, expiry) {
+      pred30Snap = {
+        iv: pred30Num(feed?.iv),
+        ce: pred30Num(feed?.ce),
+        pe: pred30Num(feed?.pe),
+        spot: pred30Num(feed?.spot ?? feed?.nifty_ltp),
+        expiry: expiry || feed?.expiry || null,
+      };
+    }
+
+    function pred30BarMinutes() {
+      const tf = Number(niftyInterval);
+      return tf > 0 ? tf : 0;
+    }
+
+    function desiredOffsetRight() {
+      if (!chartOverlayIndicators.has("PRED30")) return chartDefaultOffsetRight;
+      const tf = pred30BarMinutes();
+      if (!tf) return chartDefaultOffsetRight;
+      const bars = Math.ceil(PRED30_HORIZON_MIN / tf);
+      return Math.max(chartDefaultOffsetRight, bars * readChartBarSpace() + 28);
+    }
+
+    function syncPred30Pad() {
+      if (!niftyChart || typeof niftyChart.setOffsetRightDistance !== "function") return;
+      try { niftyChart.setOffsetRightDistance(desiredOffsetRight()); } catch (_) {}
+    }
+
+    function calcPred30Rows(dataList) {
+      const barMinutes = pred30BarMinutes();
+      if (!barMinutes || !dataList.length) {
+        return dataList.map(() => ({}));
+      }
+      const atr = calcAtrSeries(dataList, 14);
+      const stAtr = calcAtrSeries(dataList, 10);
+      const lookback = Math.max(8, Math.ceil(PRED30_HORIZON_MIN / barMinutes));
+      let day = "";
+      let eqSum = 0;
+      let eqSumSq = 0;
+      let eqN = 0;
+      let finalUpper = null;
+      let finalLower = null;
+      let stDir = 1;
+      return dataList.map((k, i) => {
+        const high = Number(k.high);
+        const low = Number(k.low);
+        const close = Number(k.close);
+        const key = new Date(k.timestamp).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+        if (key !== day) {
+          day = key;
+          eqSum = 0;
+          eqSumSq = 0;
+          eqN = 0;
+          finalUpper = null;
+          finalLower = null;
+          stDir = 1;
+        }
+        const typical = (high + low + close) / 3;
+        eqSum += typical;
+        eqSumSq += typical * typical;
+        eqN += 1;
+        const vwap = eqSum / eqN;
+        const vwapSigma = Math.sqrt(Math.max(0, eqSumSq / eqN - vwap * vwap));
+        const vwapReady = vwapSigma >= 1 && eqN >= 5;
+
+        if (stAtr[i] != null) {
+          const mid = (high + low) / 2;
+          const basicUpper = mid + 3 * stAtr[i];
+          const basicLower = mid - 3 * stAtr[i];
+          const prevClose = i > 0 ? Number(dataList[i - 1].close) : close;
+          if (finalUpper == null) {
+            finalUpper = basicUpper;
+            finalLower = basicLower;
+          } else {
+            finalUpper = basicUpper < finalUpper || prevClose > finalUpper ? basicUpper : finalUpper;
+            finalLower = basicLower > finalLower || prevClose < finalLower ? basicLower : finalLower;
+          }
+          if (stDir === 1) stDir = close < finalLower ? -1 : 1;
+          else stDir = close > finalUpper ? 1 : -1;
+        }
+
+        const from = Math.max(0, i - lookback + 1);
+        const winCloses = [];
+        const winHighs = [];
+        const winLows = [];
+        for (let j = from; j <= i; j += 1) {
+          winCloses.push(Number(dataList[j].close));
+          winHighs.push(Number(dataList[j].high));
+          winLows.push(Number(dataList[j].low));
+        }
+        const ichiHighs = [];
+        const ichiLows = [];
+        const ichiFrom = Math.max(0, i - 25);
+        for (let j = ichiFrom; j <= i; j += 1) {
+          ichiHighs.push(Number(dataList[j].high));
+          ichiLows.push(Number(dataList[j].low));
+        }
+        const lr = pred30Linreg(winCloses);
+        const spanA = pred30IchimokuSpanA(ichiHighs, ichiLows);
+        const isLast = i === dataList.length - 1;
+        const atrW = pred30AtrWidth(atr[i], barMinutes);
+        const vwapW = vwapReady ? vwapSigma : null;
+        const lrW = lr.sigma;
+        const ivW = pred30IvOrStraddle(k.timestamp, isLast);
+        const band = pred30Ensemble([atrW, vwapW, lrW, ivW]);
+        const vIchi = spanA == null ? 0 : close > spanA ? 1 : close < spanA ? -1 : 0;
+        const vLr = lr.slope == null ? 0 : lr.slope > 0 ? 1 : lr.slope < 0 ? -1 : 0;
+        const vVwap = !vwapReady ? 0 : close > vwap ? 1 : close < vwap ? -1 : 0;
+        const vSt = stAtr[i] == null ? 0 : stDir > 0 ? 1 : -1;
+        const votes = pred30Vote([vIchi, vLr, vVwap, vSt]);
+        const path = pred30Forecast(close, band.median, band.tight, lr.slope, barMinutes, votes);
+        return {
+          close,
+          median: band.median,
+          tight: band.tight,
+          atrW,
+          vwapW,
+          lrW,
+          ivW,
+          n: band.n,
+          side: votes.side,
+          label: votes.label,
+          text: path?.text || null,
+          drift: path?.drift ?? null,
+          target: path?.target ?? null,
+          lo: path?.lo ?? null,
+          hi: path?.hi ?? null,
+          tlo: path?.tlo ?? null,
+          thi: path?.thi ?? null,
+          conflict: path?.conflict || false,
+          votes: { ichi: vIchi, linreg: vLr, vwap: vVwap, st: vSt },
+        };
+      });
+    }
+
+    function drawPred30Cone({ ctx, kLineDataList, indicator, visibleRange, xAxis, yAxis }) {
+      if (!xAxis || !yAxis || !kLineDataList.length) return false;
+      const tf = pred30BarMinutes();
+      if (!tf) return false;
+      const result = indicator.result || [];
+      const lastIdx = kLineDataList.length - 1;
+      const row = result[lastIdx];
+      if (!row || row.median == null || !Number.isFinite(row.median)) return false;
+      const close = Number(row.close ?? kLineDataList[lastIdx].close);
+      if (!Number.isFinite(close)) return false;
+      const target = Number.isFinite(row.target) ? row.target : close;
+      const hi = Number.isFinite(row.hi) ? row.hi : close + row.median;
+      const lo = Number.isFinite(row.lo) ? row.lo : close - row.median;
+      const tightUp = Number.isFinite(row.thi) ? row.thi : target + (row.tight ?? row.median);
+      const tightDn = Number.isFinite(row.tlo) ? row.tlo : target - (row.tight ?? row.median);
+      const x0 = xAxis.convertToPixel(lastIdx);
+      const xPrev = lastIdx > 0 ? xAxis.convertToPixel(lastIdx - 1) : x0 - 6;
+      const barW = Math.abs(x0 - xPrev) || 6;
+      const x1 = x0 + Math.ceil(PRED30_HORIZON_MIN / tf) * barW;
+      const yMid = yAxis.convertToPixel(close);
+      const yTarget = yAxis.convertToPixel(target);
+      const yOutUp = yAxis.convertToPixel(hi);
+      const yOutDn = yAxis.convertToPixel(lo);
+      const yInUp = yAxis.convertToPixel(tightUp);
+      const yInDn = yAxis.convertToPixel(tightDn);
+      const up = row.side === "up";
+      const down = row.side === "down";
+      const outer = up ? "rgba(22, 163, 74, 0.16)" : down ? "rgba(220, 38, 38, 0.16)" : "rgba(148, 163, 184, 0.14)";
+      const inner = up ? "rgba(22, 163, 74, 0.28)" : down ? "rgba(220, 38, 38, 0.28)" : "rgba(148, 163, 184, 0.24)";
+      const stroke = up ? "#16a34a" : down ? "#dc2626" : "#94a3b8";
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(x0, yMid);
+      ctx.lineTo(x1, yOutUp);
+      ctx.lineTo(x1, yOutDn);
+      ctx.closePath();
+      ctx.fillStyle = outer;
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(x0, yMid);
+      ctx.lineTo(x1, yInUp);
+      ctx.lineTo(x1, yInDn);
+      ctx.closePath();
+      ctx.fillStyle = inner;
+      ctx.fill();
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = 1.2;
+      ctx.setLineDash([5, 4]);
+      ctx.beginPath();
+      ctx.moveTo(x0, yMid);
+      ctx.lineTo(x1, yTarget);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = stroke;
+      ctx.beginPath();
+      ctx.arc(x1, yTarget, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = stroke;
+      ctx.globalAlpha = 0.7;
+      ctx.beginPath();
+      ctx.moveTo(x0, yMid);
+      ctx.lineTo(x1, yOutUp);
+      ctx.lineTo(x1, yOutDn);
+      ctx.closePath();
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      if (row.text) {
+        const headline = `${up ? "↑" : down ? "↓" : "→"} ${Math.round(target)}`;
+        const rangeText = `${Math.round(lo)}–${Math.round(hi)}`;
+        let base = Math.min(yOutUp, yOutDn);
+        if (!Number.isFinite(base)) base = yTarget;
+        // The band can run above the price scale; keep both lines inside the pane.
+        if (base < 32) base = 32;
+        ctx.textAlign = "right";
+        ctx.textBaseline = "bottom";
+        ctx.fillStyle = stroke;
+        ctx.font = "bold 12px ui-sans-serif, system-ui, sans-serif";
+        ctx.fillText(headline, x1 - 2, base - 14);
+        ctx.font = "11px ui-sans-serif, system-ui, sans-serif";
+        ctx.fillText(rangeText, x1 - 2, base - 2);
+      }
+      ctx.restore();
+      return false;
+    }
+
+    function calcEmaSeries(values, period) {
+      const out = new Array(values.length).fill(null);
+      const k = 2 / (period + 1);
+      let ema = null;
+      let seen = 0;
+      for (let i = 0; i < values.length; i += 1) {
+        const v = Number(values[i]);
+        if (!Number.isFinite(v)) continue;
+        seen += 1;
+        ema = ema == null ? v : v * k + ema * (1 - k);
+        // Count only finite samples so MACD signal EMA warms up after DIF exists
+        // (leading null DIFs must not burn the period against the bar index).
+        if (seen >= period) out[i] = ema;
+      }
+      return out;
+    }
+
+    function calcRsiSeries(dataList, period = 14) {
+      const out = new Array(dataList.length).fill(null);
+      let avgGain = 0;
+      let avgLoss = 0;
+      for (let i = 1; i < dataList.length; i += 1) {
+        const change = Number(dataList[i].close) - Number(dataList[i - 1].close);
+        const gain = change > 0 ? change : 0;
+        const loss = change < 0 ? -change : 0;
+        if (i < period) {
+          avgGain += gain;
+          avgLoss += loss;
+          continue;
+        }
+        if (i === period) {
+          avgGain = (avgGain + gain) / period;
+          avgLoss = (avgLoss + loss) / period;
+        } else {
+          avgGain = (avgGain * (period - 1) + gain) / period;
+          avgLoss = (avgLoss * (period - 1) + loss) / period;
+        }
+        if (avgLoss === 0 && avgGain === 0) out[i] = 50;
+        else if (avgLoss === 0) out[i] = 100;
+        else out[i] = 100 - 100 / (1 + avgGain / avgLoss);
+      }
+      return out;
+    }
+
+    function calcMacdSeries(dataList, fast = 12, slow = 26, signal = 9) {
+      const closes = dataList.map((k) => Number(k.close));
+      const emaFast = calcEmaSeries(closes, fast);
+      const emaSlow = calcEmaSeries(closes, slow);
+      const dif = closes.map((_, i) =>
+        emaFast[i] != null && emaSlow[i] != null ? emaFast[i] - emaSlow[i] : null,
+      );
+      const dea = calcEmaSeries(
+        dif.map((v) => (v == null ? NaN : v)),
+        signal,
+      );
+      return dif.map((d, i) => ({
+        dif: d,
+        dea: dea[i],
+        hist: d != null && dea[i] != null ? d - dea[i] : null,
+      }));
+    }
+
+    /** Close-location delta × FUT volume. Not bid/ask footprint — Kite has no aggressor side. */
+    function barDelta(k) {
+      return ofBarDelta(k);
+    }
+
+    /**
+     * Session CVD + impulse B/S. Higher TFs sum 1m FUT Δ inside the bucket.
+     * B = |Δ| ≥ mult × SMA(|Δ|, lookback), Δ>0, CVD>0; S is the mirror. Flip marks only.
+     */
+    function calcOrderFlowRows(dataList, period = 20, impulseMult = 1.5) {
+      return calcOrderFlowSeries(dataList, {
+        period,
+        impulseMult,
+        interval: niftyInterval,
+        rawBars: niftyRawBars,
+      });
+    }
+
+    function orderFlowTooltipValues(row) {
+      const fmt = (x, digits = 0) =>
+        x == null || !Number.isFinite(Number(x)) ? "n/a" : Number(x).toFixed(digits);
+      const flip = row?.signal;
+      const side = row?.side;
+      const div = row?.divSide || row?.div;
+      const src = row?.source === "1m" ? "1m sum" : "bar";
+      return [
+        {
+          title: { text: "Mark: ", color: "#e2e8f0" },
+          value: {
+            text: flip === "B" || flip === "S" ? flip : "— (impulse flip)",
+            color: flip === "B" ? "#16a34a" : flip === "S" ? "#dc2626" : "#94a3b8",
+          },
+        },
+        {
+          title: { text: "Side: ", color: "#e2e8f0" },
+          value: {
+            text: side === "B" || side === "S" ? side : "—",
+            color: side === "B" ? "#16a34a" : side === "S" ? "#dc2626" : "#94a3b8",
+          },
+        },
+        {
+          title: { text: "Δ: ", color: "#e2e8f0" },
+          value: {
+            text: `${fmt(row?.delta)} (${src})`,
+            color: (row?.delta || 0) > 0 ? "#16a34a" : (row?.delta || 0) < 0 ? "#dc2626" : "#94a3b8",
+          },
+        },
+        {
+          title: { text: "CVD: ", color: "#e2e8f0" },
+          value: {
+            text: fmt(row?.cvd),
+            color: (row?.cvd || 0) > 0 ? "#16a34a" : (row?.cvd || 0) < 0 ? "#dc2626" : "#94a3b8",
+          },
+        },
+        {
+          title: { text: "Div: ", color: "#e2e8f0" },
+          value: {
+            text: div === "B" || div === "S" ? div : "—",
+            color: div === "B" ? "#22d3ee" : div === "S" ? "#f59e0b" : "#94a3b8",
+          },
+        },
+        {
+          title: { text: "Absorb: ", color: "#e2e8f0" },
+          value: {
+            text: row?.absorb ? "yes" : "—",
+            color: row?.absorb ? "#fbbf24" : "#94a3b8",
+          },
+        },
+      ];
+    }
+
+    function paneCreateOpts(name) {
+      if (name === "FUTOI" || name === "CVD") return { height: 64 };
+      return undefined;
+    }
+
+    /** Single B/S from VWAP + BOLL + RSI + MACD + ADX/DMI (≥4/5 confluence). */
+    function calcConfluenceRows(dataList) {
+      const PULLBACK_FRAC = 0.5;
+      const MIN_SIGMA = 1;
+      const MIN_BARS = 5;
+      const BOLL_N = 20;
+      const BOLL_MULT = 2;
+      const ADX_MIN = 18;
+      const RSI_BULL = 60;
+      const RSI_BEAR = 40;
+      const NEED = 4;
+
+      const closes = dataList.map((k) => Number(k.close));
+      const rsi = calcRsiSeries(dataList, 14);
+      const macd = calcMacdSeries(dataList, 12, 26, 9);
+
+      let day = "";
+      let eqSum = 0;
+      let eqSumSq = 0;
+      let eqN = 0;
+      let side = null;
+      const rows = [];
+
+      for (let i = 0; i < dataList.length; i += 1) {
+        const k = dataList[i];
+        const high = Number(k.high);
+        const low = Number(k.low);
+        const close = closes[i];
+        const key = new Date(k.timestamp).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+        // Intraday: reset each IST cash day. Daily TF: rolling 20-bar window (not all history).
+        if (niftyInterval !== 0 && key !== day) {
+          day = key;
+          eqSum = 0;
+          eqSumSq = 0;
+          eqN = 0;
+          side = null;
+        } else if (niftyInterval === 0) {
+          day = key;
+          const win = 20;
+          const from = Math.max(0, i - win + 1);
+          eqSum = 0;
+          eqSumSq = 0;
+          eqN = 0;
+          for (let j = from; j <= i; j += 1) {
+            const bj = dataList[j];
+            const typ = (Number(bj.high) + Number(bj.low) + Number(bj.close)) / 3;
+            eqSum += typ;
+            eqSumSq += typ * typ;
+            eqN += 1;
+          }
+        }
+
+        let typical;
+        let vwap;
+        let sigma;
+        if (niftyInterval === 0) {
+          typical = (high + low + close) / 3;
+          vwap = eqN > 0 ? eqSum / eqN : typical;
+          sigma = Math.sqrt(Math.max(0, eqSumSq / eqN - vwap * vwap));
+        } else {
+          typical = (high + low + close) / 3;
+          eqSum += typical;
+          eqSumSq += typical * typical;
+          eqN += 1;
+          vwap = eqSum / eqN;
+          sigma = Math.sqrt(Math.max(0, eqSumSq / eqN - vwap * vwap));
+        }
+        const vwapReady = sigma >= MIN_SIGMA && eqN >= MIN_BARS;
+        const pullLong = vwap - PULLBACK_FRAC * sigma;
+        const pullShort = vwap + PULLBACK_FRAC * sigma;
+
+        let bollMid = null;
+        let bollUp = null;
+        let bollDn = null;
+        if (i >= BOLL_N - 1) {
+          let sum = 0;
+          for (let j = i - BOLL_N + 1; j <= i; j += 1) sum += closes[j];
+          bollMid = sum / BOLL_N;
+          let varSum = 0;
+          for (let j = i - BOLL_N + 1; j <= i; j += 1) {
+            const d = closes[j] - bollMid;
+            varSum += d * d;
+          }
+          const bSigma = Math.sqrt(varSum / BOLL_N);
+          bollUp = bollMid + BOLL_MULT * bSigma;
+          bollDn = bollMid - BOLL_MULT * bSigma;
+        }
+
+        const hit = serverDmiByTime.get(dmiLookupKey(k.timestamp));
+        const adx = hit?.adx != null ? Number(hit.adx) : null;
+        const pdi = hit?.pdi != null ? Number(hit.pdi) : null;
+        const mdi = hit?.mdi != null ? Number(hit.mdi) : null;
+
+        // Votes: +1 bull, -1 bear, 0 abstain.
+        let vVwap = 0;
+        if (vwapReady) {
+          if (close > vwap && low <= pullLong) vVwap = 1;
+          else if (close < vwap && high >= pullShort) vVwap = -1;
+          else if (close > vwap) vVwap = 1;
+          else if (close < vwap) vVwap = -1;
+        }
+
+        let vBoll = 0;
+        if (bollMid != null) {
+          if (low <= bollDn && close > bollDn) vBoll = 1;
+          else if (high >= bollUp && close < bollUp) vBoll = -1;
+          else if (close > bollMid) vBoll = 1;
+          else if (close < bollMid) vBoll = -1;
+        }
+
+        let vRsi = 0;
+        if (rsi[i] != null) {
+          if (rsi[i] >= RSI_BULL) vRsi = 1;
+          else if (rsi[i] <= RSI_BEAR) vRsi = -1;
+        }
+
+        let vMacd = 0;
+        if (macd[i].dif != null && macd[i].dea != null) {
+          if (macd[i].dif > macd[i].dea) vMacd = 1;
+          else if (macd[i].dif < macd[i].dea) vMacd = -1;
+        }
+
+        let vAdx = 0;
+        if (adx != null && adx >= ADX_MIN && pdi != null && mdi != null) {
+          if (pdi > mdi) vAdx = 1;
+          else if (mdi > pdi) vAdx = -1;
+        }
+
+        const votes = { vwap: vVwap, boll: vBoll, rsi: vRsi, macd: vMacd, adx: vAdx };
+        const bull = Object.values(votes).filter((v) => v > 0).length;
+        const bear = Object.values(votes).filter((v) => v < 0).length;
+
+        let next = null;
+        if (bull >= NEED) next = "B";
+        else if (bear >= NEED) next = "S";
+
+        let signal = null;
+        if (next && next !== side) {
+          signal = next;
+          side = next;
+        } else if (!next) {
+          side = null;
+        }
+
+        rows.push({
+          votes,
+          bull,
+          bear,
+          need: NEED,
+          side,
+          signal,
+          buy: signal === "B",
+          sell: signal === "S",
+          vwap: vwapReady ? vwap : null,
+          bollMid,
+          rsi: rsi[i],
+          macdDif: macd[i].dif,
+          macdDea: macd[i].dea,
+          adx,
+          pdi,
+          mdi,
+        });
+      }
+      return rows;
     }
 
     function registerChartExtras() {
@@ -2427,44 +3589,178 @@
           shortName: "VWAP",
           series: "price",
           calcParams: [],
+          zLevel: 9,
           figures: [
-            { key: "vwap", title: "VWAP: ", type: "line" },
-            { key: "up1", title: "+1σ: ", type: "line" },
-            { key: "dn1", title: "-1σ: ", type: "line" },
-            { key: "up2", title: "+2σ: ", type: "line" },
-            { key: "dn2", title: "-2σ: ", type: "line" },
+            {
+              key: "vwap",
+              title: "VWAP: ",
+              type: "line",
+              styles: () => ({ color: "#38bdf8", size: 1.6 }),
+            },
+            {
+              key: "up1",
+              title: "+1σ: ",
+              type: "line",
+              styles: () => ({ color: "#86efac", size: 1 }),
+            },
+            {
+              key: "dn1",
+              title: "-1σ: ",
+              type: "line",
+              styles: () => ({ color: "#86efac", size: 1 }),
+            },
+            {
+              key: "up2",
+              title: "+2σ: ",
+              type: "line",
+              styles: () => ({ color: "#f87171", size: 1, style: "dashed" }),
+            },
+            {
+              key: "dn2",
+              title: "-2σ: ",
+              type: "line",
+              styles: () => ({ color: "#f87171", size: 1, style: "dashed" }),
+            },
           ],
           calc: (dataList) => {
+            // Session-anchored equal-weight VWAP + σ bands (typical price).
+            // Long only above VWAP: buy pullback to -0.5σ, take +1σ, stop -1σ.
+            // Short marks (display only): sell pullback to +0.5σ, cover -1σ, stop +2σ.
+            // Signals require σ >= 1pt and ≥5 bars.
+            const MIN_BARS = 5;
+            const MIN_SIGMA = 1.0;
+            const PULLBACK_FRAC = 0.5;
             let day = "";
-            let pv = 0;
-            let vol = 0;
-            let sumSq = 0;
+            let eqSum = 0;
+            let eqN = 0;
+            let eqSumSq = 0;
+            let longOpen = false;
+            let shortOpen = false;
             return dataList.map((k) => {
               const key = new Date(k.timestamp).toLocaleDateString("en-CA", {
                 timeZone: "Asia/Kolkata",
               });
               if (key !== day) {
                 day = key;
-                pv = 0;
-                vol = 0;
-                sumSq = 0;
+                eqSum = 0;
+                eqN = 0;
+                eqSumSq = 0;
+                longOpen = false;
+                shortOpen = false;
               }
-              const typical = (Number(k.high) + Number(k.low) + Number(k.close)) / 3;
-              const v = Number(k.volume) || 0;
-              pv += typical * v;
-              sumSq += typical * typical * v;
-              vol += v;
-              const vwap = vol > 0 ? pv / vol : typical;
-              const variance = vol > 0 ? Math.max(0, sumSq / vol - vwap * vwap) : 0;
+              const high = Number(k.high);
+              const low = Number(k.low);
+              const close = Number(k.close);
+              const typical = (high + low + close) / 3;
+              eqSum += typical;
+              eqSumSq += typical * typical;
+              eqN += 1;
+              const vwap = eqSum / eqN;
+              let variance = Math.max(0, eqSumSq / eqN - vwap * vwap);
               const sigma = Math.sqrt(variance);
+              const up1 = vwap + sigma;
+              const dn1 = vwap - sigma;
+              const up2 = vwap + 2 * sigma;
+              const dn2 = vwap - 2 * sigma;
+              const pullLong = vwap - PULLBACK_FRAC * sigma;
+              const pullShort = vwap + PULLBACK_FRAC * sigma;
+              const bandsReady = sigma >= MIN_SIGMA && eqN >= MIN_BARS;
+
+              let buy = false;
+              let sell = false;
+              let exit = false;
+              let stop = false;
+              let signal = null;
+
+              const biasLong = close > vwap;
+              const biasShort = close < vwap;
+
+              if (bandsReady) {
+                if (longOpen) {
+                  if (low <= dn1) {
+                    stop = true;
+                    sell = true;
+                    signal = "S";
+                    longOpen = false;
+                  } else if (high >= up1) {
+                    exit = true;
+                    sell = true;
+                    signal = "S";
+                    longOpen = false;
+                  }
+                } else if (shortOpen) {
+                  if (high >= up2) {
+                    stop = true;
+                    buy = true;
+                    signal = "B";
+                    shortOpen = false;
+                  } else if (low <= dn1) {
+                    exit = true;
+                    buy = true;
+                    signal = "B";
+                    shortOpen = false;
+                  }
+                } else if (biasLong && low <= pullLong && close > vwap && close < up1) {
+                  buy = true;
+                  signal = "B";
+                  longOpen = true;
+                } else if (biasShort && high >= pullShort && close < vwap && close > dn1) {
+                  sell = true;
+                  signal = "S";
+                  shortOpen = true;
+                }
+              }
+
               return {
                 vwap,
-                up1: vwap + sigma,
-                dn1: vwap - sigma,
-                up2: vwap + 2 * sigma,
-                dn2: vwap - 2 * sigma,
+                up1,
+                dn1,
+                up2,
+                dn2,
+                buy,
+                sell,
+                exit,
+                stop,
+                signal,
+                bias: biasLong ? "long" : biasShort ? "short" : "flat",
               };
             });
+          },
+          createTooltipDataSource: ({ indicator, crosshair }) => {
+            const idx = crosshair?.realDataIndex;
+            const row = Number.isInteger(idx) ? (indicator.result || [])[idx] : null;
+            const fmt = (x) => (x == null || Number.isNaN(x) ? "n/a" : Number(x).toFixed(2));
+            let signalText = "—";
+            let signalColor = "#94a3b8";
+            if (row?.signal === "B") {
+              signalText = row.stop ? "B cover/stop" : row.exit ? "B cover" : "B entry";
+              signalColor = "#16a34a";
+            } else if (row?.signal === "S") {
+              signalText = row.stop ? "S exit/stop" : row.exit ? "S exit" : "S entry";
+              signalColor = "#dc2626";
+            }
+            return {
+              name: "VWAP",
+              values: [
+                { title: { text: "VWAP: ", color: "#e2e8f0" }, value: { text: fmt(row?.vwap), color: "#38bdf8" } },
+                { title: { text: "+1σ: ", color: "#e2e8f0" }, value: { text: fmt(row?.up1), color: "#86efac" } },
+                { title: { text: "-1σ: ", color: "#e2e8f0" }, value: { text: fmt(row?.dn1), color: "#86efac" } },
+                { title: { text: "Bias: ", color: "#e2e8f0" }, value: { text: row?.bias || "n/a", color: "#e2e8f0" } },
+                { title: { text: "Signal: ", color: "#e2e8f0" }, value: { text: signalText, color: signalColor } },
+              ],
+            };
+          },
+          draw: ({ ctx, kLineDataList, indicator, visibleRange, xAxis, yAxis }) => {
+            // calcParams[0]: 1 = draw B/S marks (default), 0 = bands only (confluence template).
+            if (Number(indicator.calcParams?.[0] ?? 1) === 0) return false;
+            return drawSignalMarkers(
+              { ctx, kLineDataList, result: indicator.result || [], visibleRange, xAxis, yAxis },
+              (row) => {
+                if (row.signal === "B") return { side: "B", color: row.stop ? "#15803d" : "#16a34a" };
+                if (row.signal === "S") return { side: "S", color: row.stop ? "#b91c1c" : "#dc2626" };
+                return null;
+              },
+            );
           },
         });
       } catch (_) {}
@@ -2479,13 +3775,54 @@
       } catch (_) {}
       try {
         klinecharts.registerIndicator({
+          name: "CVD",
+          shortName: "CVD",
+          precision: 0,
+          calcParams: [20, 1.5],
+          figures: [
+            { key: "delta", title: "Δ: ", type: "bar", baseValue: 0 },
+            { key: "cvd", title: "CVD: ", type: "line" },
+          ],
+          styles: {
+            bars: [{ upColor: "#16a34a", downColor: "#dc2626" }],
+            lines: [{ color: "#38bdf8", size: 1.4 }],
+          },
+          calc: (dataList, indicator) => {
+            const period = Number(indicator.calcParams[0]) || 20;
+            const mult = Number(indicator.calcParams[1]) || 1.5;
+            return calcOrderFlowRows(dataList, period, mult);
+          },
+          createTooltipDataSource: ({ indicator, crosshair }) => {
+            const idx = crosshair?.realDataIndex;
+            const row = Number.isInteger(idx) ? (indicator.result || [])[idx] : null;
+            return {
+              name: "CVD",
+              calcParamsText: `(${(indicator.calcParams || []).join(", ")})`,
+              values: orderFlowTooltipValues(row),
+            };
+          },
+        });
+      } catch (_) {}
+      try {
+        klinecharts.registerIndicator({
           name: "ST",
           shortName: "ST",
           series: "price",
           calcParams: [10, 3],
+          zLevel: 10,
           figures: [
-            { key: "up", title: "ST↑: ", type: "line" },
-            { key: "dn", title: "ST↓: ", type: "line" },
+            {
+              key: "up",
+              title: "ST↑: ",
+              type: "line",
+              styles: () => ({ color: "#f59e0b", size: 1.5 }),
+            },
+            {
+              key: "dn",
+              title: "ST↓: ",
+              type: "line",
+              styles: () => ({ color: "#a855f7", size: 1.5 }),
+            },
           ],
           calc: (dataList, indicator) => {
             const period = Number(indicator.calcParams[0]) || 10;
@@ -2494,6 +3831,7 @@
             let finalUpper = null;
             let finalLower = null;
             let dir = 1;
+            let prevDir = null;
             return dataList.map((k, i) => {
               if (atr[i] == null) return {};
               const mid = (Number(k.high) + Number(k.low)) / 2;
@@ -2513,11 +3851,50 @@
               } else {
                 dir = close > finalUpper ? 1 : -1;
               }
+              const flipped = prevDir != null && dir !== prevDir;
+              const buy = flipped && dir === 1;
+              const sell = flipped && dir === -1;
+              prevDir = dir;
               return dir === 1
-                ? { up: finalLower, dn: null }
-                : { up: null, dn: finalUpper };
+                ? { up: finalLower, dn: null, buy, sell, signal: buy ? "B" : null }
+                : { up: null, dn: finalUpper, buy, sell, signal: sell ? "S" : null };
             });
           },
+          createTooltipDataSource: ({ indicator, crosshair }) => {
+            const idx = crosshair?.realDataIndex;
+            const row = Number.isInteger(idx) ? (indicator.result || [])[idx] : null;
+            const st = row?.up ?? row?.dn;
+            const signal = row?.signal;
+            return {
+              name: "ST",
+              calcParamsText: `(${(indicator.calcParams || []).join(", ")})`,
+              values: [
+                {
+                  title: { text: "ST: ", color: "#e2e8f0" },
+                  value: {
+                    text: st != null ? Number(st).toFixed(2) : "n/a",
+                    color: row?.up != null ? "#f59e0b" : "#a855f7",
+                  },
+                },
+                {
+                  title: { text: "Signal: ", color: "#e2e8f0" },
+                  value: {
+                    text: signal || "— (only on flip)",
+                    color: signal === "B" ? "#16a34a" : signal === "S" ? "#dc2626" : "#94a3b8",
+                  },
+                },
+              ],
+            };
+          },
+          draw: ({ ctx, kLineDataList, indicator, visibleRange, xAxis, yAxis }) =>
+            drawSignalMarkers(
+              { ctx, kLineDataList, result: indicator.result || [], visibleRange, xAxis, yAxis },
+              (row) => {
+                if (row.buy) return { side: "B", color: "#16a34a" };
+                if (row.sell) return { side: "S", color: "#dc2626" };
+                return null;
+              },
+            ),
         });
       } catch (_) {}
       try {
@@ -2552,6 +3929,342 @@
       } catch (_) {}
       try {
         klinecharts.registerIndicator({
+          name: "PRED30",
+          shortName: "PRED30",
+          series: "price",
+          calcParams: [],
+          zLevel: 12,
+          figures: [],
+          calc: (dataList) => calcPred30Rows(dataList),
+          createTooltipDataSource: ({ indicator, crosshair }) => {
+            const idx = crosshair?.realDataIndex;
+            const row = Number.isInteger(idx) ? (indicator.result || [])[idx] : null;
+            const fmt = (x) =>
+              x == null || !Number.isFinite(Number(x)) ? "—" : Number(x).toFixed(1);
+            const side = row?.side;
+            const sideColor = side === "up" ? "#16a34a" : side === "down" ? "#dc2626" : "#94a3b8";
+            const names = [
+              ["ichi", "Ichi"],
+              ["linreg", "slope"],
+              ["vwap", "VWAP"],
+              ["st", "ST"],
+            ];
+            const sign = side === "down" ? -1 : side === "up" ? 1 : 0;
+            const agree = [];
+            const oppose = [];
+            names.forEach(([key, name]) => {
+              const vote = row?.votes?.[key];
+              if (!vote || !sign) return;
+              if (vote === sign) agree.push(name);
+              else if (vote === -sign) oppose.push(name);
+            });
+            const drift = row?.drift;
+            const driftText = drift == null || !Number.isFinite(Number(drift))
+              ? "—"
+              : `${Number(drift) > 0 ? "+" : ""}${fmt(drift)} pts`;
+            return {
+              name: "PRED30",
+              values: [
+                {
+                  title: { text: "30m: ", color: "#e2e8f0" },
+                  value: { text: row?.text || "n/a", color: sideColor },
+                },
+                {
+                  title: { text: "Path: ", color: "#e2e8f0" },
+                  value: {
+                    text: row?.conflict ? `${driftText} · slope disagrees` : driftText,
+                    color: row?.conflict ? "#f59e0b" : "#e2e8f0",
+                  },
+                },
+                {
+                  title: { text: "With: ", color: "#e2e8f0" },
+                  value: { text: agree.length ? agree.join(", ") : row?.label || "—", color: sideColor },
+                },
+                {
+                  title: { text: "Against: ", color: "#e2e8f0" },
+                  value: { text: oppose.length ? oppose.join(", ") : "—", color: "#94a3b8" },
+                },
+              ],
+            };
+          },
+          draw: (args) => drawPred30Cone(args),
+        });
+      } catch (_) {}
+      try {
+        // Bollinger (20,2) with mean-reversion B/S markers (same triangle UX as VWAP/ST).
+        // B = wick to lower band, close back inside; S = wick to upper, close back inside.
+        // While "open", opposite band is the take; mid cross also flats the book.
+        klinecharts.registerIndicator({
+          name: "BOLL",
+          shortName: "BOLL",
+          series: "price",
+          calcParams: [20, 2],
+          zLevel: 8,
+          figures: [
+            {
+              key: "mid",
+              title: "MID: ",
+              type: "line",
+              styles: () => ({ color: "#94a3b8", size: 1.2 }),
+            },
+            {
+              key: "up",
+              title: "UP: ",
+              type: "line",
+              styles: () => ({ color: "#f87171", size: 1 }),
+            },
+            {
+              key: "dn",
+              title: "DN: ",
+              type: "line",
+              styles: () => ({ color: "#4ade80", size: 1 }),
+            },
+          ],
+          calc: (dataList, indicator) => {
+            const period = Math.max(2, Number(indicator.calcParams[0]) || 20);
+            const mult = Number(indicator.calcParams[1]) || 2;
+            let longOpen = false;
+            let shortOpen = false;
+            let entryBar = -1;
+            const closes = dataList.map((k) => Number(k.close));
+            return dataList.map((k, i) => {
+              if (i < period - 1) return {};
+              let sum = 0;
+              for (let j = i - period + 1; j <= i; j += 1) sum += closes[j];
+              const mid = sum / period;
+              let varSum = 0;
+              for (let j = i - period + 1; j <= i; j += 1) {
+                const d = closes[j] - mid;
+                varSum += d * d;
+              }
+              const sigma = Math.sqrt(varSum / period);
+              const up = mid + mult * sigma;
+              const dn = mid - mult * sigma;
+              const high = Number(k.high);
+              const low = Number(k.low);
+              const close = closes[i];
+
+              let buy = false;
+              let sell = false;
+              let exit = false;
+              let stop = false;
+              let signal = null;
+              // Mid-cross stop needs at least one full bar after entry (no same/next-bar whip).
+              const held = entryBar >= 0 && i > entryBar + 1;
+
+              if (longOpen) {
+                if (held && close < mid) {
+                  stop = true;
+                  sell = true;
+                  signal = "S";
+                  longOpen = false;
+                  entryBar = -1;
+                } else if (high >= up) {
+                  exit = true;
+                  sell = true;
+                  signal = "S";
+                  longOpen = false;
+                  entryBar = -1;
+                }
+              } else if (shortOpen) {
+                if (held && close > mid) {
+                  stop = true;
+                  buy = true;
+                  signal = "B";
+                  shortOpen = false;
+                  entryBar = -1;
+                } else if (low <= dn) {
+                  exit = true;
+                  buy = true;
+                  signal = "B";
+                  shortOpen = false;
+                  entryBar = -1;
+                }
+              } else if (low <= dn && close > dn) {
+                buy = true;
+                signal = "B";
+                longOpen = true;
+                entryBar = i;
+              } else if (high >= up && close < up) {
+                sell = true;
+                signal = "S";
+                shortOpen = true;
+                entryBar = i;
+              }
+
+              return {
+                mid,
+                up,
+                dn,
+                buy,
+                sell,
+                exit,
+                stop,
+                signal,
+                bias: close > mid ? "long" : close < mid ? "short" : "flat",
+              };
+            });
+          },
+          createTooltipDataSource: ({ indicator, crosshair }) => {
+            const idx = crosshair?.realDataIndex;
+            const row = Number.isInteger(idx) ? (indicator.result || [])[idx] : null;
+            const fmt = (x) => (x == null || Number.isNaN(x) ? "n/a" : Number(x).toFixed(2));
+            let signalText = "—";
+            let signalColor = "#94a3b8";
+            if (row?.signal === "B") {
+              signalText = row.stop ? "B cover/stop" : row.exit ? "B cover" : "B entry";
+              signalColor = "#16a34a";
+            } else if (row?.signal === "S") {
+              signalText = row.stop ? "S exit/stop" : row.exit ? "S exit" : "S entry";
+              signalColor = "#dc2626";
+            }
+            return {
+              name: "BOLL",
+              calcParamsText: `(${(indicator.calcParams || []).join(", ")})`,
+              values: [
+                { title: { text: "MID: ", color: "#e2e8f0" }, value: { text: fmt(row?.mid), color: "#94a3b8" } },
+                { title: { text: "UP: ", color: "#e2e8f0" }, value: { text: fmt(row?.up), color: "#f87171" } },
+                { title: { text: "DN: ", color: "#e2e8f0" }, value: { text: fmt(row?.dn), color: "#4ade80" } },
+                { title: { text: "Bias: ", color: "#e2e8f0" }, value: { text: row?.bias || "n/a", color: "#e2e8f0" } },
+                { title: { text: "Signal: ", color: "#e2e8f0" }, value: { text: signalText, color: signalColor } },
+              ],
+            };
+          },
+          draw: ({ ctx, kLineDataList, indicator, visibleRange, xAxis, yAxis }) => {
+            // calcParams[2]: 1 = draw B/S marks (default), 0 = bands only (confluence template).
+            if (Number(indicator.calcParams?.[2] ?? 1) === 0) return false;
+            return drawSignalMarkers(
+              { ctx, kLineDataList, result: indicator.result || [], visibleRange, xAxis, yAxis },
+              (row) => {
+                if (row.signal === "B") return { side: "B", color: row.stop ? "#15803d" : "#16a34a" };
+                if (row.signal === "S") return { side: "S", color: row.stop ? "#b91c1c" : "#dc2626" };
+                return null;
+              },
+            );
+          },
+        });
+      } catch (_) {}
+      try {
+        // Single B/S when ≥4 of VWAP, BOLL, RSI, MACD, ADX/DMI agree (flip markers only).
+        klinecharts.registerIndicator({
+          name: "COMBO",
+          shortName: "COMBO",
+          series: "price",
+          calcParams: [],
+          zLevel: 12,
+          figures: [],
+          calc: (dataList) => calcConfluenceRows(dataList),
+          createTooltipDataSource: ({ indicator, crosshair }) => {
+            const idx = crosshair?.realDataIndex;
+            const row = Number.isInteger(idx) ? (indicator.result || [])[idx] : null;
+            const mark = (v) => (v > 0 ? "B" : v < 0 ? "S" : "—");
+            const col = (v) => (v > 0 ? "#16a34a" : v < 0 ? "#dc2626" : "#94a3b8");
+            const votes = row?.votes || {};
+            const side = row?.side;
+            const flip = row?.signal;
+            const score = row
+              ? `${row.bull || 0}B / ${row.bear || 0}S (need ${row.need || 4})`
+              : "n/a";
+            return {
+              name: "COMBO",
+              values: [
+                {
+                  title: { text: "Mark: ", color: "#e2e8f0" },
+                  value: {
+                    text: flip === "B" || flip === "S" ? flip : "— (flip only)",
+                    color: flip === "B" ? "#16a34a" : flip === "S" ? "#dc2626" : "#94a3b8",
+                  },
+                },
+                {
+                  title: { text: "Side: ", color: "#e2e8f0" },
+                  value: {
+                    text: side === "B" || side === "S" ? side : "—",
+                    color: side === "B" ? "#16a34a" : side === "S" ? "#dc2626" : "#94a3b8",
+                  },
+                },
+                {
+                  title: { text: "Votes: ", color: "#e2e8f0" },
+                  value: { text: score, color: "#e2e8f0" },
+                },
+                {
+                  title: { text: "VWAP: ", color: "#e2e8f0" },
+                  value: { text: mark(votes.vwap), color: col(votes.vwap) },
+                },
+                {
+                  title: { text: "BOLL: ", color: "#e2e8f0" },
+                  value: { text: mark(votes.boll), color: col(votes.boll) },
+                },
+                {
+                  title: { text: "RSI 60/40: ", color: "#e2e8f0" },
+                  value: {
+                    text: row?.rsi == null
+                      ? mark(votes.rsi)
+                      : `${mark(votes.rsi)} ${Number(row.rsi).toFixed(2)}`,
+                    color: col(votes.rsi),
+                  },
+                },
+                {
+                  title: { text: "MACD: ", color: "#e2e8f0" },
+                  value: { text: mark(votes.macd), color: col(votes.macd) },
+                },
+                {
+                  title: { text: "ADX: ", color: "#e2e8f0" },
+                  value: { text: mark(votes.adx), color: col(votes.adx) },
+                },
+              ],
+            };
+          },
+          draw: ({ ctx, kLineDataList, indicator, visibleRange, xAxis, yAxis }) =>
+            drawSignalMarkers(
+              { ctx, kLineDataList, result: indicator.result || [], visibleRange, xAxis, yAxis },
+              (row) => {
+                if (row.signal === "B") return { side: "B", color: "#16a34a" };
+                if (row.signal === "S") return { side: "S", color: "#dc2626" };
+                return null;
+              },
+            ),
+        });
+      } catch (_) {}
+      try {
+        // FUT volume × close-location Δ (not bid/ask). 1m-sum on higher TFs. Flip + divergence.
+        klinecharts.registerIndicator({
+          name: "OF",
+          shortName: "OF",
+          series: "price",
+          calcParams: [20, 1.5],
+          zLevel: 11,
+          figures: [],
+          calc: (dataList, indicator) => {
+            const period = Number(indicator.calcParams[0]) || 20;
+            const mult = Number(indicator.calcParams[1]) || 1.5;
+            return calcOrderFlowRows(dataList, period, mult);
+          },
+          createTooltipDataSource: ({ indicator, crosshair }) => {
+            const idx = crosshair?.realDataIndex;
+            const row = Number.isInteger(idx) ? (indicator.result || [])[idx] : null;
+            return {
+              name: "OF",
+              calcParamsText: `(${(indicator.calcParams || []).join(", ")})`,
+              values: orderFlowTooltipValues(row),
+            };
+          },
+          draw: ({ ctx, kLineDataList, indicator, visibleRange, xAxis, yAxis }) => {
+            if (Number(indicator.calcParams?.[2] ?? 1) === 0) return false;
+            return drawSignalMarkers(
+              { ctx, kLineDataList, result: indicator.result || [], visibleRange, xAxis, yAxis },
+              (row) => {
+                if (row.signal === "B") return { side: "B", color: "#16a34a" };
+                if (row.signal === "S") return { side: "S", color: "#dc2626" };
+                if (row.div === "B") return { side: "B", color: "#22d3ee", outline: true };
+                if (row.div === "S") return { side: "S", color: "#f59e0b", outline: true };
+                return null;
+              },
+            );
+          },
+        });
+      } catch (_) {}
+      try {
+        klinecharts.registerIndicator({
           name: "RSI",
           shortName: "RSI",
           calcParams: [14],
@@ -2581,6 +4294,7 @@
                 avgGain = (avgGain * (period - 1) + gain) / period;
                 avgLoss = (avgLoss * (period - 1) + loss) / period;
               }
+              if (avgLoss === 0 && avgGain === 0) return { rsi: 50 };
               if (avgLoss === 0) return { rsi: 100 };
               const rs = avgGain / avgLoss;
               return { rsi: Number((100 - (100 / (1 + rs))).toFixed(2)) };
@@ -2742,6 +4456,82 @@
             ctx.restore();
             return true;
           },
+        });
+      } catch (_) {}
+      try {
+        klinecharts.registerIndicator({
+          name: "PIVOT",
+          shortName: "PIVOT",
+          series: "price",
+          zLevel: 5,
+          figures: [],
+          calc: (dataList) => calcPivotRows(dataList),
+          createTooltipDataSource: ({ indicator, crosshair }) => {
+            const idx = crosshair?.realDataIndex;
+            const row = Number.isInteger(idx) ? (indicator.result || [])[idx] : null;
+            return { name: "PIVOT", values: pivotTooltipValues(row) };
+          },
+          draw: (args) => drawPivotOverlay(args),
+        });
+      } catch (_) {}
+      try {
+        klinecharts.registerIndicator({
+          name: "FIB",
+          shortName: "FIB",
+          series: "price",
+          calcParams: [2],
+          zLevel: 5,
+          figures: [],
+          calc: (dataList, indicator) =>
+            calcFibRows(dataList, { wing: Number(indicator.calcParams?.[0]) || 2 }),
+          createTooltipDataSource: ({ indicator, crosshair }) => {
+            const idx = crosshair?.realDataIndex;
+            const row = Number.isInteger(idx) ? (indicator.result || [])[idx] : null;
+            return { name: "FIB", values: fibTooltipValues(row) };
+          },
+          draw: (args) => drawFibOverlay(args),
+        });
+      } catch (_) {}
+      try {
+        klinecharts.registerIndicator({
+          name: "SR",
+          shortName: "S/R",
+          series: "price",
+          calcParams: [2, 8],
+          zLevel: 4,
+          figures: [],
+          calc: (dataList, indicator) =>
+            calcSrRows(dataList, {
+              wing: Number(indicator.calcParams?.[0]) || 2,
+              maxLevels: Number(indicator.calcParams?.[1]) || 8,
+            }),
+          createTooltipDataSource: ({ indicator, crosshair }) => {
+            const idx = crosshair?.realDataIndex;
+            const row = Number.isInteger(idx) ? (indicator.result || [])[idx] : null;
+            return { name: "SR", values: srTooltipValues(row) };
+          },
+          draw: (args) => drawSrOverlay(args),
+        });
+      } catch (_) {}
+      try {
+        klinecharts.registerIndicator({
+          name: "SD",
+          shortName: "S/D",
+          series: "price",
+          calcParams: [1.2, 0.8],
+          zLevel: 3,
+          figures: [],
+          calc: (dataList, indicator) =>
+            calcSdRows(dataList, {
+              impulseMult: Number(indicator.calcParams?.[0]) || 1.4,
+              baseMult: Number(indicator.calcParams?.[1]) || 0.65,
+            }),
+          createTooltipDataSource: ({ indicator, crosshair }) => {
+            const idx = crosshair?.realDataIndex;
+            const row = Number.isInteger(idx) ? (indicator.result || [])[idx] : null;
+            return { name: "SD", values: sdTooltipValues(row) };
+          },
+          draw: (args) => drawSdOverlay(args),
         });
       } catch (_) {}
       const stroke = { style: "stroke" };
@@ -3108,6 +4898,8 @@
       overlayHistory = [[]];
       overlayRedo = [];
       Object.keys(chartIndicatorPanes).forEach((key) => { delete chartIndicatorPanes[key]; });
+      // Keep chartOverlayParams — chartOverlayIndicators survives dispose, and restore
+      // must re-apply mark-suppression (VWAP/BOLL showMarks=0) from this map.
     }
 
     function applyCandleStyle() {
@@ -3115,6 +4907,38 @@
       niftyChart.setStyles({
         candle: { type: niftyChartKind === "line" ? "area" : "candle_solid" },
       });
+    }
+
+    function candleYAxis() {
+      if (!niftyChart || typeof niftyChart.getDrawPaneById !== "function") return null;
+      try {
+        const pane = niftyChart.getDrawPaneById("candle_pane");
+        if (pane && typeof pane.getAxisComponent === "function") return pane.getAxisComponent();
+      } catch (_) {}
+      return null;
+    }
+
+    function unlockYScale(force) {
+      if (!niftyChart) return;
+      const axis = candleYAxis();
+      if (axis && typeof axis.setAutoCalcTickFlag === "function") {
+        axis.setAutoCalcTickFlag(true);
+      } else if (force || !niftyChart._atlasYAuto) {
+        try {
+          niftyChart.setStyles({ yAxis: { type: "normal" } });
+        } catch (_) {}
+      }
+      if (force || !niftyChart._atlasYAuto) {
+        try {
+          if (typeof niftyChart.setPaneOptions === "function") {
+            niftyChart.setPaneOptions({
+              id: "candle_pane",
+              axisOptions: { scrollZoomEnabled: false },
+            });
+          }
+        } catch (_) {}
+        niftyChart._atlasYAuto = true;
+      }
     }
 
     function restoreIndicators() {
@@ -3128,19 +4952,29 @@
       chartOverlayIndicators.forEach((name) => {
         if (chartIndicatorPanes[name]) return;
         try {
-          const paneId = niftyChart.createIndicator(name, true, { id: "candle_pane" });
+          const params = chartOverlayParams.get(name);
+          const spec = params ? { name, calcParams: params } : name;
+          const paneId = niftyChart.createIndicator(spec, true, { id: "candle_pane" });
           chartIndicatorPanes[name] = paneId || "candle_pane";
-        } catch (_) {}
+          if (params && typeof niftyChart.overrideIndicator === "function") {
+            try { niftyChart.overrideIndicator({ name, calcParams: params }); } catch (_) {}
+          }
+        } catch (_) {
+          // Keep the name so the next restore/apply can retry (pane may not be ready yet).
+        }
       });
       chartPaneIndicators.forEach((name) => {
         if (chartIndicatorPanes[name]) return;
         try {
-          const opts = name === "FUTOI" ? { height: 64 } : undefined;
+          const opts = paneCreateOpts(name);
           chartIndicatorPanes[name] = opts
             ? niftyChart.createIndicator(name, false, opts)
             : niftyChart.createIndicator(name);
-        } catch (_) {}
+        } catch (_) {
+          // Keep the name for retry on the next restore.
+        }
       });
+      syncChartHudOffset();
     }
 
     function updateDrawModeChip() {
@@ -3255,8 +5089,10 @@
         niftyChart.setTimezone("Asia/Kolkata");
       }
       applyCandleStyle();
+      unlockYScale(true);
       hideNativeChartLabels();
       bindChartHud();
+      syncChartHudOffset();
       if (!chartResizeObs) {
         chartResizeObs = new ResizeObserver(() => {
           if (niftyChart && typeof niftyChart.resize === "function") {
@@ -3284,11 +5120,15 @@
         return;
       }
       setChartEmpty("");
-      niftyChart.applyNewData(bars);
+      niftyChart.applyNewData(bars, true, () => {
+        unlockYScale(true);
+      });
+      unlockYScale(true);
       chartHasFullData = true;
       hideNativeChartLabels();
       clearAutoSessionOverlays();
       restoreIndicators();
+      syncPred30Pad();
       if (bars.length) {
         const last = bars[bars.length - 1];
         renderOhlcHud(last);
@@ -3342,6 +5182,7 @@
         paintChart();
         return;
       }
+      unlockYScale();
       hideNativeChartLabels();
       renderOhlcHud(bars[bars.length - 1]);
       checkPriceAlerts(bars);
@@ -3411,17 +5252,19 @@
           niftyChart.setBarSpace(chartDefaultBarSpace);
         }
         if (typeof niftyChart.setOffsetRightDistance === "function") {
-          niftyChart.setOffsetRightDistance(chartDefaultOffsetRight);
+          niftyChart.setOffsetRightDistance(desiredOffsetRight());
         }
         if (typeof niftyChart.scrollToRealTime === "function") {
           niftyChart.scrollToRealTime();
         }
       } catch (_) {}
+      unlockYScale(true);
       renderDrawBar();
     }
 
-    function toggleIndicator(name, onCandle) {
+    function toggleIndicator(name, onCandle, opts = {}) {
       if (!ensureChart()) return;
+      const silent = !!opts.silent;
       const bag = onCandle ? chartOverlayIndicators : chartPaneIndicators;
       if (bag.has(name)) {
         const paneId = chartIndicatorPanes[name] || (onCandle ? "candle_pane" : undefined);
@@ -3432,16 +5275,83 @@
         }
         delete chartIndicatorPanes[name];
         bag.delete(name);
+        if (onCandle) chartOverlayParams.delete(name);
       } else {
         try {
+          const params = onCandle && Array.isArray(opts.calcParams) ? opts.calcParams : null;
+          const spec = params ? { name, calcParams: params } : name;
+          const paneOpts = paneCreateOpts(name);
           const paneId = onCandle
-            ? niftyChart.createIndicator(name, true, { id: "candle_pane" })
-            : niftyChart.createIndicator(name);
+            ? niftyChart.createIndicator(spec, true, { id: "candle_pane" })
+            : paneOpts
+              ? niftyChart.createIndicator(name, false, paneOpts)
+              : niftyChart.createIndicator(name);
           chartIndicatorPanes[name] = paneId || (onCandle ? "candle_pane" : undefined);
           bag.add(name);
+          if (onCandle) {
+            if (params) chartOverlayParams.set(name, params);
+            else chartOverlayParams.delete(name);
+            if (params && typeof niftyChart.overrideIndicator === "function") {
+              try { niftyChart.overrideIndicator({ name, calcParams: params }); } catch (_) {}
+            }
+          }
         } catch (_) {}
       }
+      if (!silent) {
+        syncChartHudOffset();
+        renderChartToolbar();
+      }
+      syncPred30Pad();
+    }
+
+    function setIndicatorEnabled(name, onCandle, enabled, opts = {}) {
+      const bag = onCandle ? chartOverlayIndicators : chartPaneIndicators;
+      const has = bag.has(name);
+      if (enabled === has) {
+        // Already on — still allow template to refresh calcParams (e.g. hide marks).
+        if (
+          enabled
+          && onCandle
+          && Array.isArray(opts.calcParams)
+          && niftyChart
+          && typeof niftyChart.overrideIndicator === "function"
+        ) {
+          chartOverlayParams.set(name, opts.calcParams);
+          try { niftyChart.overrideIndicator({ name, calcParams: opts.calcParams }); } catch (_) {}
+        }
+        return;
+      }
+      toggleIndicator(name, onCandle, opts);
+    }
+
+    function applyIndicatorTemplate(templateId) {
+      if (!ensureChart()) return;
+      registerChartExtras();
+      const tpl = CHART_TEMPLATES.find((t) => t.id === templateId);
+      if (!tpl) return;
+      const overlaySpecs = (tpl.overlays || []).map((spec) =>
+        typeof spec === "string" ? { name: spec } : spec,
+      );
+      const wantOverlay = new Set(overlaySpecs.map((s) => s.name));
+      const wantPane = new Set(tpl.panes || []);
+      const silent = { silent: true };
+      [...chartOverlayIndicators].forEach((name) => {
+        if (!wantOverlay.has(name)) setIndicatorEnabled(name, true, false, silent);
+      });
+      [...chartPaneIndicators].forEach((name) => {
+        if (!wantPane.has(name)) setIndicatorEnabled(name, false, false, silent);
+      });
+      overlaySpecs.forEach((spec) => {
+        setIndicatorEnabled(spec.name, true, true, {
+          ...silent,
+          calcParams: spec.calcParams,
+        });
+      });
+      wantPane.forEach((name) => setIndicatorEnabled(name, false, true, silent));
+      syncChartHudOffset();
       renderChartToolbar();
+      showChartToast(`Template: ${tpl.title}`);
+      closeChartMenu("chartIndicatorPanel", "chartIndicatorToggle");
     }
 
     function closeChartMenu(panelId, toggleId) {
@@ -3719,6 +5629,14 @@
 
       const filteredOverlay = overlayItems.filter(matchesFilter);
       const filteredPane = paneItems.filter(matchesFilter);
+      const filteredTemplates = !q
+        ? CHART_TEMPLATES
+        : CHART_TEMPLATES.filter(
+            (t) =>
+              t.title.toLowerCase().includes(q)
+              || t.blurb.toLowerCase().includes(q)
+              || t.id.toLowerCase().includes(q),
+          );
 
       function indicatorRows(items) {
         return items.map((item) => {
@@ -3731,12 +5649,24 @@
         }).join("");
       }
 
-      if (!filteredOverlay.length && !filteredPane.length) {
+      if (!filteredOverlay.length && !filteredPane.length && !filteredTemplates.length) {
         list.innerHTML = `<div class="chart-indicator-empty">No indicators matching "${escapeHtml(q)}"</div>`;
         return;
       }
 
       let html = "";
+      if (filteredTemplates.length) {
+        html += `<div class="chart-menu-heading">Templates</div>`;
+        html += filteredTemplates
+          .map(
+            (t) =>
+              `<button type="button" class="chart-template-btn" data-template="${t.id}">
+                <strong>${escapeHtml(t.title)}</strong>
+                <span>${escapeHtml(t.blurb)}</span>
+              </button>`,
+          )
+          .join("");
+      }
       if (filteredOverlay.length) {
         html += `<div class="chart-menu-heading">On price</div>${indicatorRows(filteredOverlay)}`;
       }
@@ -3748,6 +5678,11 @@
       list.querySelectorAll("input").forEach((box) => {
         box.addEventListener("change", () => {
           toggleIndicator(box.getAttribute("data-ind"), box.getAttribute("data-on-candle") === "1");
+        });
+      });
+      list.querySelectorAll("[data-template]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          applyIndicatorTemplate(btn.getAttribute("data-template"));
         });
       });
     }
@@ -3810,6 +5745,7 @@
           niftyInterval = Number(btn.getAttribute("data-interval"));
           renderChartToolbar();
           paintChart();
+          syncPred30Pad();
         });
       });
       styleBar.querySelectorAll("button").forEach((btn) => {
@@ -3933,110 +5869,30 @@
       candlePollTimer = setInterval(() => { refreshNiftyCandles(); }, 5000);
     }
 
-    function formatPaperInr(value, digits) {
-      const n = Number(value);
-      if (!Number.isFinite(n)) return "—";
-      return "₹" + n.toLocaleString("en-IN", {
-        minimumFractionDigits: digits,
-        maximumFractionDigits: digits,
-      });
-    }
-
-    function paperStrategyLabel(strategy) {
-      if (strategy === "short_iron_fly") return "Iron fly";
-      if (strategy === "long_straddle") return "Long straddle";
-      return "Sit";
-    }
-
-    function renderPaperBar(data) {
-      const host = document.getElementById("paperBar");
-      if (!host) return;
-      if (notebookId !== "nifty") {
-        host.hidden = true;
-        return;
-      }
-      if (!data || data.enabled === false) {
-        host.hidden = true;
-        host.innerHTML = "";
-        return;
-      }
-      host.hidden = false;
-      const pos = data.position;
-      const regime = data.regime;
-      const mtm = Number(data.mtm_pnl);
-      const mtmCls = mtm > 0 ? "paper-up" : mtm < 0 ? "paper-dn" : "";
-      let book = "Flat";
-      if (pos) {
-        const kind = paperStrategyLabel(pos.strategy);
-        const atm = pos.atm != null ? `ATM ${pos.atm}` : "ATM —";
-        if (pos.strategy === "short_iron_fly") {
-          const credit = pos.credit != null ? ` · cr ${Number(pos.credit).toFixed(1)}` : "";
-          book = `${kind} ${atm} ±${pos.wing_pts || 250}${credit}`;
-        } else {
-          book = `${kind} ${atm}`;
-        }
-      }
-      const want = regime ? paperStrategyLabel(regime) : (data.fly_ready ? "Fly ready" : data.tape_ready ? "Long ready" : "Sit");
-      const entries = `${data.entries_today ?? 0}/${data.max_entries_per_day ?? 5}`;
-      const failing = [
-        ...(data.fly_failing || []).map((g) => `Fly: ${g}`),
-        ...(data.tape_failing || []).map((g) => `Long: ${g}`),
-      ];
-      const missing = [
-        ...(data.fly_missing || []).map((g) => `Fly missing: ${g}`),
-        ...(data.tape_missing || []).map((g) => `Long missing: ${g}`),
-      ];
-      const tipBits = [];
-      if (failing.length) tipBits.push(failing.join(" · "));
-      if (missing.length) tipBits.push(missing.join(" · "));
-      if (!pos && !tipBits.length) tipBits.push("Paper idle · no live orders");
-      const win = data.tape_in_window ? "in window" : (data.entry_window || "09:15-15:14");
-      host.title = tipBits.join(" · ");
-      host.innerHTML = [
-        `<span class="paper-k">Paper</span>`,
-        `<span>${escapeHtml(want)}</span>`,
-        `<span>${escapeHtml(book)}</span>`,
-        `<span class="${mtmCls}">MTM ${escapeHtml(formatPaperInr(mtm, 0))}</span>`,
-        `<span>Eq ${escapeHtml(formatPaperInr(data.equity, 0))}</span>`,
-        `<span>${escapeHtml(entries)} · ${escapeHtml(win)}</span>`,
-      ].join("");
-    }
-
-    async function loadPaperSnapshot() {
-      if (document.visibilityState === "hidden") return;
-      if (notebookId !== "nifty") {
-        const host = document.getElementById("paperBar");
-        if (host) host.hidden = true;
-        return;
-      }
-      try {
-        const resp = await fetch("/api/paper");
-        if (!resp.ok) return;
-        renderPaperBar(await resp.json());
-      } catch (_) {
-        /* keep last paint */
-      }
-    }
-
-    function stopPaperPoll() {
-      if (paperPollTimer != null) {
-        clearInterval(paperPollTimer);
-        paperPollTimer = null;
-      }
-    }
-
-    function startPaperPoll() {
-      stopPaperPoll();
-      paperPollTimer = setInterval(() => { loadPaperSnapshot(); }, PAPER_POLL_MS);
-    }
-
     function updateModalScrollLock() {
-      const anyOpen = document.getElementById("historyModal").classList.contains("open");
-      document.body.style.overflow = anyOpen ? "hidden" : "";
+      const historyOpen = document.getElementById("historyModal")?.classList.contains("open");
+      const tradesOpen = document.getElementById("tradesModal")?.classList.contains("open");
+      const agentOpen = document.getElementById("agentModal")?.classList.contains("open");
+      document.body.style.overflow = (historyOpen || tradesOpen || agentOpen) ? "hidden" : "";
+    }
+
+    function lsGet(key, fallback) {
+      try {
+        const v = localStorage.getItem(key);
+        return v == null ? fallback : v;
+      } catch (_) {
+        return fallback;
+      }
+    }
+
+    function lsSet(key, value) {
+      try {
+        localStorage.setItem(key, value);
+      } catch (_) { /* private mode / quota */ }
     }
 
     function initTheme() {
-      const saved = localStorage.getItem(THEME_KEY) || "dark";
+      const saved = lsGet(THEME_KEY, "dark");
       document.body.setAttribute("data-theme", saved);
       updateThemeToggle(saved);
     }
@@ -4052,12 +5908,61 @@
     function toggleTheme() {
       const next = document.body.getAttribute("data-theme") === "light" ? "dark" : "light";
       document.body.setAttribute("data-theme", next);
-      localStorage.setItem(THEME_KEY, next);
+      lsSet(THEME_KEY, next);
       updateThemeToggle(next);
       applyChartTheme();
     }
 
     document.getElementById("themeToggle").addEventListener("click", toggleTheme);
+
+    function bumpChartLayout() {
+      requestAnimationFrame(() => {
+        if (niftyChart && typeof niftyChart.resize === "function") {
+          try { niftyChart.resize(); } catch (_) {}
+        }
+      });
+    }
+
+    function applySheetCollapsed(collapsed) {
+      const board = document.getElementById("sheetBoard");
+      const btn = document.getElementById("sheetBoardToggle");
+      if (!board || !btn) return;
+      board.classList.toggle("collapsed", !!collapsed);
+      btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      const tip = collapsed ? "Show watch and metrics" : "Hide watch and metrics";
+      btn.title = tip;
+      btn.setAttribute("aria-label", tip);
+      lsSet(SHEET_COLLAPSE_KEY, collapsed ? "1" : "0");
+      bumpChartLayout();
+    }
+
+    function applyChainCollapsed(collapsed) {
+      const layout = document.getElementById("pageLayout");
+      const btn = document.getElementById("chainCollapseBtn");
+      if (!layout || !btn) return;
+      layout.classList.toggle("chain-collapsed", !!collapsed);
+      btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      const tip = collapsed ? "Expand option chain" : "Collapse option chain";
+      btn.title = tip;
+      btn.setAttribute("aria-label", tip);
+      lsSet(CHAIN_COLLAPSE_KEY, collapsed ? "1" : "0");
+      bumpChartLayout();
+    }
+
+    function initLayoutCollapse() {
+      applySheetCollapsed(lsGet(SHEET_COLLAPSE_KEY, "0") === "1");
+      applyChainCollapsed(lsGet(CHAIN_COLLAPSE_KEY, "0") === "1");
+      document.getElementById("sheetBoardToggle")?.addEventListener("click", () => {
+        const board = document.getElementById("sheetBoard");
+        applySheetCollapsed(!(board && board.classList.contains("collapsed")));
+      });
+      document.getElementById("chainCollapseBtn")?.addEventListener("click", () => {
+        const layout = document.getElementById("pageLayout");
+        applyChainCollapsed(!(layout && layout.classList.contains("chain-collapsed")));
+      });
+    }
+
+    initLayoutCollapse();
     document.getElementById("chartShotBtn").addEventListener("click", saveChartScreenshot);
     document.getElementById("chartIndicatorToggle").addEventListener("click", (event) => {
       toggleChartMenu("chartIndicatorPanel", "chartIndicatorToggle", event);
@@ -4249,8 +6154,44 @@
     }
 
     function recordingDayFromName(name) {
-      const m = String(name || "").match(/^(\d{4}-\d{2}-\d{2})_/);
-      return m ? m[1] : "";
+      const raw = String(name || "");
+      const slot = raw.match(/^(\d{4}-\d{2}-\d{2})_/);
+      if (slot) return slot[1];
+      const structure = raw.match(/^structure-(\d{4}-\d{2}-\d{2})\.jsonl$/);
+      return structure ? structure[1] : "";
+    }
+
+    function atlasApiHeaders(extra) {
+      const headers = Object.assign({}, extra || {});
+      try {
+        const tok = localStorage.getItem("atlasApiToken");
+        if (tok) headers["X-Atlas-Token"] = tok;
+      } catch (_) {}
+      return headers;
+    }
+
+    function loadAgentTokenField() {
+      const input = document.getElementById("agentApiToken");
+      if (!input) return;
+      try {
+        input.value = localStorage.getItem("atlasApiToken") || "";
+      } catch (_) {
+        input.value = "";
+      }
+    }
+
+    function saveAgentTokenField() {
+      const input = document.getElementById("agentApiToken");
+      const meta = document.getElementById("agentMeta");
+      if (!input) return;
+      const tok = String(input.value || "").trim();
+      try {
+        if (tok) localStorage.setItem("atlasApiToken", tok);
+        else localStorage.removeItem("atlasApiToken");
+        if (meta) meta.textContent = tok ? "API token saved in this browser" : "API token cleared";
+      } catch (err) {
+        if (meta) meta.textContent = `Could not save token: ${err?.message || err}`;
+      }
     }
 
     function triggerDownload(url, filename) {
@@ -4327,6 +6268,15 @@
     async function setHistoryOpen(open) {
       const modal = document.getElementById("historyModal");
       const btn = document.getElementById("historyToggle");
+      if (open) {
+        const tradesModal = document.getElementById("tradesModal");
+        const tradesBtn = document.getElementById("tradesToggle");
+        if (tradesModal?.classList.contains("open")) {
+          tradesModal.classList.remove("open");
+          tradesModal.setAttribute("aria-hidden", "true");
+          tradesBtn?.classList.remove("active");
+        }
+      }
       modal.classList.toggle("open", open);
       modal.setAttribute("aria-hidden", open ? "false" : "true");
       btn.classList.toggle("active", open);
@@ -4346,9 +6296,481 @@
     document.getElementById("historyToggle").addEventListener("click", () => { toggleHistoryPanel(); });
     document.getElementById("historyClose").addEventListener("click", () => { setHistoryOpen(false); });
     document.getElementById("historyBackdrop").addEventListener("click", () => { setHistoryOpen(false); });
+
+    function escapeTradeHtml(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function escapeTradeAttr(value) {
+      // Preserve multiline tip payloads inside data-tip="...".
+      return escapeTradeHtml(value).replace(/\r/g, "").replace(/\n/g, "&#10;");
+    }
+
+    function formatTradeTs(ts) {
+      if (!ts) return "—";
+      const d = new Date(ts);
+      if (Number.isNaN(d.getTime())) return escapeTradeHtml(String(ts).slice(0, 19));
+      return escapeTradeHtml(d.toLocaleString("en-IN", {
+        timeZone: "Asia/Kolkata",
+        day: "2-digit",
+        month: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      }));
+    }
+
+    function formatTradeNum(value, digits = 2) {
+      if (value == null || Number.isNaN(Number(value))) return "—";
+      return escapeTradeHtml(Number(value).toLocaleString("en-IN", {
+        minimumFractionDigits: digits,
+        maximumFractionDigits: digits,
+      }));
+    }
+
+    function formatTradePnl(value) {
+      if (value == null || Number.isNaN(Number(value))) return "—";
+      const n = Number(value);
+      const text = (n >= 0 ? "+" : "") + n.toFixed(2);
+      const cls = n > 0 ? "chain-up" : n < 0 ? "chain-down" : "hist-muted";
+      return `<span class="${cls}">${escapeTradeHtml(text)}</span>`;
+    }
+
+    function shortTradeSymbol(symbol) {
+      if (!symbol) return "—";
+      const s = String(symbol);
+      const i = s.indexOf(":");
+      return escapeTradeHtml(i >= 0 ? s.slice(i + 1) : s);
+    }
+
+    function renderTradesDayFilter(days, selected) {
+      const sel = document.getElementById("tradesDayFilter");
+      if (!sel) return;
+      const cur = selected == null ? sel.value : selected;
+      const opts = [`<option value="">All days</option>`].concat(
+        (days || []).map((day) => `<option value="${escapeTradeHtml(day)}">${escapeTradeHtml(day)}</option>`),
+      );
+      sel.innerHTML = opts.join("");
+      if (cur && [...sel.options].some((o) => o.value === cur)) sel.value = cur;
+      else sel.value = "";
+    }
+
+    function formatTradeSide(side) {
+      if (side == null || side === "") return "—";
+      return escapeTradeHtml(String(side).toUpperCase());
+    }
+
+    const TRADES_DETAIL_DEFAULT = "Paper only · hover Book for entry/exit gates · latest first";
+
+    function tradesTipKvHtml(value) {
+      const parts = String(value || "")
+        .split("·")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (!parts.length) return escapeTradeHtml(String(value || "—"));
+      const pairs = parts.map((part) => {
+        const eq = part.match(/^([^=]+?)=(.*)$/);
+        if (eq) return { k: eq[1].trim(), v: eq[2].trim() };
+        // Legacy "key value" tips (pre key=value).
+        const sp = part.match(/^(\S+)\s+(.+)$/);
+        if (sp) return { k: sp[1], v: sp[2] };
+        return null;
+      });
+      if (pairs.some((p) => p == null)) {
+        return escapeTradeHtml(parts.join(" · "));
+      }
+      const body = pairs.map((p) => (
+        `<tr><td>${escapeTradeHtml(p.k)}</td><td>${escapeTradeHtml(p.v)}</td></tr>`
+      )).join("");
+      return `<table class="trades-tip-kv">${body}</table>`;
+    }
+
+    function formatTradesTipHtml(text) {
+      const lines = String(text || "")
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (!lines.length) return "";
+      let fillIdx = 0;
+      const rows = lines.map((line) => {
+        const labeled = line.match(/^(Entry|Exit|At entry)\s*:\s*(.*)$/i);
+        if (labeled) {
+          const label = /at entry/i.test(labeled[1]) ? "At entry" : labeled[1];
+          const value = labeled[2];
+          const body = label === "At entry"
+            ? tradesTipKvHtml(value)
+            : escapeTradeHtml(value);
+          return `<tr><th>${escapeTradeHtml(label)}</th><td>${body}</td></tr>`;
+        }
+        fillIdx += 1;
+        const label = fillIdx === 1 ? "Fill" : `Note ${fillIdx}`;
+        return `<tr><th>${label}</th><td>${tradesTipKvHtml(line)}</td></tr>`;
+      }).join("");
+      return `<table class="trades-tip-table">${rows}</table>`;
+    }
+
+    function hideTradesBookTip() {
+      const tipEl = document.getElementById("tradesFloatTip");
+      if (tipEl) {
+        tipEl.hidden = true;
+        tipEl.innerHTML = "";
+      }
+    }
+
+    function showTradesBookTip(text, clientX, clientY) {
+      const tipEl = document.getElementById("tradesFloatTip");
+      if (!tipEl || !text) {
+        hideTradesBookTip();
+        return;
+      }
+      tipEl.hidden = false;
+      tipEl.innerHTML = formatTradesTipHtml(text);
+      const pad = 14;
+      const w = tipEl.offsetWidth || 280;
+      const h = tipEl.offsetHeight || 80;
+      let left = (clientX || 0) + pad;
+      let top = (clientY || 0) + pad;
+      if (left + w > window.innerWidth - 8) left = Math.max(8, (clientX || 0) - w - pad);
+      if (top + h > window.innerHeight - 8) top = Math.max(8, (clientY || 0) - h - pad);
+      tipEl.style.left = `${left}px`;
+      tipEl.style.top = `${top}px`;
+    }
+
+    function renderTradesBookDay(rows, pnlTotal) {
+      const tbody = document.getElementById("tradesBookDayRows");
+      if (!tbody) return;
+      const list = rows || [];
+      if (!list.length) {
+        tbody.innerHTML = `<tr><td colspan="5" class="hist-muted">No book×day totals</td></tr>`;
+        return;
+      }
+      const body = list.map((row) => {
+        const pnl = row.pnl_total == null && !row.pnl_known
+          ? "—"
+          : formatTradePnl(row.pnl_total);
+        const est = row.pnl_estimated
+          ? ` <span class="hist-muted" title="Includes estimated (intrinsic) settlement">est</span>`
+          : "";
+        return `<tr>
+          <td>${escapeTradeHtml(row.day || "—")}</td>
+          <td>${escapeTradeHtml(row.strategy || "—")}</td>
+          <td>${escapeTradeHtml(String(row.closed ?? 0))}</td>
+          <td>${escapeTradeHtml(String(row.open ?? 0))}</td>
+          <td>${pnl}${est}</td>
+        </tr>`;
+      }).join("");
+      const totalCell = pnlTotal == null ? "—" : formatTradePnl(pnlTotal);
+      tbody.innerHTML = `${body}<tr>
+        <td colspan="2"><strong>Total</strong></td>
+        <td>${escapeTradeHtml(String(list.reduce((n, r) => n + (Number(r.closed) || 0), 0)))}</td>
+        <td>${escapeTradeHtml(String(list.reduce((n, r) => n + (Number(r.open) || 0), 0)))}</td>
+        <td><strong>${totalCell}</strong></td>
+      </tr>`;
+    }
+
+    function renderTradesRows(trades) {
+      const tbody = document.getElementById("tradesRows");
+      if (!tbody) return;
+      hideTradesBookTip();
+      if (!trades || !trades.length) {
+        tbody.innerHTML = `<tr><td colspan="9" class="hist-muted">No paper fills</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = trades.map((row) => {
+        const ev = row.event || "—";
+        const pnl = ev === "open" ? "—" : formatTradePnl(row.pnl);
+        const tip = (row.info && String(row.info).trim()) || "";
+        const book = escapeTradeHtml(row.strategy || "—");
+        const bookCell = tip
+          ? `<td class="trades-book" data-tip="${escapeTradeAttr(tip)}">${book}</td>`
+          : `<td>${book}</td>`;
+        return `<tr>
+          <td>${formatTradeTs(row.ts)}</td>
+          ${bookCell}
+          <td>${escapeTradeHtml(ev)}</td>
+          <td>${formatTradeSide(row.side)}</td>
+          <td title="${escapeTradeHtml(row.symbol || "")}">${shortTradeSymbol(row.symbol)}</td>
+          <td>${formatTradeNum(row.entry)}</td>
+          <td>${formatTradeNum(row.exit)}</td>
+          <td>${pnl}</td>
+          <td>${escapeTradeHtml(row.reason || "—")}</td>
+        </tr>`;
+      }).join("");
+    }
+
+    async function loadPaperTrades() {
+      const meta = document.getElementById("tradesMeta");
+      const detail = document.getElementById("tradesDetail");
+      const day = document.getElementById("tradesDayFilter")?.value || "";
+      if (meta) meta.textContent = "Loading…";
+      try {
+        const url = new URL("/api/paper/trades", window.location.origin);
+        url.searchParams.set("limit", "300");
+        if (day) url.searchParams.set("day", day);
+        const resp = await fetch(url.pathname + "?" + url.searchParams.toString());
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        renderTradesDayFilter(data.days || [], day);
+        renderTradesBookDay(data.by_book_day || [], data.pnl_total);
+        renderTradesRows(data.trades || []);
+        const n = (data.trades || []).length;
+        const closed = data.closed_count != null ? data.closed_count : n;
+        const openN = data.open_count != null ? data.open_count : 0;
+        const pnlTxt = data.pnl_total == null
+          ? "—"
+          : `${Number(data.pnl_total) >= 0 ? "+" : ""}${Number(data.pnl_total).toFixed(2)}`;
+        if (meta) {
+          meta.textContent = day
+            ? `${day} · closed ${closed} · open ${openN} · PnL ${pnlTxt}`
+            : `closed ${closed} · open ${openN} · PnL ${pnlTxt} · latest first`;
+        }
+        if (detail) detail.textContent = TRADES_DETAIL_DEFAULT;
+      } catch (err) {
+        const tbody = document.getElementById("tradesRows");
+        if (tbody) {
+          tbody.innerHTML = `<tr><td colspan="9" class="hist-muted">Failed to load trades</td></tr>`;
+        }
+        const sum = document.getElementById("tradesBookDayRows");
+        if (sum) {
+          sum.innerHTML = `<tr><td colspan="5" class="hist-muted">Failed to load book×day PnL</td></tr>`;
+        }
+        if (meta) meta.textContent = "Load failed";
+        if (detail) detail.textContent = String(err?.message || err);
+      }
+    }
+
+    async function setTradesOpen(open) {
+      const modal = document.getElementById("tradesModal");
+      const btn = document.getElementById("tradesToggle");
+      if (!modal || !btn) return;
+      if (open) {
+        const historyModal = document.getElementById("historyModal");
+        const historyBtn = document.getElementById("historyToggle");
+        if (historyModal?.classList.contains("open")) {
+          historyModal.classList.remove("open");
+          historyModal.setAttribute("aria-hidden", "true");
+          historyBtn?.classList.remove("active");
+        }
+      }
+      modal.classList.toggle("open", open);
+      modal.setAttribute("aria-hidden", open ? "false" : "true");
+      btn.classList.toggle("active", open);
+      updateModalScrollLock();
+      if (!open) hideTradesBookTip();
+      if (open) await loadPaperTrades();
+    }
+
+    async function toggleTradesPanel() {
+      const modal = document.getElementById("tradesModal");
+      await setTradesOpen(!modal?.classList.contains("open"));
+    }
+
+    document.getElementById("tradesToggle")?.addEventListener("click", () => { toggleTradesPanel(); });
+    document.getElementById("tradesClose")?.addEventListener("click", () => { setTradesOpen(false); });
+    document.getElementById("tradesBackdrop")?.addEventListener("click", () => { setTradesOpen(false); });
+    document.getElementById("tradesRefresh")?.addEventListener("click", () => { loadPaperTrades(); });
+    document.getElementById("tradesDayFilter")?.addEventListener("change", () => { loadPaperTrades(); });
+
+    function fmtMacroPct(field) {
+      if (!field || field.value == null || field.day_pct == null) return "—";
+      const n = Number(field.day_pct);
+      return `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
+    }
+
+    function renderAgentGates(gates) {
+      const tbody = document.getElementById("agentGatesRows");
+      if (!tbody) return;
+      const entries = Object.entries(gates || {});
+      if (!entries.length) {
+        tbody.innerHTML = `<tr><td colspan="6" class="hist-muted">No gates</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = entries.map(([book, row]) => {
+        const mode = escapeTradeHtml(row.mode || "allow");
+        const b = escapeTradeHtml(book);
+        return `<tr>
+          <td>${b}</td>
+          <td>${mode}</td>
+          <td>${escapeTradeHtml(row.source || "—")}</td>
+          <td>${escapeTradeHtml(row.until || "—")}</td>
+          <td>${escapeTradeHtml(row.reason || "—")}</td>
+          <td class="agent-gate-actions">
+            <button type="button" data-agent-gate="${b}" data-gate-mode="allow">Allow</button>
+            <button type="button" data-agent-gate="${b}" data-gate-mode="skip_entries">Skip</button>
+            <button type="button" data-agent-gate="${b}" data-gate-mode="pause">Pause</button>
+          </td>
+        </tr>`;
+      }).join("");
+    }
+
+    async function loadAgentPanel() {
+      const meta = document.getElementById("agentMeta");
+      const macroEl = document.getElementById("agentMacroLine");
+      const decisionEl = document.getElementById("agentDecision");
+      const posEl = document.getElementById("agentPositionLine");
+      try {
+        const [st, macro, paper] = await Promise.all([
+          fetch("/api/agent").then((r) => r.json()),
+          fetch("/api/agent/macro").then((r) => r.json()),
+          fetch("/api/paper").then((r) => r.json()),
+        ]);
+        if (meta) {
+          if (st.scorecard_autopilot || st.executor === "scorecard") {
+            meta.textContent = `Scorecard autopilot · every ${st.interval_s || "—"}s · no LLM · paper only`;
+          } else if (st.has_credentials) {
+            const sparse = st.llm_sparse ? " · sparse LLM" : "";
+            meta.textContent = `Trading · ${st.model || "—"} · every ${st.interval_s || "—"}s${sparse} · paper only`;
+          } else {
+            meta.textContent =
+              "No LLM credentials · set OPENROUTER_API_KEY or llm_credentials (or enable scorecard autopilot)";
+          }
+        }
+        if (posEl) {
+          const ag = paper.agent || {};
+          const p = ag.position;
+          const pend = ag.pending;
+          if (p) {
+            posEl.textContent = `Agent book OPEN ${String(p.side || "").toUpperCase()} @ ${p.entry} · tgt ${p.target} · stop ${p.stop} · day PnL ${ag.day_pnl ?? "—"}`;
+          } else if (pend && !pend.want_exit) {
+            posEl.textContent = `Agent book pending ${String(pend.side || "").toUpperCase()} entry · ${pend.reason || ""}`;
+          } else {
+            posEl.textContent = `Agent book FLAT · entries today ${ag.entries_today ?? 0} · day PnL ${ag.day_pnl ?? 0}`;
+          }
+        }
+        if (macroEl) {
+          macroEl.textContent =
+            `Macro as_of ${macro.fetched_at || "—"} · crude ${fmtMacroPct(macro.crude)} · gold ${fmtMacroPct(macro.gold)} · USDINR ${fmtMacroPct(macro.usdinr)} · ES ${fmtMacroPct(macro.es_futures)} · headlines ${((macro.headlines || []).length)}`;
+        }
+        if (decisionEl) {
+          const d = st.last_decision;
+          const tools = (d && d.tools) || [];
+          const acts = tools.map((t) => t.tool).filter(Boolean).join(", ") || "—";
+          decisionEl.textContent = d
+            ? `Last cycle: ${d.ok === false ? "ERR " + (d.error || "") : (d.reason || "ok")} · actions ${acts}`
+            : "Last cycle: —";
+        }
+        renderAgentGates(st.gates || {});
+      } catch (err) {
+        if (meta) meta.textContent = "Agent load failed";
+        if (decisionEl) decisionEl.textContent = String(err?.message || err);
+      }
+    }
+
+    async function setAgentOpen(open) {
+      const modal = document.getElementById("agentModal");
+      const btn = document.getElementById("agentToggle");
+      if (!modal || !btn) return;
+      if (open) {
+        document.getElementById("tradesModal")?.classList.remove("open");
+        document.getElementById("historyModal")?.classList.remove("open");
+        document.getElementById("tradesToggle")?.classList.remove("active");
+        document.getElementById("historyToggle")?.classList.remove("active");
+      }
+      modal.classList.toggle("open", open);
+      modal.setAttribute("aria-hidden", open ? "false" : "true");
+      btn.classList.toggle("active", open);
+      updateModalScrollLock();
+      if (open) {
+        loadAgentTokenField();
+        await loadAgentPanel();
+      }
+    }
+
+    document.getElementById("agentToggle")?.addEventListener("click", () => {
+      const modal = document.getElementById("agentModal");
+      setAgentOpen(!modal?.classList.contains("open"));
+    });
+    document.getElementById("agentClose")?.addEventListener("click", () => { setAgentOpen(false); });
+    document.getElementById("agentBackdrop")?.addEventListener("click", () => { setAgentOpen(false); });
+    document.getElementById("agentRefreshBtn")?.addEventListener("click", () => { loadAgentPanel(); });
+    document.getElementById("agentAdviseBtn")?.addEventListener("click", async () => {
+      const meta = document.getElementById("agentMeta");
+      if (meta) meta.textContent = "Running trade cycle…";
+      try {
+        const resp = await fetch("/api/agent/advise", {
+          method: "POST",
+          headers: atlasApiHeaders(),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (resp.status === 401) {
+          throw new Error("401 — set API token in the Agent panel (same as ATLAS_LITE_API_TOKEN)");
+        }
+        if (!resp.ok || data.ok === false) throw new Error(data.error || data.detail || `HTTP ${resp.status}`);
+        await loadAgentPanel();
+      } catch (err) {
+        if (meta) meta.textContent = String(err?.message || err);
+      }
+    });
+    document.getElementById("agentTokenSaveBtn")?.addEventListener("click", () => { saveAgentTokenField(); });
+    document.getElementById("agentApiToken")?.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") saveAgentTokenField();
+    });
+    document.getElementById("agentGatesRows")?.addEventListener("click", async (event) => {
+      const btn = event.target?.closest?.("[data-agent-gate]");
+      if (!btn) return;
+      const book = btn.getAttribute("data-agent-gate");
+      const mode = btn.getAttribute("data-gate-mode") || "allow";
+      const url = new URL("/api/agent/gates", window.location.origin);
+      url.searchParams.set("book", book);
+      url.searchParams.set("mode", mode);
+      url.searchParams.set("reason", "manual_ui");
+      const resp = await fetch(url.pathname + "?" + url.searchParams.toString(), {
+        method: "POST",
+        headers: atlasApiHeaders(),
+      });
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        const meta = document.getElementById("agentMeta");
+        if (meta) meta.textContent = data.detail || data.error || `Gate failed HTTP ${resp.status}`;
+        return;
+      }
+      await loadAgentPanel();
+    });
+
+    function bindTradesBookTip(rootId) {
+      const root = document.getElementById(rootId);
+      if (!root) return;
+      root.addEventListener("pointerover", (event) => {
+        const cell = event.target?.closest?.(".trades-book");
+        if (!cell || !root.contains(cell)) return;
+        const tip = cell.getAttribute("data-tip") || "";
+        if (!tip) return;
+        showTradesBookTip(tip, event.clientX, event.clientY);
+      });
+      root.addEventListener("pointermove", (event) => {
+        const cell = event.target?.closest?.(".trades-book");
+        if (!cell || !root.contains(cell)) return;
+        const tip = cell.getAttribute("data-tip") || "";
+        if (!tip) return;
+        showTradesBookTip(tip, event.clientX, event.clientY);
+      });
+      root.addEventListener("pointerout", (event) => {
+        const cell = event.target?.closest?.(".trades-book");
+        if (!cell) return;
+        const next = event.relatedTarget;
+        if (next && cell.contains(next)) return;
+        hideTradesBookTip();
+      });
+    }
+    bindTradesBookTip("tradesRows");
+
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
-        if (document.getElementById("historyModal").classList.contains("open")) {
+        if (document.getElementById("tradesModal")?.classList.contains("open")) {
+          setTradesOpen(false);
+          return;
+        }
+        if (document.getElementById("agentModal")?.classList.contains("open")) {
+          setAgentOpen(false);
+          return;
+        }
+        if (document.getElementById("historyModal")?.classList.contains("open")) {
           setHistoryOpen(false);
         }
         return;
@@ -4409,6 +6831,16 @@
     const CHAIN_POLL_MS = 1000;
     let chainPollTimer = null;
     let chainScrollPending = false;
+    let chainExtrasOn = false;
+    let chainSelectedStrike = null;
+
+    function chainColCount() {
+      return 7;
+    }
+
+    function extrasColCount() {
+      return 24;
+    }
 
     function formatChainNum(value, digits = 2) {
       if (value == null || Number.isNaN(value)) return "—";
@@ -4421,6 +6853,111 @@
     function formatChainOi(value) {
       if (value == null || Number.isNaN(value)) return "—";
       return Math.round(value).toLocaleString("en-IN");
+    }
+
+    function formatChainVol(value) {
+      if (value == null || Number.isNaN(value)) return "—";
+      const n = Number(value);
+      if (n >= 100000) return `${(n / 1000).toFixed(0)}k`;
+      return Math.round(n).toLocaleString("en-IN");
+    }
+
+    function formatChainIv(value) {
+      if (value == null || Number.isNaN(value)) return "—";
+      return Number(value).toFixed(1);
+    }
+
+    function formatChainDelta(value) {
+      if (value == null || Number.isNaN(value)) return "—";
+      return Number(value).toFixed(2);
+    }
+
+    function formatChainTheta(value) {
+      if (value == null || Number.isNaN(value)) return "—";
+      return Number(value).toFixed(1);
+    }
+
+    function formatChainVega(value) {
+      if (value == null || Number.isNaN(value)) return "—";
+      return Number(value).toFixed(1);
+    }
+
+    function formatChainGamma(value) {
+      if (value == null || Number.isNaN(value)) return "—";
+      return Number(value).toFixed(4);
+    }
+
+    function formatChainPcr(value) {
+      if (value == null || Number.isNaN(value)) return "—";
+      return Number(value).toFixed(2);
+    }
+
+    function chainMoneyness(side, strike, spot) {
+      if (spot == null || strike == null || Number.isNaN(spot) || Number.isNaN(strike)) return "";
+      if (side === "ce") return strike < spot ? "itm" : "otm";
+      return strike > spot ? "itm" : "otm";
+    }
+
+    function chainSideClass(side, strike, spot) {
+      const base = side === "ce" ? "ce-side" : "pe-side";
+      const m = chainMoneyness(side, strike, spot);
+      return m ? `${base} ${m}` : base;
+    }
+
+    function chainExtrasCells(leg, side, strike, spot) {
+      const cls = chainSideClass(side, strike, spot);
+      const vol = `<td class="${cls}">${formatChainVol(leg.vol)}</td>`;
+      const bidAsk = `<td class="${cls}">${formatChainNum(leg.bid)}</td><td class="${cls}">${formatChainNum(leg.ask)}</td>`;
+      const greeks = `<td class="${cls}">${formatChainIv(leg.iv)}</td>
+        <td class="${cls}">${formatChainDelta(leg.delta)}</td>
+        <td class="${cls}">${formatChainTheta(leg.theta)}</td>
+        <td class="${cls}">${formatChainVega(leg.vega)}</td>
+        <td class="${cls}">${formatChainGamma(leg.gamma)}</td>`;
+      return side === "ce" ? `${vol}${bidAsk}${greeks}` : `${bidAsk}${greeks}${vol}`;
+    }
+
+    function chainExtrasHead(side) {
+      const cls = side === "ce" ? "ce-head" : "pe-head";
+      const vol = `<th class="${cls}">Vol</th>`;
+      const bidAsk = `<th class="${cls}">Bid</th><th class="${cls}">Ask</th>`;
+      const greeks = ["IV", "Δ", "Θ", "Vega", "Γ"].map((h) => `<th class="${cls}">${h}</th>`).join("");
+      return side === "ce" ? `${vol}${bidAsk}${greeks}` : `${bidAsk}${greeks}${vol}`;
+    }
+
+    function chainExtrasPads(side) {
+      const cls = side === "ce" ? "ce-side" : "pe-side";
+      return Array(8).fill(`<td class="${cls}">—</td>`).join("");
+    }
+
+    function renderChainHead() {
+      const head = document.getElementById("chainHead");
+      if (!head) return;
+      head.innerHTML = `<tr>
+        <th class="ce-head">OI</th>
+        <th class="ce-head">%</th>
+        <th class="ce-head">LTP</th>
+        <th class="strike-col">Str</th>
+        <th class="pe-head">LTP</th>
+        <th class="pe-head">%</th>
+        <th class="pe-head">OI</th>
+      </tr>`;
+    }
+
+    function renderExtrasHead() {
+      const head = document.getElementById("chainExtrasHead");
+      if (!head) return;
+      head.innerHTML = `<tr>
+        ${chainExtrasHead("ce")}
+        <th class="ce-head">OI</th>
+        <th class="ce-head">%</th>
+        <th class="ce-head">LTP</th>
+        <th class="strike-col">Str</th>
+        <th class="strike-col">PCR</th>
+        <th class="pe-head">LTP</th>
+        <th class="pe-head">%</th>
+        <th class="pe-head">OI</th>
+        ${chainExtrasHead("pe")}
+      </tr>`;
     }
 
     function formatChainChg(value) {
@@ -4544,56 +7081,133 @@
       </tr>`;
     }
 
+    function renderExtrasTotals(data) {
+      const tfoot = document.getElementById("chainExtrasTotals");
+      if (!tfoot) return;
+      const totals = resolveChainTotals(data || {});
+      const ce = totals.ce || {};
+      const pe = totals.pe || {};
+      tfoot.innerHTML = `<tr class="chain-total-row">
+        ${chainExtrasPads("ce")}
+        <td class="ce-side">${formatChainOi(ce.oi)}</td>
+        <td class="ce-side">${formatChainChg(ce.chg_pct)}</td>
+        <td class="ce-side">${formatChainNum(ce.ltp)}</td>
+        <td class="strike-col"><span class="chain-total-label">Total</span></td>
+        <td class="strike-col">—</td>
+        <td class="pe-side">${formatChainNum(pe.ltp)}</td>
+        <td class="pe-side">${formatChainChg(pe.chg_pct)}</td>
+        <td class="pe-side">${formatChainOi(pe.oi)}</td>
+        ${chainExtrasPads("pe")}
+      </tr>`;
+    }
+
     function renderChainRows(data) {
       const tbody = document.getElementById("chainRows");
       const rows = data.rows || [];
       const maxPain = data.max_pain != null ? Math.round(data.max_pain) : null;
       const spot = data.spot;
       const step = 50;
+      renderChainHead();
       if (!rows.length) {
-        tbody.innerHTML = '<tr><td colspan="7" class="chain-muted" style="text-align:center">No chain rows</td></tr>';
+        tbody.innerHTML = `<tr><td colspan="${chainColCount()}" class="chain-muted" style="text-align:center">No chain rows</td></tr>`;
         renderChainTotals(data);
+        renderExtrasRows(data);
         return;
       }
       tbody.innerHTML = rows.map(row => {
         const ce = row.ce || {};
         const pe = row.pe || {};
-        const classes = [];
-        if (row.is_atm) classes.push("atm-row");
-        if (maxPain != null && row.strike === maxPain) classes.push("max-pain-row");
-        if (spotStrikeMarker(spot, row.strike, step)) classes.push("spot-marker");
-        const cls = classes.join(" ");
+        const cls = chainRowClasses(row, maxPain, spot, step);
         return `<tr class="${cls}" data-strike="${row.strike}">
-          <td class="ce-side">${formatChainOi(ce.oi)}</td>
-          <td class="ce-side">${formatChainChg(ce.chg_pct)}</td>
-          <td class="ce-side">${formatChainNum(ce.ltp)}</td>
+          <td class="${chainSideClass("ce", row.strike, spot)}">${formatChainOi(ce.oi)}</td>
+          <td class="${chainSideClass("ce", row.strike, spot)}">${formatChainChg(ce.chg_pct)}</td>
+          <td class="${chainSideClass("ce", row.strike, spot)}">${formatChainNum(ce.ltp)}</td>
           <td class="strike-col">${row.strike}</td>
-          <td class="pe-side">${formatChainNum(pe.ltp)}</td>
-          <td class="pe-side">${formatChainChg(pe.chg_pct)}</td>
-          <td class="pe-side">${formatChainOi(pe.oi)}</td>
+          <td class="${chainSideClass("pe", row.strike, spot)}">${formatChainNum(pe.ltp)}</td>
+          <td class="${chainSideClass("pe", row.strike, spot)}">${formatChainChg(pe.chg_pct)}</td>
+          <td class="${chainSideClass("pe", row.strike, spot)}">${formatChainOi(pe.oi)}</td>
         </tr>`;
       }).join("");
 
       renderChainTotals(data);
-
-      if (chainScrollPending) {
-        chainScrollPending = false;
-        const target = tbody.querySelector("tr.atm-row") || tbody.querySelector("tr.spot-marker");
-        if (target) {
-          target.scrollIntoView({ block: "center", behavior: "instant" });
-        }
-      }
+      renderExtrasRows(data);
+      applyChainRowSelection();
+      scrollChainToAtmIfNeeded();
     }
 
-    const chainTableWrap = document.getElementById("chainTableWrap");
-    if (chainTableWrap && !chainTableWrap.dataset.chartLinkReady) {
-      chainTableWrap.dataset.chartLinkReady = "1";
-      chainTableWrap.addEventListener("click", (event) => {
-        const cell = event.target.closest("td.strike-col");
+    function renderExtrasRows(data) {
+      const tbody = document.getElementById("chainExtrasRows");
+      if (!tbody) return;
+      const rows = data.rows || [];
+      const maxPain = data.max_pain != null ? Math.round(data.max_pain) : null;
+      const spot = data.spot;
+      const step = 50;
+      renderExtrasHead();
+      if (!rows.length) {
+        tbody.innerHTML = `<tr><td colspan="${extrasColCount()}" class="chain-muted" style="text-align:center">No chain rows</td></tr>`;
+        const extrasFoot = document.getElementById("chainExtrasTotals");
+        if (extrasFoot) extrasFoot.innerHTML = "";
+        return;
+      }
+      tbody.innerHTML = rows.map((row) => {
+        const ce = row.ce || {};
+        const pe = row.pe || {};
+        const cls = chainRowClasses(row, maxPain, spot, step);
+        return `<tr class="${cls}" data-strike="${row.strike}">
+          ${chainExtrasCells(ce, "ce", row.strike, spot)}
+          <td class="${chainSideClass("ce", row.strike, spot)}">${formatChainOi(ce.oi)}</td>
+          <td class="${chainSideClass("ce", row.strike, spot)}">${formatChainChg(ce.chg_pct)}</td>
+          <td class="${chainSideClass("ce", row.strike, spot)}">${formatChainNum(ce.ltp)}</td>
+          <td class="strike-col">${row.strike}</td>
+          <td class="strike-col">${formatChainPcr(row.pcr)}</td>
+          <td class="${chainSideClass("pe", row.strike, spot)}">${formatChainNum(pe.ltp)}</td>
+          <td class="${chainSideClass("pe", row.strike, spot)}">${formatChainChg(pe.chg_pct)}</td>
+          <td class="${chainSideClass("pe", row.strike, spot)}">${formatChainOi(pe.oi)}</td>
+          ${chainExtrasCells(pe, "pe", row.strike, spot)}
+        </tr>`;
+      }).join("");
+      renderExtrasTotals(data);
+      applyChainRowSelection();
+    }
+
+    function chainRowClasses(row, maxPain, spot, step) {
+      const classes = [];
+      if (row.is_atm) classes.push("atm-row");
+      if (maxPain != null && row.strike === maxPain) classes.push("max-pain-row");
+      if (spotStrikeMarker(spot, row.strike, step)) classes.push("spot-marker");
+      return classes.join(" ");
+    }
+
+    function scrollChainToAtmIfNeeded() {
+      if (!chainScrollPending) return;
+      chainScrollPending = false;
+      const root = chainExtrasOn
+        ? document.getElementById("chainExtrasRows")
+        : document.getElementById("chainRows");
+      const target = root && (root.querySelector("tr.atm-row") || root.querySelector("tr.spot-marker"));
+      if (target) target.scrollIntoView({ block: "center", behavior: "instant" });
+    }
+
+    function applyChainRowSelection() {
+      const strike = chainSelectedStrike;
+      document.querySelectorAll("#chainRows tr[data-strike], #chainExtrasRows tr[data-strike]").forEach((tr) => {
+        const rowStrike = Number(tr.getAttribute("data-strike"));
+        tr.classList.toggle("chain-sel", strike != null && rowStrike === strike);
+      });
+    }
+
+    const chainPanel = document.getElementById("chainPanel");
+    if (chainPanel && !chainPanel.dataset.chartLinkReady) {
+      chainPanel.dataset.chartLinkReady = "1";
+      chainPanel.addEventListener("click", (event) => {
         const row = event.target.closest("tr[data-strike]");
-        if (!cell || !row || row.classList.contains("chain-total-row")) return;
+        if (!row || row.classList.contains("chain-total-row")) return;
         const px = Number(row.getAttribute("data-strike"));
         if (!Number.isFinite(px)) return;
+        chainSelectedStrike = chainSelectedStrike === px ? null : px;
+        applyChainRowSelection();
+        const cell = event.target.closest("td.strike-col");
+        if (!cell) return;
         const label = row.classList.contains("atm-row")
           ? "ATM"
           : row.classList.contains("max-pain-row")
@@ -4603,10 +7217,101 @@
       });
     }
 
+    function clampChainExtrasWidth(width) {
+      const layout = document.getElementById("pageLayout");
+      const minW = 280;
+      const layoutW = layout ? layout.getBoundingClientRect().width : 1200;
+      const maxW = Math.max(minW, layoutW - 80);
+      return Math.round(Math.min(maxW, Math.max(minW, width)));
+    }
+
+    function applyChainExtrasWidth() {
+      const drawer = document.getElementById("chainExtrasDrawer");
+      if (!drawer) return;
+      if (!chainExtrasOn) {
+        drawer.style.removeProperty("--chain-extras-w");
+      }
+    }
+
+    function initChainSplit() {
+      const split = document.getElementById("chainSplit");
+      const drawer = document.getElementById("chainExtrasDrawer");
+      const panel = document.getElementById("chainPanel");
+      if (!split || !drawer || split.dataset.ready) return;
+      split.dataset.ready = "1";
+      let drag = null;
+      const onMove = (event) => {
+        if (!drag) return;
+        const next = clampChainExtrasWidth(drag.startW + (event.clientX - drag.startX));
+        drawer.style.setProperty("--chain-extras-w", `${next}px`);
+        drag.currentW = next;
+      };
+      const onUp = () => {
+        if (!drag) return;
+        document.body.classList.remove("chain-resizing");
+        if (panel) panel.classList.remove("chain-resizing");
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onUp);
+        if (drag.currentW) {
+          lsSet(CHAIN_EXTRAS_W_KEY, String(drag.currentW));
+        }
+        drag = null;
+      };
+      split.addEventListener("pointerdown", (event) => {
+        if (!chainExtrasOn || event.button != null && event.button !== 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        drag = {
+          startX: event.clientX,
+          startW: drawer.getBoundingClientRect().width,
+          currentW: null,
+        };
+        document.body.classList.add("chain-resizing");
+        if (panel) panel.classList.add("chain-resizing");
+        window.addEventListener("pointermove", onMove);
+        window.addEventListener("pointerup", onUp);
+        window.addEventListener("pointercancel", onUp);
+      });
+    }
+
+    function syncChainExtrasBtn() {
+      const btn = document.getElementById("chainExtrasBtn");
+      const panel = document.getElementById("chainPanel");
+      const drawer = document.getElementById("chainExtrasDrawer");
+      if (!btn) return;
+      const label = chainExtrasOn
+        ? "Hide Vol, Bid, Ask, IV, greeks, strike PCR"
+        : "Show Vol, Bid, Ask, IV, greeks, strike PCR";
+      btn.innerHTML = chainExtrasOn
+        ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h6v14H5zm8 0h6v14h-6z"/></svg>'
+        : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 5h4v14h-4zm6.5 0h4v14h-4zm6.5 0h4v14h-4z"/></svg>';
+      btn.setAttribute("aria-pressed", chainExtrasOn ? "true" : "false");
+      btn.setAttribute("aria-label", label);
+      btn.title = label;
+      btn.classList.toggle("active", chainExtrasOn);
+      if (panel) panel.classList.toggle("extras-open", chainExtrasOn);
+      if (drawer) drawer.setAttribute("aria-hidden", chainExtrasOn ? "false" : "true");
+      applyChainExtrasWidth();
+    }
+
+    const chainExtrasBtn = document.getElementById("chainExtrasBtn");
+    if (chainExtrasBtn && !chainExtrasBtn.dataset.ready) {
+      chainExtrasBtn.dataset.ready = "1";
+      chainExtrasBtn.addEventListener("click", () => {
+        chainExtrasOn = !chainExtrasOn;
+        chainScrollPending = true;
+        syncChainExtrasBtn();
+        loadChainSnapshot();
+      });
+      syncChainExtrasBtn();
+    }
+    initChainSplit();
+
     async function loadChainSnapshot() {
       if (document.visibilityState === "hidden") return;
       try {
-        const resp = await fetch(withNotebookQuery("/api/chain"));
+        const resp = await fetch(withNotebookQuery(chainExtrasOn ? "/api/chain?extras=1" : "/api/chain"));
         if (!resp.ok) {
           document.getElementById("chainMeta").textContent = "Failed to load chain";
           return;
@@ -4636,17 +7341,12 @@
       if (document.visibilityState === "hidden") {
         stopChainPoll();
         stopCandlePoll();
-        stopPaperPoll();
         return;
       }
       loadChainSnapshot();
       startChainPoll();
       refreshNiftyCandles();
       startCandlePoll();
-      if (notebookId === "nifty") {
-        loadPaperSnapshot();
-        startPaperPoll();
-      }
     }
 
     document.addEventListener("visibilitychange", syncPollersToVisibility);
@@ -4654,10 +7354,6 @@
     chainScrollPending = true;
     loadChainSnapshot();
     startChainPoll();
-    if (notebookId === "nifty") {
-      loadPaperSnapshot();
-      startPaperPoll();
-    }
 
     function formatOi(value) {
       if (value == null || Number.isNaN(value)) return null;
@@ -5070,11 +7766,28 @@
       const warns = frame.live_warnings || [];
       document.getElementById("warnings").innerHTML = warns.length
         ? warns.map(w => `<div class="warn">${escapeHtml(w)}</div>`).join("") : "";
+      const warnBadge = document.getElementById("sheetWarnBadge");
+      if (warnBadge) {
+        warnBadge.hidden = !warns.length;
+        warnBadge.classList.toggle("has-warn", warns.length > 0);
+        warnBadge.textContent = String(warns.length);
+        warnBadge.title = warns.length ? warns.join("\n") : "";
+      }
 
       const rows = evaln.rows || [];
       const now = Date.now();
       latestFeedAdx = frame.feed?.adx ?? null;
       latestFeedAtr = frame.feed?.atr ?? null;
+      const prevPred = pred30Snap;
+      updatePred30Snap(frame.feed || {}, frame.expiry);
+      if (
+        chartOverlayIndicators.has("PRED30")
+        && niftyChart
+        && typeof niftyChart.overrideIndicator === "function"
+        && (prevPred.iv !== pred30Snap.iv || prevPred.ce !== pred30Snap.ce || prevPred.pe !== pred30Snap.pe || prevPred.expiry !== pred30Snap.expiry)
+      ) {
+        try { niftyChart.overrideIndicator({ name: "PRED30" }); } catch (_) {}
+      }
       updateStickyTicks(rows, now);
       renderSheet(rows, now, frame.feed || {});
       if (Array.isArray(frame.live_bars) && frame.live_bars.length) {
@@ -5128,14 +7841,6 @@
       }
       refreshNiftyCandles();
       loadChainSnapshot();
-      if (notebookId === "nifty") {
-        loadPaperSnapshot();
-        startPaperPoll();
-      } else {
-        stopPaperPoll();
-        const host = document.getElementById("paperBar");
-        if (host) host.hidden = true;
-      }
       if (streamAbort) streamAbort.abort();
     }
 

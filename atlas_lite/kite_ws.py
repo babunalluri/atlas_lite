@@ -70,18 +70,62 @@ def _parse_quote_packet(packet: bytes) -> dict[str, Any] | None:
             row["net_change"] = struct.unpack_from(">i", packet, 24)[0] / divisor
         return row
     if len(packet) >= 44:
+        row["last_traded_quantity"] = struct.unpack_from(">I", packet, 8)[0]
+        row["average_price"] = struct.unpack_from(">i", packet, 12)[0] / divisor
+        row["volume"] = struct.unpack_from(">I", packet, 16)[0]
+        row["buy_quantity"] = struct.unpack_from(">I", packet, 20)[0]
+        row["sell_quantity"] = struct.unpack_from(">I", packet, 24)[0]
         open_ = struct.unpack_from(">i", packet, 28)[0] / divisor
         high = struct.unpack_from(">i", packet, 32)[0] / divisor
         low = struct.unpack_from(">i", packet, 36)[0] / divisor
         close = struct.unpack_from(">i", packet, 40)[0] / divisor
         row["ohlc"] = {"open": open_, "high": high, "low": low, "close": close}
-    # Kite full mode is 184 bytes; OI high/low live at 52–59 (unsigned).
+    # Kite full mode is 184 bytes; OI + 5-level depth.
     if len(packet) == 184:
+        # Always write bid/ask (None when a side is empty) so QuoteBook.merge
+        # cannot keep a stale opposite-side price and produce a crossed book.
+        last_trade_time = struct.unpack_from(">I", packet, 44)[0]
+        exchange_timestamp = struct.unpack_from(">I", packet, 60)[0]
+        row["last_trade_time"] = last_trade_time or None
+        row["exchange_timestamp"] = exchange_timestamp or None
         row["open_interest"] = struct.unpack_from(">I", packet, 48)[0]
         row["oi"] = row["open_interest"]
         row["oi_day_high"] = struct.unpack_from(">I", packet, 52)[0]
         row["oi_day_low"] = struct.unpack_from(">I", packet, 56)[0]
+        depth = _parse_depth(packet, divisor)
+        row["depth"] = depth
+        row["bid"] = _best_depth_price(depth.get("buy"))
+        row["ask"] = _best_depth_price(depth.get("sell"))
     return row
+
+
+def _best_depth_price(levels: list[dict[str, Any]] | None) -> float | None:
+    if not levels:
+        return None
+    top = levels[0]
+    price = top.get("price")
+    qty = top.get("quantity") or 0
+    if price is None or qty <= 0:
+        return None
+    return float(price)
+
+
+def _parse_depth(packet: bytes, divisor: float) -> dict[str, list[dict[str, Any]]]:
+    buy: list[dict[str, Any]] = []
+    sell: list[dict[str, Any]] = []
+    offset = 64
+    for bag in (buy, sell):
+        for _ in range(5):
+            qty, raw_px, orders = struct.unpack_from(">iiH", packet, offset)
+            offset += 12
+            bag.append(
+                {
+                    "quantity": max(qty, 0),
+                    "price": raw_px / divisor,
+                    "orders": orders,
+                }
+            )
+    return {"buy": buy, "sell": sell}
 
 
 def _ws_mode_for_token(token: int) -> str:

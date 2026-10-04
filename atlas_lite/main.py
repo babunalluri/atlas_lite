@@ -1,14 +1,20 @@
-"""Atlas Lite — FastAPI entrypoint (single-page NIFTY sheet, no auth)."""
+"""Atlas Lite — FastAPI entrypoint (single-page NIFTY sheet).
+
+Mutating agent endpoints honor optional ``ATLAS_LITE_API_TOKEN`` via header
+``X-Atlas-Token`` or ``Authorization: Bearer``. When unset, local/dev stays open.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import json
+import os
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from starlette.background import BackgroundTask
 
@@ -56,10 +62,59 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Atlas Lite", version="0.1.0", lifespan=lifespan)
 
 
+def _agent_write_authorized(
+    request: Request,
+    *,
+    x_atlas_token: str | None = None,
+) -> None:
+    """Require ATLAS_LITE_API_TOKEN when set; no-op when unset (local default).
+
+    Token must arrive via ``X-Atlas-Token`` or ``Authorization: Bearer`` — never
+    as a query string (access logs).
+    """
+    expected = os.environ.get("ATLAS_LITE_API_TOKEN", "").strip()
+    if not expected:
+        return
+    got = (x_atlas_token or "").strip()
+    if not got:
+        auth = request.headers.get("Authorization") or ""
+        if auth.lower().startswith("bearer "):
+            got = auth[7:].strip()
+    if not got or len(got) != len(expected) or not secrets.compare_digest(got, expected):
+        raise HTTPException(status_code=401, detail="invalid_or_missing_token")
+
+
 @app.get("/")
 async def index() -> FileResponse:
     return FileResponse(
         STATIC_DIR / "index.html",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
+
+
+@app.get("/pred30.js")
+async def pred30_js() -> FileResponse:
+    return FileResponse(
+        STATIC_DIR / "pred30.js",
+        media_type="text/javascript",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
+
+
+@app.get("/orderflow.js")
+async def orderflow_js() -> FileResponse:
+    return FileResponse(
+        STATIC_DIR / "orderflow.js",
+        media_type="text/javascript",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
+
+
+@app.get("/levels.js")
+async def levels_js() -> FileResponse:
+    return FileResponse(
+        STATIC_DIR / "levels.js",
+        media_type="text/javascript",
         headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
     )
 
@@ -123,21 +178,102 @@ async def stream(
 @app.get("/api/chain")
 async def api_option_chain(
     wings: int = Query(default=0, ge=0, le=50),
+    extras: int = Query(default=0, ge=0, le=1),
     nb: str = Query(default="nifty", description="Notebook: nifty | sensex"),
 ) -> dict[str, Any]:
-    """Live option chain (Kite WS). wings=0 returns full listed chain."""
+    """Live option chain (Kite WS). wings=0 returns full listed chain.
+
+    extras=1 shows Vol/Bid/Ask/IV/greeks and refreshes REST greeks for ATM±wings.
+    """
     if _engine is None:
         raise HTTPException(status_code=503, detail="engine not started")
     wing_strikes = None if wings == 0 else wings
-    return _engine.build_option_chain(parse_notebook(nb), wing_strikes=wing_strikes)
+    show_extras = extras == 1
+    notebook = parse_notebook(nb)
+    if show_extras:
+        try:
+            await _engine.ensure_chain_greeks(notebook)
+        except Exception:  # noqa: BLE001
+            pass
+    return _engine.build_option_chain(
+        notebook,
+        wing_strikes=wing_strikes,
+        extras=show_extras,
+    )
 
 
 @app.get("/api/paper")
 async def api_paper() -> dict[str, Any]:
-    """Paper long-straddle state. Never sends live orders."""
+    """Paper books (iron fly + optional VWAP long). Never sends live orders."""
     if _engine is None:
         raise HTTPException(status_code=503, detail="engine not started")
     return _engine.paper_snapshot()
+
+
+@app.get("/api/paper/trades")
+async def api_paper_trades(
+    limit: int = Query(default=200, ge=1, le=1000),
+    day: Optional[str] = Query(default=None, description="IST day YYYY-MM-DD; omit for all"),
+) -> dict[str, Any]:
+    """Paper fills across books (open/close). Latest first. Never live orders."""
+    if _engine is None:
+        raise HTTPException(status_code=503, detail="engine not started")
+    return await asyncio.to_thread(_engine.list_paper_trades, limit=limit, day=day)
+
+
+@app.get("/api/agent")
+async def api_agent_status() -> dict[str, Any]:
+    """Paper agent status, gates, last decision. Never live orders."""
+    if _engine is None:
+        raise HTTPException(status_code=503, detail="engine not started")
+    return _engine.agent_status()
+
+
+@app.post("/api/agent/advise")
+async def api_agent_advise(
+    request: Request,
+    dry_run: bool = Query(default=False, description="If true, do not apply gates/intents"),
+    force: bool = Query(
+        default=False,
+        description="If true, call LLM even when sparse gate would skip",
+    ),
+    x_atlas_token: Optional[str] = Header(default=None, alias="X-Atlas-Token"),
+) -> dict[str, Any]:
+    """Run one OpenRouter advise cycle (paper tools only)."""
+    _agent_write_authorized(request, x_atlas_token=x_atlas_token)
+    if _engine is None:
+        raise HTTPException(status_code=503, detail="engine not started")
+    return await asyncio.to_thread(_engine.agent_advise, dry_run=dry_run, force=force)
+
+
+@app.post("/api/agent/gates")
+async def api_agent_gates(
+    request: Request,
+    book: str = Query(...),
+    mode: str = Query(..., description="allow | pause | skip_entries"),
+    until: Optional[str] = Query(default=None),
+    reason: Optional[str] = Query(default=None),
+    x_atlas_token: Optional[str] = Header(default=None, alias="X-Atlas-Token"),
+) -> dict[str, Any]:
+    """Manual gate override (wins over agent until cleared/expired)."""
+    _agent_write_authorized(request, x_atlas_token=x_atlas_token)
+    if _engine is None:
+        raise HTTPException(status_code=503, detail="engine not started")
+    try:
+        row = _engine.set_agent_gate(
+            book, mode, until=until, reason=reason, source="manual"
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "gate": row}
+
+
+@app.get("/api/agent/macro")
+async def api_agent_macro() -> dict[str, Any]:
+    """Timestamped macro/sentiment snapshot used by the agent."""
+    from atlas_lite.macro_sentiment import fetch_macro_snapshot
+
+    return await asyncio.to_thread(fetch_macro_snapshot)
 
 
 @app.get("/api/candles")
@@ -191,9 +327,10 @@ async def api_recordings_download(name: str) -> FileResponse:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not path.is_file():
         raise HTTPException(status_code=404, detail=f"recording not found: {name}")
+    media = "application/gzip" if name.endswith(".gz") else "application/x-ndjson"
     return FileResponse(
         path,
-        media_type="application/x-ndjson",
+        media_type=media,
         filename=name,
     )
 

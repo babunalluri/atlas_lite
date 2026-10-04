@@ -75,6 +75,8 @@ class IndexOptionUniverse:
     exchange: str = "NFO"
     strike_step: int = NIFTY_STRIKE_STEP
     hysteresis_pts: float = ATM_HYSTERESIS_PTS
+    # Nearest FUT expiry (often monthly) — distinct from weekly ``expiry``.
+    fut_expiry: date | None = None
 
     def option_symbol(self, strike: int, side: str) -> str:
         side = side.upper()
@@ -104,6 +106,19 @@ def _nearest_option_expiry(
     name: str = "NIFTY",
 ) -> tuple[date, str]:
     """Nearest CE/PE expiry on or after today for ``name``."""
+    ranked = option_expiry_prefixes(csv_text, today, name=name)
+    if not ranked:
+        raise RuntimeError(f"No active {name} options expiry found in instruments CSV")
+    return ranked[0]
+
+
+def option_expiry_prefixes(
+    csv_text: str,
+    today: date,
+    *,
+    name: str = "NIFTY",
+) -> list[tuple[date, str]]:
+    """Active option expiries (nearest first) with their tradingsymbol prefixes."""
     want = (name or "").strip().upper()
     prefixes: dict[date, str] = {}
     reader = csv.DictReader(io.StringIO(csv_text))
@@ -118,10 +133,33 @@ def _nearest_option_expiry(
             continue
         if expiry not in prefixes:
             prefixes[expiry] = _option_prefix_from_row(row)
-    if not prefixes:
-        raise RuntimeError(f"No active {want} options expiry found in instruments CSV")
-    nearest = min(prefixes.keys())
-    return nearest, prefixes[nearest]
+    return sorted(prefixes.items(), key=lambda item: item[0])
+
+
+def parse_next_option_universe(
+    csv_text: str,
+    nearest: IndexOptionUniverse,
+    *,
+    today: date | None = None,
+) -> IndexOptionUniverse | None:
+    """Second-nearest weekly expiry (calendar / next-week ATM)."""
+    today = today or datetime.now(IST).date()
+    ranked = option_expiry_prefixes(csv_text, today, name=nearest.name)
+    after = [(exp, prefix) for exp, prefix in ranked if exp > nearest.expiry]
+    if not after:
+        return None
+    expiry, prefix = after[0]
+    return IndexOptionUniverse(
+        name=nearest.name,
+        fut_symbol=nearest.fut_symbol,
+        fut_token=nearest.fut_token,
+        expiry=expiry,
+        prefix=prefix,
+        exchange=nearest.exchange,
+        strike_step=nearest.strike_step,
+        hysteresis_pts=nearest.hysteresis_pts,
+        fut_expiry=nearest.fut_expiry,
+    )
 
 
 def parse_fo_csv(
@@ -164,7 +202,7 @@ def parse_fo_csv(
     if best_fut is None:
         raise RuntimeError(f"No active {want} FUT found in {exch} instruments")
 
-    _fut_expiry, fut_row = best_fut
+    fut_expiry, fut_row = best_fut
     fut_ts = (fut_row.get("tradingsymbol") or "").strip().upper()
     if not fut_ts.endswith("FUT"):
         raise RuntimeError(f"Unexpected {want} FUT symbol: {fut_ts}")
@@ -184,6 +222,7 @@ def parse_fo_csv(
         exchange=exch,
         strike_step=max(int(strike_step), 1),
         hysteresis_pts=max(float(hysteresis_pts), 0.0),
+        fut_expiry=fut_expiry,
     )
 
 

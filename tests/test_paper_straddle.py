@@ -452,7 +452,7 @@ def test_paper_no_entry_before_0920(tmp_path: Path) -> None:
     assert bot.position is None
 
 
-def test_paper_still_opens_at_1400(tmp_path: Path) -> None:
+def test_paper_still_opens_at_1300(tmp_path: Path) -> None:
     bot = _trader(tmp_path)
     book = _Book(
         {
@@ -461,7 +461,7 @@ def test_paper_still_opens_at_1400(tmp_path: Path) -> None:
         }
     )
     event = bot.on_frame(
-        now=_now("14:00"),
+        now=_now("13:00"),
         entry_ready=True,
         feed={},
         book=book,
@@ -493,12 +493,12 @@ def test_paper_no_new_entry_at_1514(tmp_path: Path) -> None:
     )
     assert (event is None) or (event.get("event") == "day_pnl")
     assert bot.position is None
-    assert in_paper_entry_window(_now("14:00")) is True
-    assert in_paper_entry_window(_now("14:01")) is False
+    assert in_paper_entry_window(_now("13:00")) is True
+    assert in_paper_entry_window(_now("13:01")) is False
     assert in_paper_entry_window(_now("15:14")) is False
 
 
-def test_paper_no_new_entry_after_1400(tmp_path: Path) -> None:
+def test_paper_no_new_entry_after_1300(tmp_path: Path) -> None:
     bot = _trader(tmp_path)
     book = _Book(
         {
@@ -507,7 +507,7 @@ def test_paper_no_new_entry_after_1400(tmp_path: Path) -> None:
         }
     )
     event = bot.on_frame(
-        now=_now("14:01"),
+        now=_now("13:01"),
         entry_ready=True,
         feed={},
         book=book,
@@ -905,7 +905,7 @@ def test_snapshot_marks_open_trade_against_2l(tmp_path: Path) -> None:
     assert snap["mtm_pnl"] == snap["open_pnl"]
     assert snap["equity"] == round(200000.0 + snap["open_pnl"], 2)
     assert snap["entry_filters"] == "rich_iv_fly"
-    assert snap["entry_window"] == "09:20-14:00"
+    assert snap["entry_window"] == "09:20-13:00"
     assert snap["square_off"] == "15:14"
 
 

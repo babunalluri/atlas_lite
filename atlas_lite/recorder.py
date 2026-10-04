@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 import json
 import os
 import re
+import shutil
 import tempfile
+import threading
 import time
+import uuid
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -20,10 +24,15 @@ IST = ZoneInfo("Asia/Kolkata")
 DEFAULT_RECORD_ROTATE_MIN = 30
 DEFAULT_RECORD_START = (9, 0)
 DEFAULT_RECORD_END = (15, 35)
-RECORDING_NAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}\.jsonl$")
+DEFAULT_RECORD_KEEP_DAYS = 365
+RECORDING_NAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}\.jsonl(?:\.gz)?$")
+STRUCTURE_NAME_RE = re.compile(r"^structure-\d{4}-\d{2}-\d{2}\.jsonl(?:\.gz)?$")
+DEPTH_NAME_RE = re.compile(r"^depth-\d{4}-\d{2}-\d{2}\.jsonl(?:\.gz)?$")
 RECORDING_DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_RECORDING_DAY_IN_NAME_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 MAX_RECORDING_READ = 5000
 _HHMM_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
+_MAINTAIN_LOCK = threading.Lock()
 
 
 def record_enabled() -> bool:
@@ -77,6 +86,15 @@ def record_weekdays_only() -> bool:
     )
 
 
+def record_keep_days() -> int:
+    raw = os.environ.get("ATLAS_LITE_RECORD_KEEP_DAYS", str(DEFAULT_RECORD_KEEP_DAYS)).strip()
+    try:
+        days = int(raw)
+    except ValueError:
+        days = DEFAULT_RECORD_KEEP_DAYS
+    return max(1, min(days, 365))
+
+
 def _seconds_of_day(hour: int, minute: int, second: int = 0) -> int:
     return hour * 3600 + minute * 60 + second
 
@@ -93,6 +111,18 @@ def is_record_session(now: datetime | None = None) -> bool:
     return start_s <= now_s <= end_s
 
 
+def structure_day_path(base_dir: Path, *, now: datetime | None = None) -> Path:
+    """One compact options-structure file per IST day (wings + next-week ATM)."""
+    now = now or datetime.now(IST)
+    return base_dir / f"structure-{now.strftime('%Y-%m-%d')}.jsonl"
+
+
+def depth_day_path(base_dir: Path, *, now: datetime | None = None) -> Path:
+    """One ATM±1 top-of-book tape per IST day (tick-rate bid/ask + sizes)."""
+    now = now or datetime.now(IST)
+    return base_dir / f"depth-{now.strftime('%Y-%m-%d')}.jsonl"
+
+
 def record_slot_path(base_dir: Path, *, now: datetime | None = None) -> Path:
     """IST file name for the current rotation window, e.g. 2026-09-02_10-30.jsonl."""
     now = now or datetime.now(IST)
@@ -103,7 +133,11 @@ def record_slot_path(base_dir: Path, *, now: datetime | None = None) -> Path:
 
 
 def safe_recording_path(base_dir: Path, name: str) -> Path:
-    if not RECORDING_NAME_RE.match(name):
+    if (
+        not RECORDING_NAME_RE.match(name)
+        and not STRUCTURE_NAME_RE.match(name)
+        and not DEPTH_NAME_RE.match(name)
+    ):
         raise ValueError(f"invalid recording file name: {name}")
     root = base_dir.resolve()
     path = (root / name).resolve()
@@ -112,38 +146,181 @@ def safe_recording_path(base_dir: Path, name: str) -> Path:
     return path
 
 
+def _recording_kind(name: str) -> str:
+    base = name[:-3] if name.endswith(".gz") else name
+    if STRUCTURE_NAME_RE.match(base) or STRUCTURE_NAME_RE.match(name):
+        return "structure"
+    if DEPTH_NAME_RE.match(base) or DEPTH_NAME_RE.match(name):
+        return "depth"
+    return "slot"
+
+
 def list_recording_files(base_dir: Path) -> list[dict[str, Any]]:
+    """Newest sheet slots first; structure/depth day tapes sort after slots."""
     if not base_dir.is_dir():
         return []
     out: list[dict[str, Any]] = []
-    for path in sorted(base_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True):
-        stat = path.stat()
-        out.append(
-            {
-                "name": path.name,
-                "size_bytes": stat.st_size,
-                "modified_ms": int(stat.st_mtime * 1000),
-            }
-        )
+    seen: set[str] = set()
+    for pattern in ("*.jsonl", "*.jsonl.gz"):
+        for path in base_dir.glob(pattern):
+            if path.name in seen:
+                continue
+            seen.add(path.name)
+            stat = path.stat()
+            kind = _recording_kind(path.name)
+            out.append(
+                {
+                    "name": path.name,
+                    "size_bytes": stat.st_size,
+                    "modified_ms": int(stat.st_mtime * 1000),
+                    "kind": kind,
+                }
+            )
+    # Slots, then structure, then depth; within each kind, newest first.
+    kind_rank = {"slot": 0, "structure": 1, "depth": 2}
+    out.sort(key=lambda row: (kind_rank.get(row["kind"], 9), -row["modified_ms"]))
+    for row in out:
+        row.pop("kind", None)
     return out
 
 
+def _prefer_compressed(paths: list[Path]) -> list[Path]:
+    """One path per logical name; prefer ``.jsonl.gz`` over a leftover plain file."""
+    by_key: dict[str, Path] = {}
+    for path in paths:
+        key = path.name[: -len(".gz")] if path.name.endswith(".gz") else path.name
+        prev = by_key.get(key)
+        if prev is None:
+            by_key[key] = path
+            continue
+        if path.name.endswith(".gz") and not prev.name.endswith(".gz"):
+            by_key[key] = path
+    return sorted(by_key.values(), key=lambda p: p.name)
+
+
 def recording_files_for_day(base_dir: Path, day: str) -> list[Path]:
-    """IST-day slots named YYYY-MM-DD_HH-MM.jsonl."""
+    """IST-day slots named YYYY-MM-DD_HH-MM.jsonl(.gz); prefers ``.gz`` if both exist."""
     if not RECORDING_DAY_RE.match(day):
         raise ValueError(f"invalid recording day: {day}")
     if not base_dir.is_dir():
         return []
-    return sorted(
-        path
-        for path in base_dir.glob(f"{day}_*.jsonl")
-        if RECORDING_NAME_RE.match(path.name)
-    )
+    out: list[Path] = []
+    for path in base_dir.glob(f"{day}_*.jsonl*"):
+        if RECORDING_NAME_RE.match(path.name):
+            out.append(path)
+    return _prefer_compressed(out)
+
+
+def _day_side_file(base_dir: Path, prefix: str, day: str) -> Path | None:
+    # Prefer compressed — a leftover plain file may only hold stray tail lines.
+    for name in (f"{prefix}-{day}.jsonl.gz", f"{prefix}-{day}.jsonl"):
+        path = base_dir / name
+        if path.is_file():
+            return path
+    return None
+
+
+def gzip_recording_file(path: Path) -> Path | None:
+    """Compress a finished ``.jsonl`` in place → ``.jsonl.gz``. Returns gz path."""
+    if not path.is_file() or path.suffix != ".jsonl" or path.name.endswith(".jsonl.gz"):
+        return None
+    gz_path = path.with_name(path.name + ".gz")
+    if gz_path.is_file():
+        path.unlink(missing_ok=True)
+        return gz_path
+    # Unique tmp so two compressors cannot clobber the same ``.tmp``.
+    tmp = gz_path.with_name(f"{gz_path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        with path.open("rb") as src, gzip.open(tmp, "wb") as dst:
+            shutil.copyfileobj(src, dst, length=1024 * 1024)
+        tmp.replace(gz_path)
+        path.unlink(missing_ok=True)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+    return gz_path
+
+
+def _file_day(name: str) -> str | None:
+    match = _RECORDING_DAY_IN_NAME_RE.search(name)
+    return match.group(1) if match else None
+
+
+def _slot_end_ist(name: str) -> datetime | None:
+    """End timestamp (exclusive) of a slot file ``YYYY-MM-DD_HH-MM.jsonl``."""
+    base = name[:-3] if name.endswith(".gz") else name
+    if not base.endswith(".jsonl"):
+        return None
+    stem = base[: -len(".jsonl")]
+    try:
+        start = datetime.strptime(stem, "%Y-%m-%d_%H-%M").replace(tzinfo=IST)
+    except ValueError:
+        return None
+    return start + timedelta(minutes=record_rotate_minutes())
+
+
+def maintain_recordings(
+    base_dir: Path,
+    *,
+    now: datetime | None = None,
+    keep_days: int | None = None,
+    slot_grace_s: float = 120.0,
+) -> dict[str, int]:
+    """Gzip completed recording files; delete archives older than ``keep_days``.
+
+    Skips the open slot, today's live depth/structure tapes, and any slot that
+    closed within ``slot_grace_s`` so a late append cannot race compression.
+
+    Serialized by a process-wide lock; a second concurrent caller returns
+    immediately with ``skipped=1`` instead of racing on the same files.
+    """
+    stats = {"gzipped": 0, "pruned": 0, "skipped": 0}
+    if not _MAINTAIN_LOCK.acquire(blocking=False):
+        stats["skipped"] = 1
+        return stats
+    try:
+        now = now or datetime.now(IST)
+        keep_days = record_keep_days() if keep_days is None else max(1, keep_days)
+        if not base_dir.is_dir():
+            return stats
+        today = now.strftime("%Y-%m-%d")
+        open_slot = record_slot_path(base_dir, now=now).name
+        for path in list(base_dir.glob("*.jsonl")):
+            if path.name.endswith(".gz"):
+                continue
+            day = _file_day(path.name)
+            if day == today and (
+                path.name.startswith("depth-")
+                or path.name.startswith("structure-")
+                or path.name == open_slot
+            ):
+                continue
+            slot_end = _slot_end_ist(path.name)
+            if slot_end is not None and (now - slot_end).total_seconds() < slot_grace_s:
+                continue
+            if gzip_recording_file(path) is not None:
+                stats["gzipped"] += 1
+        cutoff = (now.date() - timedelta(days=keep_days - 1)).isoformat()
+        for path in list(base_dir.glob("*.jsonl*")):
+            day = _file_day(path.name)
+            if day is None or day >= cutoff:
+                continue
+            path.unlink(missing_ok=True)
+            stats["pruned"] += 1
+        return stats
+    finally:
+        _MAINTAIN_LOCK.release()
 
 
 def write_day_archive(base_dir: Path, day: str) -> tuple[Path, str]:
     """Build a zip of every slot for ``day``. Caller must delete the temp file."""
-    files = recording_files_for_day(base_dir, day)
+    files = list(recording_files_for_day(base_dir, day))
+    structure = _day_side_file(base_dir, "structure", day)
+    if structure is not None:
+        files.append(structure)
+    depth = _day_side_file(base_dir, "depth", day)
+    if depth is not None:
+        files.append(depth)
     if not files:
         raise FileNotFoundError(f"no recordings for {day}")
     filename = f"atlas-recordings-{day}.zip"
@@ -160,18 +337,43 @@ def write_day_archive(base_dir: Path, day: str) -> tuple[Path, str]:
     return zip_path, filename
 
 
-def _iter_jsonl_dicts(path: Path):
-    with path.open(encoding="utf-8") as handle:
-        for line in handle:
-            raw = line.strip()
-            if not raw:
-                continue
-            try:
-                row = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(row, dict):
-                yield row
+def iter_jsonl_dicts(path: Path):
+    """Yield dict rows from a ``.jsonl`` or ``.jsonl.gz`` recording file."""
+    if path.name.endswith(".gz"):
+        with gzip.open(path, "rt", encoding="utf-8") as handle:
+            yield from _yield_jsonl_dicts(handle)
+    else:
+        with open(path, "rt", encoding="utf-8") as handle:
+            yield from _yield_jsonl_dicts(handle)
+
+
+def _yield_jsonl_dicts(handle):
+    for line in handle:
+        raw = line.strip()
+        if not raw:
+            continue
+        try:
+            row = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict):
+            yield row
+
+
+# Back-compat alias used by older call sites / tests.
+_iter_jsonl_dicts = iter_jsonl_dicts
+
+
+def list_slot_recording_paths(base_dir: Path) -> list[Path]:
+    """Sheet slot files; prefer ``.jsonl.gz`` over a leftover plain ``.jsonl``."""
+    if not base_dir.is_dir():
+        return []
+    found: list[Path] = []
+    for pattern in ("*.jsonl", "*.jsonl.gz"):
+        for path in base_dir.glob(pattern):
+            if RECORDING_NAME_RE.match(path.name):
+                found.append(path)
+    return _prefer_compressed(found)
 
 
 def _normalize_recording_filters(
@@ -322,7 +524,7 @@ def _collect_matching_rows(
     entries: list[dict[str, Any]] = []
     total = 0
     for path in paths:
-        for row in _iter_jsonl_dicts(path):
+        for row in iter_jsonl_dicts(path):
             if filtered and not recording_row_matches(
                 row, entry=want_entry, gates=want_gates, failing=fail_want
             ):
@@ -392,3 +594,45 @@ class SheetRecorder:
                     path.name,
                     self._lines,
                 )
+
+    async def append_structure(
+        self,
+        row: dict[str, Any],
+        *,
+        now: datetime | None = None,
+    ) -> None:
+        now = now or datetime.now(IST)
+        if not is_record_session(now):
+            return
+        line = json.dumps(row, default=str, separators=(",", ":")) + "\n"
+        async with self._lock:
+            path = structure_day_path(self.base_dir, now=now)
+            await asyncio.to_thread(_append_line, path, line)
+
+    async def append_depth(
+        self,
+        row: dict[str, Any],
+        *,
+        now: datetime | None = None,
+    ) -> None:
+        """Append one ATM±1 top-of-book tick (change-driven from the feed loop)."""
+        await self.append_depth_batch([row], now=now)
+
+    async def append_depth_batch(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        now: datetime | None = None,
+    ) -> None:
+        """Append many depth ticks in one write (busy expiry afternoons)."""
+        if not rows:
+            return
+        now = now or datetime.now(IST)
+        if not is_record_session(now):
+            return
+        line = "".join(
+            json.dumps(row, default=str, separators=(",", ":")) + "\n" for row in rows
+        )
+        async with self._lock:
+            path = depth_day_path(self.base_dir, now=now)
+            await asyncio.to_thread(_append_line, path, line)

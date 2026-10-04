@@ -9,7 +9,7 @@ session recordings (ATM-straddle proxy on ~11 cash days):
 * Long straddle overlay was rare and mixed → **removed** from the live book.
 * Structure kept as **short iron fly** (ATM short + 250-pt wings) for
   defined risk on ₹2L / 1 lot (credit ≥ 100, max loss bounded by wing width).
-* Entries only **09:20–14:00**; flatten by **15:14**. Skip open noise; leave
+* Entries only **09:20–13:00**; flatten by **15:14**. Skip open noise; leave
   time for theta. Day-trend filter ``|NIFTY chg| ≤ 0.75%``.
 
 Soft sheet metrics (ADX, PCR, VIX, BN, SENSEX) are display-only — not ANDs.
@@ -32,6 +32,7 @@ from zoneinfo import ZoneInfo
 from atlas_lite.kite_charges import kite_nfo_charges
 from atlas_lite.log_util import get_logger, ist_now
 from atlas_lite.metrics import quote_ltp
+from atlas_lite.minute_bars import hm_ge, hm_le
 
 IST = ZoneInfo("Asia/Kolkata")
 LOTS = 1
@@ -40,9 +41,9 @@ CAPITAL = 200_000.0
 TARGET_PCT = 0.06
 STOP_PCT = -0.04
 STOP_PTS = 10.0
-# Skip open auction; cut new risk by 14:00 so theta has room before 15:14 SQ.
+# Skip open auction; no new risk after 13:00 (afternoon fills were the losers).
 ENTRY_AFTER = (9, 20)
-ENTRY_UNTIL = (14, 0)
+ENTRY_UNTIL = (13, 0)
 SQUARE_OFF = (15, 14)
 DEFAULT_LOT_SIZE = 65
 PAPER_IVP_LT = 40.0  # legacy long-overlay helper only (not used for entries)
@@ -81,24 +82,12 @@ def paper_enabled() -> bool:
     return raw in ("1", "true", "yes")
 
 
-def _hm_tuple(now: datetime) -> tuple[int, int]:
-    return now.hour, now.minute
-
-
-def _hm_ge(now: datetime, hhmm: tuple[int, int]) -> bool:
-    return _hm_tuple(now) >= hhmm
-
-
-def _hm_le(now: datetime, hhmm: tuple[int, int]) -> bool:
-    return _hm_tuple(now) <= hhmm
-
-
 def in_paper_entry_window(now: datetime) -> bool:
     """Cash open through the minute before square-off. 15:14 is flatten-only."""
     return (
-        _hm_ge(now, ENTRY_AFTER)
-        and _hm_le(now, ENTRY_UNTIL)
-        and not _hm_ge(now, SQUARE_OFF)
+        hm_ge(now, ENTRY_AFTER)
+        and hm_le(now, ENTRY_UNTIL)
+        and not hm_ge(now, SQUARE_OFF)
     )
 
 
@@ -827,11 +816,11 @@ class PaperStraddle:
         if self.position is not None:
             self._ready_prev = want is not None
             closed = self._maybe_exit(now, book)
-            if _hm_ge(now, SQUARE_OFF):
+            if hm_ge(now, SQUARE_OFF):
                 eod = self._write_eod_if_needed(now)
                 return closed or eod
             return closed
-        if _hm_ge(now, SQUARE_OFF):
+        if hm_ge(now, SQUARE_OFF):
             return self._write_eod_if_needed(now)
         if want is None:
             self._ready_prev = False
@@ -1055,7 +1044,7 @@ class PaperStraddle:
             return None
         ce, pe, wce, wpe = self._quote_legs(book, pos)
         if not self._legs_ok(ce, pe, wce, wpe, pos.strategy):
-            if _hm_ge(now, SQUARE_OFF):
+            if hm_ge(now, SQUARE_OFF):
                 return self._close(now, None, None, "time_flat", marked=False)
             return None
         assert ce is not None and pe is not None
@@ -1068,7 +1057,7 @@ class PaperStraddle:
                 reason = "stop"
             elif pnl >= pos.target_pnl:
                 reason = "target"
-            elif _hm_ge(now, SQUARE_OFF):
+            elif hm_ge(now, SQUARE_OFF):
                 reason = "time"
             if reason is None:
                 return None
@@ -1090,7 +1079,7 @@ class PaperStraddle:
                 )
                 if straddle <= pos.peak_straddle - gap:
                     reason = "trail"
-            if reason is None and _hm_ge(now, SQUARE_OFF):
+            if reason is None and hm_ge(now, SQUARE_OFF):
                 reason = "time"
         if reason is None:
             return None

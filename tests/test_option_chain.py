@@ -1,12 +1,14 @@
 """Option chain row builder."""
 
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from atlas_lite.instruments import sticky_atm_strike
 from atlas_lite.metrics import (
     chain_accumulated_totals,
     option_chain_rows,
+    strike_pcr,
     synthetic_forward,
     atm_ref_price,
 )
@@ -28,6 +30,66 @@ def test_option_chain_rows_wings_filter():
     assert [r["strike"] for r in rows] == [24050, 24100, 24150]
     assert rows[1]["is_atm"] is True
     assert rows[1]["ce"]["ltp"] == 102.0
+    assert rows[1]["pcr"] is None
+
+
+def test_strike_pcr_is_pe_over_ce() -> None:
+    assert strike_pcr(1000, 800) == 0.8
+    assert strike_pcr(0, 100) is None
+    assert strike_pcr(None, 100) is None
+
+
+def test_chain_row_carries_tape_and_kite_greeks() -> None:
+    ce = {
+        "last_price": 120.0,
+        "volume": 5000,
+        "bid": 119.5,
+        "ask": 120.5,
+        "oi": 1000,
+        "greeks": {"iv": 12.5, "delta": 0.42, "theta": -8.1, "vega": 6.2, "gamma": 0.0015},
+    }
+    pe = {"last_price": 80.0, "volume": 4000, "oi": 2000, "depth": {"buy": [{"price": 79.4, "quantity": 10}], "sell": [{"price": 80.2, "quantity": 8}]}}
+    rows = option_chain_rows([24000], [ce], [pe], atm_strike=24000)
+    assert rows[0]["pcr"] == 2.0
+    assert rows[0]["ce"]["vol"] == 5000
+    assert rows[0]["ce"]["bid"] == 119.5
+    assert rows[0]["ce"]["delta"] == 0.42
+    assert rows[0]["pe"]["bid"] == 79.4
+    assert rows[0]["pe"]["ask"] == 80.2
+
+
+def test_extras_fill_model_greeks_when_kite_missing() -> None:
+    from datetime import date
+
+    ce = {"last_price": 100.0, "oi": 1000}
+    pe = {"last_price": 100.0, "oi": 1000}
+    rows = option_chain_rows(
+        [24000],
+        [ce],
+        [pe],
+        atm_strike=24000,
+        extras=True,
+        spot=24000.0,
+        expiry=date(2026, 12, 31),
+    )
+    assert rows[0]["ce"]["iv"] is not None
+    assert rows[0]["ce"]["delta"] is not None
+    assert rows[0]["pe"]["delta"] is not None
+    assert rows[0]["pe"]["delta"] < 0
+    assert rows[0]["ce"]["delta"] > 0
+
+
+def test_chain_show_button_is_hidden_until_click() -> None:
+    html = (Path(__file__).resolve().parents[1] / "static" / "index.html").read_text()
+    assert 'id="chainExtrasBtn"' in html
+    assert 'id="chainSplit"' in html
+    assert "chainExtrasOn = false" in html
+    assert "extras=1" in html
+    assert "function calcConfluenceRows" in html
+    assert "extras-open" in html
+    assert 'id="chainExtrasDrawer"' in html
+    assert "chain-sel" in html
+    assert "chainSelectedStrike" in html
 
 
 def test_option_chain_rows_full_when_wings_none():
@@ -134,3 +196,33 @@ def test_atm_ref_rejects_forward_far_from_spot() -> None:
     ref = atm_ref_price(spot, 23650, 280.0, 20.0, now=midday)
     assert ref == spot
     assert sticky_atm_strike(ref, 23650) == 23650
+
+
+def test_ensure_chain_greeks_rest_failure_stamps_throttle() -> None:
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from atlas_lite.feed_engine import FeedEngine
+    from atlas_lite.instruments import AtmLegs
+    from atlas_lite.kite_rest import KiteRest
+    from atlas_lite.minute_bars import MinuteBarBuilder
+    from atlas_lite.notebook import get_notebook
+    from atlas_lite.notebook_runtime import NotebookRuntime
+
+    rest = MagicMock(spec=KiteRest)
+    rest.quote = AsyncMock(side_effect=RuntimeError("Kite 429 Too many requests"))
+    eng = FeedEngine(rest=rest, data_dir=Path("data"))
+    nifty = NotebookRuntime(config=get_notebook("nifty"))
+    nifty.bar_builder = MinuteBarBuilder(symbol=nifty.config.symbol)
+    nifty.enabled = True
+    nifty.atm = AtmLegs(strike=24000, ce_symbol="NFO:CE", pe_symbol="NFO:PE")
+    eng.notebooks["nifty"] = nifty
+
+    async def _run() -> None:
+        with patch.object(eng, "_chain_greeks_symbols", return_value=["NFO:CE", "NFO:PE"]):
+            await eng.ensure_chain_greeks("nifty")
+            await eng.ensure_chain_greeks("nifty")
+        assert rest.quote.await_count == 1
+        assert eng._chain_greeks_at["nifty"] > 0
+
+    asyncio.run(_run())

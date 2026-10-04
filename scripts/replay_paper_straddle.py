@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import tempfile
 from datetime import datetime
@@ -24,7 +23,11 @@ from atlas_lite.metrics import (  # noqa: E402
     oi_pct_of_day_high,
 )
 from atlas_lite.paper_straddle import PaperStraddle, evaluate_paper_regime  # noqa: E402
-from atlas_lite.recorder import RECORDING_NAME_RE, record_dir  # noqa: E402
+from atlas_lite.recorder import (  # noqa: E402
+    iter_jsonl_dicts,
+    list_slot_recording_paths,
+    record_dir,
+)
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -61,7 +64,7 @@ def _parse_ts(raw: str) -> datetime | None:
 
 
 def replay(rec_dir: Path, lot_size: int = 65) -> list[dict[str, Any]]:
-    files = sorted(p for p in rec_dir.glob("*.jsonl") if RECORDING_NAME_RE.match(p.name))
+    files = list_slot_recording_paths(rec_dir)
     iv_low: float | None = None
     oi_high: float | None = None
     last_day = ""
@@ -75,55 +78,47 @@ def replay(rec_dir: Path, lot_size: int = 65) -> list[dict[str, Any]]:
                 iv_low = None
                 oi_high = None
                 last_day = day
-            with path.open(encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        obj = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    ts = obj.get("ts")
-                    if not isinstance(ts, str):
-                        continue
-                    now = _parse_ts(ts)
-                    if now is None:
-                        continue
-                    feed = dict(obj.get("feed") or {})
-                    iv = _f(feed.get("iv"))
-                    if iv is not None and iv > 0:
-                        iv_low = iv if iv_low is None else min(iv_low, iv)
-                        feed["iv_day_low"] = iv_low
-                        pct = iv_pct_of_day_low(iv, iv_low)
-                        if pct is not None:
-                            feed["iv_vs_day_low"] = pct
-                    oi = _f(feed.get("fut_oi"))
-                    rec_high = _f(feed.get("fut_oi_day_high"))
-                    if rec_high:
-                        oi_high = rec_high if oi_high is None else max(oi_high, rec_high)
-                    if oi is not None and oi > 0:
-                        oi_high = oi if oi_high is None else max(oi_high, oi)
-                    if oi is not None and oi_high:
-                        pct = oi_pct_of_day_high(oi, oi_high)
-                        if pct is not None:
-                            feed["oi_vs_day_high"] = pct
-                    ev = evaluate_paper_regime(feed, now=now)
-                    ce_sym = obj.get("ce_symbol") or feed.get("ce_symbol")
-                    pe_sym = obj.get("pe_symbol") or feed.get("pe_symbol")
-                    book.set_legs(ce_sym, pe_sym, feed.get("ce"), feed.get("pe"))
-                    event = bot.on_frame(
-                        now=now,
-                        entry_ready=ev.get("strategy") is not None,
-                        strategy=ev.get("strategy"),
-                        feed=feed,
-                        book=book,
-                        ce_symbol=ce_sym,
-                        pe_symbol=pe_sym,
-                        atm=obj.get("atm_strike") or feed.get("atm"),
-                    )
-                    if event:
-                        events.append(event)
+            for obj in iter_jsonl_dicts(path):
+                ts = obj.get("ts")
+                if not isinstance(ts, str):
+                    continue
+                now = _parse_ts(ts)
+                if now is None:
+                    continue
+                feed = dict(obj.get("feed") or {})
+                iv = _f(feed.get("iv"))
+                if iv is not None and iv > 0:
+                    iv_low = iv if iv_low is None else min(iv_low, iv)
+                    feed["iv_day_low"] = iv_low
+                    pct = iv_pct_of_day_low(iv, iv_low)
+                    if pct is not None:
+                        feed["iv_vs_day_low"] = pct
+                oi = _f(feed.get("fut_oi"))
+                rec_high = _f(feed.get("fut_oi_day_high"))
+                if rec_high:
+                    oi_high = rec_high if oi_high is None else max(oi_high, rec_high)
+                if oi is not None and oi > 0:
+                    oi_high = oi if oi_high is None else max(oi_high, oi)
+                if oi is not None and oi_high:
+                    pct = oi_pct_of_day_high(oi, oi_high)
+                    if pct is not None:
+                        feed["oi_vs_day_high"] = pct
+                ev = evaluate_paper_regime(feed, now=now)
+                ce_sym = obj.get("ce_symbol") or feed.get("ce_symbol")
+                pe_sym = obj.get("pe_symbol") or feed.get("pe_symbol")
+                book.set_legs(ce_sym, pe_sym, feed.get("ce"), feed.get("pe"))
+                event = bot.on_frame(
+                    now=now,
+                    entry_ready=ev.get("strategy") is not None,
+                    strategy=ev.get("strategy"),
+                    feed=feed,
+                    book=book,
+                    ce_symbol=ce_sym,
+                    pe_symbol=pe_sym,
+                    atm=obj.get("atm_strike") or feed.get("atm"),
+                )
+                if event:
+                    events.append(event)
     return events
 
 

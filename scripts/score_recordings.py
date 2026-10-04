@@ -21,7 +21,11 @@ from zoneinfo import ZoneInfo
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from atlas_lite.recorder import RECORDING_NAME_RE, record_dir  # noqa: E402
+from atlas_lite.recorder import (  # noqa: E402
+    iter_jsonl_dicts,
+    list_slot_recording_paths,
+    record_dir,
+)
 
 IST = ZoneInfo("Asia/Kolkata")
 MinuteRow = Dict[str, Any]
@@ -48,45 +52,36 @@ def _parse_ts(raw: str) -> Optional[datetime]:
 def load_minute_rows(rec_dir: Path) -> List[MinuteRow]:
     """Collapse change-driven JSONL into one sample per IST minute (last wins)."""
     by_min: Dict[Tuple[str, str], MinuteRow] = {}
-    files = sorted(
-        p for p in rec_dir.glob("*.jsonl") if RECORDING_NAME_RE.match(p.name)
-    )
-    for path in files:
-        with path.open(encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                ts = obj.get("ts")
-                if not isinstance(ts, str):
-                    continue
-                dt = _parse_ts(ts)
-                if dt is None:
-                    continue
-                feed = obj.get("feed") if isinstance(obj.get("feed"), dict) else {}
-                ce = _fnum(feed.get("ce"))
-                pe = _fnum(feed.get("pe"))
-                key = (dt.date().isoformat(), dt.strftime("%H:%M"))
-                by_min[key] = {
-                    "date": key[0],
-                    "hm": key[1],
-                    "hour": dt.hour,
-                    "minute": dt.minute,
-                    "ce": ce,
-                    "pe": pe,
-                    "straddle": (ce + pe) if ce is not None and pe is not None else None,
-                    "spot": _fnum(obj.get("spot") or feed.get("nifty_ltp")),
-                    "atr": _fnum(feed.get("atr")),
-                    "adx": _fnum(feed.get("adx")),
-                    "pcr": _fnum(feed.get("pcr")),
-                    "ivp": _fnum(feed.get("ivp")),
-                    "mp": _fnum(feed.get("max_pain")),
-                    "vix": _fnum(feed.get("vix_chg")),
-                }
+    for path in list_slot_recording_paths(rec_dir):
+        for obj in iter_jsonl_dicts(path):
+            ts = obj.get("ts")
+            if not isinstance(ts, str):
+                continue
+            dt = _parse_ts(ts)
+            if dt is None:
+                continue
+            feed = obj.get("feed") if isinstance(obj.get("feed"), dict) else {}
+            ce = _fnum(feed.get("ce"))
+            pe = _fnum(feed.get("pe"))
+            key = (dt.date().isoformat(), dt.strftime("%H:%M"))
+            by_min[key] = {
+                "date": key[0],
+                "hm": key[1],
+                "hour": dt.hour,
+                "minute": dt.minute,
+                "ce": ce,
+                "pe": pe,
+                "straddle": (ce + pe) if ce is not None and pe is not None else None,
+                "spot": _fnum(obj.get("spot") or feed.get("nifty_ltp")),
+                "atr": _fnum(feed.get("atr")),
+                "adx": _fnum(feed.get("adx")),
+                "pcr": _fnum(feed.get("pcr")),
+                "ivp": _fnum(feed.get("ivp")),
+                "mp": _fnum(feed.get("max_pain")),
+                "vix": _fnum(feed.get("vix_chg")),
+                "nifty_chg": _fnum(feed.get("index_nifty_chg")),
+                "iv": _fnum(feed.get("iv")),
+            }
     return sorted(by_min.values(), key=lambda r: (r["date"], r["hm"]))
 
 

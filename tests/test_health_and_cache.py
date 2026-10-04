@@ -30,6 +30,53 @@ def _engine() -> FeedEngine:
     return eng
 
 
+def test_skew_fade_used_today_blocks_short_stack() -> None:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    eng = _engine()
+    now = datetime.fromisoformat("2026-09-25T14:00:00+05:30").astimezone(
+        ZoneInfo("Asia/Kolkata")
+    )
+    assert eng._skew_fade_used_today(now) is False
+
+    class _Skew:
+        position = object()
+        traded_day = "2026-09-25"
+        filled_day = "2026-09-25"
+        entries_today = 1
+
+    eng._paper_skew = _Skew()
+    assert eng._skew_fade_used_today(now) is True
+    eng._paper_skew.position = None
+    assert eng._skew_fade_used_today(now) is True
+    assert eng._short_vol_blocked(now) is True
+    # Leftover flatten from the 24th: slot taken, but no 25th fill.
+    eng._paper_skew.filled_day = "2026-09-24"
+    eng._paper_skew.entries_today = 1
+    assert eng._skew_fade_used_today(now) is False
+    assert eng._short_vol_blocked(now) is False
+
+
+def test_open_fly_blocks_short_stack() -> None:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    eng = _engine()
+    now = datetime.fromisoformat("2026-09-25T14:00:00+05:30").astimezone(
+        ZoneInfo("Asia/Kolkata")
+    )
+    assert eng._short_vol_blocked(now) is False
+
+    class _Fly:
+        position = object()
+
+    eng._paper = _Fly()
+    assert eng._short_vol_blocked(now) is True
+    eng._paper.position = None
+    assert eng._short_vol_blocked(now) is False
+
+
 def test_health_ok_when_ws_live_despite_auth_error() -> None:
     eng = _engine()
     eng.book.connected = True
@@ -163,6 +210,36 @@ def test_kite_adx_series_merges_ws_forming_minute() -> None:
     assert merged[-1]["c"] == 99.0
 
 
+def test_candles_stamp_fut_volume_onto_index_bars() -> None:
+    from atlas_lite.minute_bars import MinuteBarBuilder
+    from atlas_lite.specs import NIFTY_SYMBOL
+
+    eng = _engine()
+    nifty_nb = eng.notebooks["nifty"]
+    nifty_nb.kite_adx_bars = [
+        {"t": "2026-09-25T15:28:00", "o": 1, "h": 2, "l": 0.5, "c": 1.5, "v": 0, "oi": 0},
+        {"t": "2026-09-25 15:29", "o": 1.5, "h": 2.5, "l": 1, "c": 2, "v": 99, "oi": 7},
+        {"t": "2026-09-25 15:30", "o": 2, "h": 2.2, "l": 1.8, "c": 2.1, "v": 0, "oi": 0},
+        {"t": "2026-09-25 15:31", "o": 2.1, "h": 2.3, "l": 2.0, "c": 2.2, "v": 0, "oi": 0},
+    ]
+    b = MinuteBarBuilder(symbol=NIFTY_SYMBOL)
+    b.bars = [
+        {"t": "2026-09-25 15:28", "o": 1, "h": 2, "l": 0.5, "c": 1.5, "v": 6240, "oi": 13418210},
+        {"t": "2026-09-25 15:29", "o": 1.5, "h": 2.5, "l": 1, "c": 2, "v": 50, "oi": 1},
+        {"t": "2026-09-25 15:31", "o": 2.1, "h": 2.3, "l": 2.0, "c": 2.2, "v": 3185, "oi": 13418210},
+    ]
+    nifty_nb.bar_builder = b
+    kite_before = [dict(row) for row in nifty_nb.kite_adx_bars]
+    out = eng.nifty_candles(limit=800)
+    assert nifty_nb.kite_adx_bars == kite_before
+    # T-format still matches; non-zero index vol/OI kept; missing builder minute stays 0;
+    # last bar is the live tail (builder volume).
+    assert [row["volume"] for row in out["bars"]] == [6240.0, 99.0, 0.0, 3185.0]
+    assert [row["oi"] for row in out["bars"]] == [13418210.0, 7.0, 0.0, 13418210.0]
+    tail = eng.live_chart_bars("nifty", 2)
+    assert [row["volume"] for row in tail] == [0.0, 3185.0]
+
+
 def test_live_chart_bars_returns_tail() -> None:
     eng = _engine()
     nifty_nb = eng.notebooks["nifty"]
@@ -279,3 +356,18 @@ def test_write_day_archive_missing_day(tmp_path: Path) -> None:
         raise AssertionError("expected ValueError")
     except ValueError:
         pass
+
+
+def test_paper_vwap_skip_key_sees_forming_wick() -> None:
+    clock = "2026-09-23 09:54"
+    closed = {"t": clock, "o": 100.0, "h": 101.0, "l": 99.0, "c": 100.0}
+    wick = {"t": clock, "o": 100.0, "h": 101.0, "l": 90.0, "c": 100.0}
+    recovered = {"t": clock, "o": 100.0, "h": 101.0, "l": 90.0, "c": 100.0}
+    k0 = FeedEngine._paper_vwap_skip_key("ser", 100.0, clock, False, closed)
+    k1 = FeedEngine._paper_vwap_skip_key("ser", 100.0, clock, False, wick)
+    k2 = FeedEngine._paper_vwap_skip_key("ser", 100.0, clock, False, recovered)
+    same_spot = FeedEngine._paper_vwap_skip_key("ser", 100.0, clock, False, closed)
+    assert k0 != k1
+    assert k1 == k2
+    assert k0 == same_spot
+    assert FeedEngine._paper_vwap_skip_key("ser", 100.0, clock, False, None) != k0

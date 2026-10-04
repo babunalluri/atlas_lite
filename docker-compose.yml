@@ -11,9 +11,14 @@ services:
       ATLAS_LITE_RECORD_START: "09:00"
       ATLAS_LITE_RECORD_END: "15:35"
       ATLAS_LITE_RECORD_WEEKDAYS_ONLY: "1"
+      ATLAS_LITE_RECORD_KEEP_DAYS: "365"
       KITE_CREDENTIALS_PATH: /secrets/kite_credentials
+      ATLAS_LITE_LLM_CREDENTIALS_PATH: /secrets/llm_credentials
+      # Set on the host before `docker compose up` so agent POSTs require X-Atlas-Token.
+      ATLAS_LITE_API_TOKEN: ${ATLAS_LITE_API_TOKEN:-}
     volumes:
-      - ./kite_credentials:/secrets/kite_credentials
+      - ./kite_credentials:/secrets/kite_credentials:ro
+      - ./llm_credentials:/secrets/llm_credentials:ro
       - ./data:/app/data
       - ./static:/app/static:ro
     healthcheck:
