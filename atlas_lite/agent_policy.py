@@ -129,7 +129,7 @@ def regime_book_modes(regime: Regime) -> dict[str, GateMode]:
 
 
 # Ledger events that book a realized close PnL (trades API + kill switch).
-# Short IC uses close_set; theta_cliff / long IC use close_vertical; most books use close.
+# Short IC uses close_set; theta_cliff uses close_vertical; most books (incl. long IC) use close.
 # Flatten ``close`` rows with pnl=null are markers only — skip those.
 _CLOSE_PNL_EVENTS = frozenset({"close", "close_set", "close_vertical"})
 

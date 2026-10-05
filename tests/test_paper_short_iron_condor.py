@@ -55,7 +55,17 @@ def _book_from_map(px: dict[str, float]) -> _Book:
     )
 
 
-def _confirm_stop(bot, *, day: str, hm: str, feed: dict, book, atm: int):
+def _confirm_stop(
+    bot,
+    *,
+    day: str,
+    hm: str,
+    feed: dict,
+    book,
+    atm: int,
+    allow_entry: bool = True,
+    block_reason: str | None = None,
+):
     """Arm mid/LTP stop then confirm after STOP_CONFIRM_S."""
     from datetime import timedelta
 
@@ -66,6 +76,8 @@ def _confirm_stop(bot, *, day: str, hm: str, feed: dict, book, atm: int):
         book=book,
         atm=atm,
         option_symbol=_sym,
+        allow_entry=allow_entry,
+        block_reason=block_reason,
     )
     return bot.on_frame(
         now=t0 + timedelta(seconds=3),
@@ -73,6 +85,8 @@ def _confirm_stop(bot, *, day: str, hm: str, feed: dict, book, atm: int):
         book=book,
         atm=atm,
         option_symbol=_sym,
+        allow_entry=allow_entry,
+        block_reason=block_reason,
     )
 
 
@@ -250,6 +264,125 @@ def test_reentry_after_stop(tmp_path: Path) -> None:
     assert ev.get("credit") == bot.position.ce.credit
     assert bot.position.opened_at == opened_at
     assert ev.get("opened_at") == opened_at
+
+
+def test_policy_gate_blocks_reentry_after_stop(tmp_path: Path) -> None:
+    """Kill switch / skip_entries must block re-entry, not only fresh condors."""
+    bot = PaperShortIronCondor(path=tmp_path / "sic.jsonl", lot_size=65, lots=6)
+    atm = 22400
+    bot.on_frame(
+        now=_now("10:00"),
+        feed=_feed(),
+        book=_book_from_map(_band_book()),
+        atm=atm,
+        option_symbol=_sym,
+    )
+    assert bot.position is not None
+    ce_s = bot.position.ce.short_symbol
+    ce_l = bot.position.ce.long_symbol
+    pe_s = bot.position.pe.short_symbol
+    pe_l = bot.position.pe.long_symbol
+    credit = bot.position.ce.credit
+    px2 = {
+        ce_s: credit * 4 + 4.0,
+        ce_l: 4.0,
+        pe_s: 8.0,
+        pe_l: 4.0,
+        _sym(23150, "CE"): 8.5,
+        _sym(23450, "CE"): 4.0,
+    }
+    ev = _confirm_stop(
+        bot,
+        day="2026-10-06",
+        hm="11:00:00",
+        feed=_feed(22850.0),
+        book=_book_from_map(px2),
+        atm=atm,
+        allow_entry=False,
+        block_reason="policy_gate",
+    )
+    assert ev is not None
+    assert ev.get("event") == "close_set"
+    assert bot.position is not None
+    assert bot.position.ce.open is False
+    assert bot.position.ce.awaiting_reentry is True
+    assert bot.position.ce.is_reentry is False
+    assert bot.last_reject == "policy_gate"
+
+    # Still blocked on later frames while awaiting_reentry.
+    bot.on_frame(
+        now=_now("11:01"),
+        feed=_feed(22850.0),
+        book=_book_from_map(px2),
+        atm=atm,
+        option_symbol=_sym,
+        allow_entry=False,
+        block_reason="policy_gate",
+    )
+    assert bot.position.ce.open is False
+    assert bot.last_reject == "policy_gate"
+
+
+def test_same_frame_ledger_kill_blocks_reentry(tmp_path: Path) -> None:
+    """After 2 morning stop losses, same-frame re-entry must die even if allow_entry is stale True."""
+    bot = PaperShortIronCondor(path=tmp_path / "sic.jsonl", lot_size=65, lots=6)
+    atm = 22400
+    bot.on_frame(
+        now=_now("09:30"),
+        feed=_feed(),
+        book=_book_from_map(_band_book()),
+        atm=atm,
+        option_symbol=_sym,
+    )
+    assert bot.position is not None
+
+    def _stop_book(live_short: str, live_long: str, next_short: int, next_long: int) -> dict:
+        credit = 4.5
+        return {
+            live_short: credit * 4 + 4.0,
+            live_long: 4.0,
+            _sym(21850, "PE"): 8.0,
+            _sym(21550, "PE"): 4.0,
+            _sym(next_short, "CE"): 8.5,
+            _sym(next_long, "CE"): 4.0,
+        }
+
+    # Loss #1 + re-entry (morning kill needs 2).
+    ce_s = bot.position.ce.short_symbol
+    ce_l = bot.position.ce.long_symbol
+    ev1 = _confirm_stop(
+        bot,
+        day="2026-10-06",
+        hm="10:00:00",
+        feed=_feed(22850.0),
+        book=_book_from_map(_stop_book(ce_s, ce_l, 23150, 23450)),
+        atm=atm,
+        allow_entry=True,
+    )
+    assert ev1 is not None
+    assert bot.position is not None and bot.position.ce.open and bot.position.ce.is_reentry
+
+    # Loss #2 — allow_entry still True (policy loop lag); ledger kill must block re-entry.
+    ce_s2 = bot.position.ce.short_symbol
+    ce_l2 = bot.position.ce.long_symbol
+    ev2 = _confirm_stop(
+        bot,
+        day="2026-10-06",
+        hm="10:05:00",
+        feed=_feed(22900.0),
+        book=_book_from_map(_stop_book(ce_s2, ce_l2, 23200, 23500)),
+        atm=atm,
+        allow_entry=True,
+    )
+    assert ev2 is not None
+    assert ev2.get("event") == "close_set"
+    assert bot.position is not None
+    assert bot.position.ce.open is False
+    assert bot.position.ce.awaiting_reentry is True
+    assert bot.position.ce.reentries == 1  # only the first re-entry filled
+    assert bot.last_reject is not None
+    assert str(bot.last_reject).startswith("policy_kill:")
+    assert "morning_losses=" in str(bot.last_reject)
 
 
 def test_restore_does_not_double_count_flatten_pnl(tmp_path: Path) -> None:

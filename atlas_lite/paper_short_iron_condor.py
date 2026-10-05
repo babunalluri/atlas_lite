@@ -13,6 +13,8 @@ Customer book (Sensibull-style short IC):
 * After a set **stops** (not after a profit-take), try **re-entry** on that
   side if a new 4–5 credit vertical exists at the **current** ATM; that
   re-entered set targets **₹1,000** (0.05% of ₹20L). No re-entry after 12:00 on expiry day.
+* Re-entry also consults the ledger kill switch **in-process** (same frame as the
+  stop) so a 60s policy refresh cannot let another loser open.
 * Past expiry with missing quotes: settle at **expiry-day spot** intrinsic
   (``pnl_known=false``); never use entry spot — unknown if no expiry print.
   Expiry spot is heartbeated to the ledger so a crash still has a settle print.
@@ -1024,6 +1026,14 @@ class PaperShortIronCondor:
             return False
         return True
 
+    def _ledger_kill_reason(self, now: datetime) -> str | None:
+        """Instant kill-switch from this book's ledger (no policy-loop lag)."""
+        from atlas_lite.agent_policy import day_close_stats, kill_switch_hit
+
+        day = now.strftime("%Y-%m-%d")
+        stats = day_close_stats(self.path, day=day, now=now)
+        return kill_switch_hit(stats)
+
     def _try_reentry(
         self,
         now: datetime,
@@ -1040,6 +1050,11 @@ class PaperShortIronCondor:
         if not self._reentry_allowed(now, pos):
             st.awaiting_reentry = False
             self.last_reject = f"reentry_expiry_cutoff_{side}"
+            return None
+        # Same-frame: close_set already on disk; don't wait for 60s policy refresh.
+        kill = self._ledger_kill_reason(now)
+        if kill:
+            self.last_reject = f"policy_kill:{kill}"
             return None
         use_atm = int(atm) if atm is not None else int(pos.atm)
         fit = fit_credit_vertical(
@@ -1171,6 +1186,10 @@ class PaperShortIronCondor:
                                 closed.awaiting_reentry = False
                                 self.last_reject = f"reentry_expiry_cutoff_{side}"
                                 return ev
+                            # Kill switch / policy_gate must block re-entry too (not only fresh opens).
+                            if not allow_entry:
+                                self.last_reject = block_reason or "policy_gate"
+                                return ev
                             if option_symbol is not None and self.position is not None:
                                 re_ev = self._try_reentry(
                                     now,
@@ -1191,6 +1210,9 @@ class PaperShortIronCondor:
                     if st.is_reentry and mtm is not None and mtm >= tgt:
                         return self._close_set(now, pos, side, book, "reentry_target")
                 elif st.awaiting_reentry and option_symbol is not None:
+                    if not allow_entry:
+                        self.last_reject = block_reason or "policy_gate"
+                        continue
                     if not self._reentry_allowed(now, pos):
                         st.awaiting_reentry = False
                         continue
