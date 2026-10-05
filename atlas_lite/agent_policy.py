@@ -128,13 +128,23 @@ def regime_book_modes(regime: Regime) -> dict[str, GateMode]:
     }
 
 
+# Ledger events that book a realized close PnL (trades API + kill switch).
+# Short IC uses close_set; theta_cliff / long IC use close_vertical; most books use close.
+# Flatten ``close`` rows with pnl=null are markers only — skip those.
+_CLOSE_PNL_EVENTS = frozenset({"close", "close_set", "close_vertical"})
+
+
 def day_close_stats(
     path: Path,
     *,
     day: str,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Today's closed trades: loss streak (from end), morning losses, day_pnl."""
+    """Today's closed trades: loss streak (from end), morning losses, day_pnl.
+
+    Counts any ledger event in ``_CLOSE_PNL_EVENTS`` with a non-null ``pnl``.
+    Skips seal/flatten ``close`` rows that only carry ``pnl: null``.
+    """
     now = _as_ist(now)
     pnls: list[float] = []
     morning_losses = 0
@@ -170,13 +180,19 @@ def day_close_stats(
         if str(ev.get("day") or "") != day:
             continue
         kind = ev.get("event")
-        if kind == "close" and ev.get("pnl") is not None:
+        if kind in _CLOSE_PNL_EVENTS and ev.get("pnl") is not None:
             try:
                 pnl = float(ev["pnl"])
             except (TypeError, ValueError):
                 continue
             pnls.append(pnl)
-            day_pnl = float(ev["day_pnl"]) if ev.get("day_pnl") is not None else day_pnl + pnl
+            if ev.get("day_pnl") is not None:
+                try:
+                    day_pnl = float(ev["day_pnl"])
+                except (TypeError, ValueError):
+                    day_pnl = day_pnl + pnl
+            else:
+                day_pnl = day_pnl + pnl
             ts = str(ev.get("ts") or "")
             try:
                 closed_at = datetime.fromisoformat(ts.replace("Z", "+00:00"))
@@ -188,6 +204,12 @@ def day_close_stats(
                 closed_at = now
             if closed_at.time() < MORNING_UNTIL and pnl < 0:
                 morning_losses += 1
+        elif kind == "close" and ev.get("pnl") is None and ev.get("day_pnl") is not None:
+            # Seal/flatten marker (theta / SIC) — refresh day total, not a streak close.
+            try:
+                day_pnl = float(ev["day_pnl"])
+            except (TypeError, ValueError):
+                pass
         elif kind == "day_pnl" and ev.get("day_pnl") is not None:
             try:
                 day_pnl = float(ev["day_pnl"])

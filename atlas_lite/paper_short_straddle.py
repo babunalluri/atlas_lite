@@ -11,8 +11,7 @@ Rules:
 * Sell ATM CE+PE, **1 lot**, **14:00–14:15 IST**, max **1**/day.
 * Hold to **15:14** (no profit target, no premium stop).
 * Skip when ``|NIFTY chg| > 0.75%`` (same day-trend cap as the fly).
-* Skip when ATM skew fade already filled today, or the iron fly is still
-  open (do not stack short-vol).
+* Independent of iron fly / skew / other paper books (agent policy gates only).
 * Separate ledger from iron fly / VWAP.
 """
 

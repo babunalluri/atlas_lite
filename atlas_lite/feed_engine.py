@@ -206,7 +206,7 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
     "short_iron_condor": (
         "09:20–14:30 · fit CE+PE credit verticals sell@bid−buy@ask ∈ [4, 5] · "
         "Sensibull wings 100–400 (prefer 300–400) · 6 lots · max 1/day · hold to weekly expiry",
-        "book TP ≥1% of capital on ask/bid MTM · per-set SL at 4× mid/LTP (3s, fill@ask/bid) · "
+        "book TP ≥₹2,000 on ask/bid MTM · per-set SL at 4× mid/LTP (3s, fill@ask/bid) · "
         "re-entry after stop only before expiry 12:00 · flatten expiry 15:20 "
         "(ledger expiry-spot intrinsic / unknown if no print)",
     ),
@@ -225,8 +225,7 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
         "target / stop on straddle premium · flat 15:14",
     ),
     "short_atm_straddle": (
-        "14:00–14:15 · sell ATM CE+PE · 1 lot · max 1/day · |NIFTY chg| ≤0.75% · "
-        "skip if skew filled or fly still open",
+        "14:00–14:15 · sell ATM CE+PE · 1 lot · max 1/day · |NIFTY chg| ≤0.75%",
         "hold to 15:14 · no premium target/stop",
     ),
     "atm_skew_fade": (
@@ -2175,41 +2174,11 @@ class FeedEngine:
             feed["pe"] = quote_ltp(self.book.get(pe))
         return feed, ce, pe, atm
 
-    def _short_vol_blocked(self, now: datetime) -> bool:
-        """True when another short-vol book is still on, or skew already filled today."""
-        return self._short_vol_block_reason(now) is not None
-
-    def _short_vol_block_reason(self, now: datetime) -> str | None:
-        """Specific short-vol stack reason (for theta-cliff last_reject)."""
-        if self._skew_fade_used_today(now):
-            return "skew_filled_today"
-        fly = self._paper
-        if fly is not None and getattr(fly, "position", None) is not None:
-            return "iron_fly_open"
-        theta = self._paper_theta
-        if theta is not None and getattr(theta, "position", None) is not None:
-            return "theta_cliff_open"
-        # short_iron_condor holds to weekly expiry — do not block theta / 14:00 short.
-        return None
-
-    def _skew_fade_used_today(self, now: datetime) -> bool:
-        """True when skew is still open, or actually filled today.
-
-        A leftover flatten books ``entries_today=1`` on the next calendar day so
-        skew itself will not re-enter. That is not a same-day fill — the 14:00
-        short must still be allowed.
-        """
-        skew = self._paper_skew
-        if skew is None:
-            return False
-        day = now.strftime("%Y-%m-%d")
-        pos = skew.position
-        if pos is not None:
-            return True
-        return str(getattr(skew, "filled_day", "") or "") == day
-
     async def _paper_short_loop(self) -> None:
-        """Paper 14:00 short ATM straddle. Separate ledger. No broker orders."""
+        """Paper 14:00 short ATM straddle. Separate ledger. No broker orders.
+
+        Independent of iron fly / skew / theta / Short IC — agent policy gates only.
+        """
         if self._paper_short is None:
             return
         # True ~1 Hz cadence (wait_for_update alone wakes on every tick_seq).
@@ -2221,6 +2190,7 @@ class FeedEngine:
                     await asyncio.sleep(30.0)
                     continue
                 feed, ce, pe, atm = self._paper_option_ctx()
+                # Independent of iron fly / skew / other short-vol books.
                 allow = True
                 if self._agent_gates is not None:
                     allow = self._agent_gates.entries_allowed("short_straddle", now)
@@ -2231,7 +2201,7 @@ class FeedEngine:
                     ce_symbol=ce,
                     pe_symbol=pe,
                     atm=atm,
-                    allow_entry=allow and not self._short_vol_blocked(now),
+                    allow_entry=allow,
                 )
                 await asyncio.sleep(interval)
             except asyncio.CancelledError:
@@ -2345,6 +2315,7 @@ class FeedEngine:
                     option_symbol = nb.universe.option_symbol
                     feed["expiry"] = nb.universe.expiry
                     feed["spot"] = self._spot(nb)
+                # Independent of iron fly / theta / skew short-vol stack.
                 allow = True
                 block: str | None = None
                 if self._agent_gates is not None and not self._agent_gates.entries_allowed(
@@ -2352,12 +2323,6 @@ class FeedEngine:
                 ):
                     allow = False
                     block = "policy_gate"
-                else:
-                    stack = self._short_vol_block_reason(now)
-                    # Don't self-block when this book is the open short-vol position.
-                    if stack and stack != "short_iron_condor_open":
-                        allow = False
-                        block = stack
                 self._paper_short_ic.on_frame(
                     now=now,
                     feed=feed,
@@ -2402,6 +2367,7 @@ class FeedEngine:
                 vy = self._vix_yesterday(now)
                 if vy is not None:
                     feed["vix_yesterday"] = round(float(vy), 4)
+                # Independent of iron fly / Short IC / skew short-vol stack.
                 allow = True
                 block: str | None = None
                 if self._agent_gates is not None and not self._agent_gates.entries_allowed(
@@ -2409,11 +2375,6 @@ class FeedEngine:
                 ):
                     allow = False
                     block = "policy_gate"
-                else:
-                    stack = self._short_vol_block_reason(now)
-                    if stack:
-                        allow = False
-                        block = stack
                 if block:
                     feed["entry_block"] = block
                 self._paper_theta.on_frame(

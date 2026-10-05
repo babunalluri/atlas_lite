@@ -170,7 +170,7 @@ def test_paper_trade_info_includes_book_gates_and_entry_metrics() -> None:
     assert "Entry:" in info
     assert "Exit:" in info
     legend = FeedEngine._paper_book_legend("short_iron_condor")
-    assert "1% of capital" in info or "1% of capital" in legend
+    assert "₹2,000" in info or "₹2,000" in legend
     assert "hold to weekly expiry" in info
     assert "At entry:" in info
     assert "spot=22420" in info

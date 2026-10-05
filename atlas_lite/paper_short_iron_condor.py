@@ -6,12 +6,13 @@ Customer book (Sensibull-style short IC):
 * Wings follow Sensibull-style widths (**100–400 pts**, prefer **300–400** when in band).
 * Fills use **bid/ask** when present (sell@bid, buy@ask); else LTP ± light slip.
 * Stops use **mid/LTP** (not ask/bid) and must hold **3s**; no stop checks before 09:20.
-* Overall take-profit when **fillable** (ask/bid) MTM ≥ **1% of fixed capital**.
+* Overall take-profit when **fillable** (ask/bid) MTM ≥ **₹2,000**
+  (0.1% of the ₹20L capital base — same rupees as the old 1%-of-₹2L book).
 * **Hold to weekly expiry** (overnight carry). No daily 15:14 flatten.
 * Per-set stop: when mid close-debit reaches **4× entry credit** (fill still @ ask/bid).
 * After a set **stops** (not after a profit-take), try **re-entry** on that
   side if a new 4–5 credit vertical exists at the **current** ATM; that
-  re-entered set targets **0.5% of capital**. No re-entry after 12:00 on expiry day.
+  re-entered set targets **₹1,000** (0.05% of ₹20L). No re-entry after 12:00 on expiry day.
 * Past expiry with missing quotes: settle at **expiry-day spot** intrinsic
   (``pnl_known=false``); never use entry spot — unknown if no expiry print.
   Expiry spot is heartbeated to the ledger so a crash still has a settle print.
@@ -36,7 +37,8 @@ from atlas_lite.metrics import quote_ask, quote_bid, quote_ltp
 from atlas_lite.minute_bars import hm_ge, hm_le
 
 STRATEGY = "short_iron_condor"
-CAPITAL = 200_000.0
+# 6-lot Sensibull-style book needs a larger notional base than the ₹2L books.
+CAPITAL = 2_000_000.0
 DEFAULT_LOT_SIZE = 65
 # Sensibull sample: qty 390 → 6 lots.
 LOTS = 6
@@ -59,8 +61,9 @@ STOP_CONFIRM_S = 3.0
 CREDIT_MIN = 4.0
 CREDIT_MAX = 5.0
 STOP_MULT = 4.0
-TARGET_PCT = 0.01  # 1% of fixed CAPITAL
-REENTRY_TARGET_PCT = 0.005  # 0.5% of fixed CAPITAL
+# Keep old ₹2L-book rupee targets on the ₹20L capital base.
+TARGET_PCT = 0.001  # ₹2,000 book TP
+REENTRY_TARGET_PCT = 0.0005  # ₹1,000 re-entry gate / set TP
 # Persist expiry-day spot so a crash still settles from a real expiry print.
 EXPIRY_SPOT_LOG_MIN = 5.0
 EXPIRY_SPOT_LOG_PTS = 25.0  # coarser heartbeat — fewer ledger rows on expiry day
@@ -612,7 +615,7 @@ class PaperShortIronCondor:
         return round((st.credit - cur) * qty, 2)
 
     def _fill_mtm(self, st: SetState, qty: int, book: QuoteSource | None) -> float | None:
-        """Executable MTM (buy@ask / sell@bid) — gates 1% / 0.5% targets."""
+        """Executable MTM (buy@ask / sell@bid) — gates book / re-entry ₹ targets."""
         s, l, cur = self._set_mark(st, book)
         if s is None or l is None or cur is None:
             return None
@@ -1050,13 +1053,13 @@ class PaperShortIronCondor:
         if fit is None:
             self.last_reject = f"reentry_no_fit_{side}"
             return None
-        # "0.5% of capital" gate: new set credit×qty must clear 0.5% of CAPITAL.
+        # Re-entry gate: new set credit×qty must clear the ₹ re-entry target.
         max_credit_inr = round(fit.credit * pos.qty, 2)
         need = self._reentry_target_rupees()
         if max_credit_inr + 1e-9 < need:
-            self.last_reject = f"reentry_lt_0.5pct_{side}"
+            self.last_reject = f"reentry_lt_target_{side}"
             return None
-        # Take profit on the re-entered set at min(0.5% capital, full credit).
+        # Take profit on the re-entered set at min(re-entry ₹ target, full credit).
         set_tp = min(need, max_credit_inr)
         new = set_from_fit(
             fit,
@@ -1117,7 +1120,7 @@ class PaperShortIronCondor:
         elif not self.traded_day:
             self._roll_to_day(day)
 
-        # Manage open book (overnight carry until expiry / 1% capital TP / set stops).
+        # Manage open book (overnight carry until expiry / book ₹ TP / set stops).
         if self.position is not None:
             pos = self.position
             exp = _parse_expiry(pos.expiry) or _parse_expiry(feed.get("expiry"))
@@ -1184,7 +1187,7 @@ class PaperShortIronCondor:
                     tgt = st.target_rupees or (
                         self._reentry_target_rupees() if st.is_reentry else self._target_rupees()
                     )
-                    # Per-set TP only for re-entries (0.5% capital); book uses combined 1%.
+                    # Per-set TP only for re-entries; book uses combined ₹ target.
                     if st.is_reentry and mtm is not None and mtm >= tgt:
                         return self._close_set(now, pos, side, book, "reentry_target")
                 elif st.awaiting_reentry and option_symbol is not None:
@@ -1197,7 +1200,7 @@ class PaperShortIronCondor:
                     if re_ev is not None:
                         return re_ev
 
-            # Combined 1% of fixed capital on fillable marks + realized in this position
+            # Combined book ₹ TP on fillable marks + realized in this position
             open_mtm = 0.0
             known = True
             for st in (pos.ce, pos.pe):

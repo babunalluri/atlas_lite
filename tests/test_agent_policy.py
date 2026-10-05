@@ -99,6 +99,144 @@ def test_kill_switch_streak() -> None:
     assert kill_switch_hit({"loss_streak": 1, "morning_losses": 1, "day_pnl": -100.0}) is None
 
 
+def test_day_close_stats_counts_short_ic_close_set(tmp_path: Path) -> None:
+    """Kill switch must see Short IC PnL on close_set (flatten close has pnl=null)."""
+    path = tmp_path / "paper_short_iron_condor.jsonl"
+    day = "2026-10-05"
+    rows = [
+        {
+            "event": "close_set",
+            "day": day,
+            "side": "ce",
+            "pnl": -5766.0,
+            "ts": "2026-10-05T10:10:00+05:30",
+        },
+        {
+            "event": "close_set",
+            "day": day,
+            "side": "ce",
+            "pnl": -6011.0,
+            "ts": "2026-10-05T11:05:00+05:30",
+        },
+        {
+            "event": "close_set",
+            "day": day,
+            "side": "ce",
+            "pnl": -5574.0,
+            "ts": "2026-10-05T12:40:00+05:30",
+        },
+        {
+            "event": "close",
+            "day": day,
+            "pnl": None,
+            "realized_pnl": -17351.0,
+            "ts": "2026-10-05T12:40:01+05:30",
+        },
+    ]
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    stats = day_close_stats(path, day=day)
+    assert stats["n_closes"] == 3
+    assert stats["loss_streak"] == 3
+    assert stats["day_pnl"] == -17351.0
+    assert kill_switch_hit(stats) == "streak=3"
+
+
+def test_day_close_stats_counts_theta_close_vertical(tmp_path: Path) -> None:
+    """Kill switch must see theta_cliff PnL on close_vertical (seal close has pnl=null)."""
+    path = tmp_path / "paper_theta_cliff.jsonl"
+    day = "2026-10-06"
+    rows = [
+        {
+            "event": "close_vertical",
+            "day": day,
+            "side": "ce",
+            "pnl": -800.0,
+            "day_pnl": -800.0,
+            "ts": "2026-10-06T12:30:00+05:30",
+        },
+        {
+            "event": "close_vertical",
+            "day": day,
+            "side": "pe",
+            "pnl": -700.0,
+            "day_pnl": -1500.0,
+            "ts": "2026-10-06T13:10:00+05:30",
+        },
+        {
+            "event": "close",
+            "day": day,
+            "pnl": None,
+            "day_pnl": -1500.0,
+            "ts": "2026-10-06T13:10:01+05:30",
+        },
+    ]
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    stats = day_close_stats(path, day=day)
+    assert stats["n_closes"] == 2
+    assert stats["n_losses"] == 2
+    assert stats["day_pnl"] == -1500.0
+    # Only 2 losses — streak pause needs 3; morning gate needs 2 before noon.
+    assert kill_switch_hit(stats) is None
+
+    # Third losing vertical trips the streak kill.
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(
+            json.dumps(
+                {
+                    "event": "close_vertical",
+                    "day": day,
+                    "side": "ce",
+                    "pnl": -500.0,
+                    "day_pnl": -2000.0,
+                    "ts": "2026-10-06T14:00:00+05:30",
+                }
+            )
+            + "\n"
+        )
+    stats2 = day_close_stats(path, day=day)
+    assert stats2["loss_streak"] == 3
+    assert kill_switch_hit(stats2) == "streak=3"
+
+
+def test_apply_book_policy_kill_short_ic_close_set(tmp_path: Path) -> None:
+    gates = AgentGateStore(tmp_path / "gates.json")
+    day = "2026-10-05"
+    ledger = tmp_path / "paper_short_iron_condor.jsonl"
+    rows = [
+        {
+            "event": "close_set",
+            "day": day,
+            "pnl": -1000.0,
+            "ts": "2026-10-05T10:00:00+05:30",
+        },
+        {
+            "event": "close_set",
+            "day": day,
+            "pnl": -1100.0,
+            "ts": "2026-10-05T11:00:00+05:30",
+        },
+        {
+            "event": "close_set",
+            "day": day,
+            "pnl": -1200.0,
+            "ts": "2026-10-05T12:30:00+05:30",
+        },
+        {"event": "close", "day": day, "pnl": None, "ts": "2026-10-05T12:30:01+05:30"},
+    ]
+    ledger.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    now = datetime(2026, 10, 5, 13, 0, tzinfo=IST)
+    apply_book_policy(
+        gates,
+        data_dir=tmp_path,
+        adx=14.0,
+        adx_regime="range",
+        now=now,
+    )
+    row = gates.get("short_iron_condor", now=now)
+    assert row["mode"] == "skip_entries"
+    assert str(row["reason"]).startswith("policy:kill:streak=")
+
+
 def test_apply_book_policy_range_skips_combo(tmp_path: Path) -> None:
     gates = AgentGateStore(tmp_path / "gates.json")
     now = datetime(2026, 10, 1, 11, 0, tzinfo=IST)

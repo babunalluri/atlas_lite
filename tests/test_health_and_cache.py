@@ -30,51 +30,50 @@ def _engine() -> FeedEngine:
     return eng
 
 
-def test_skew_fade_used_today_blocks_short_stack() -> None:
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
+def test_short_straddle_independent_of_cross_book_stack() -> None:
+    """14:00 short must not consult the removed short-vol cross-book stack."""
+    import inspect
 
-    eng = _engine()
-    now = datetime.fromisoformat("2026-09-25T14:00:00+05:30").astimezone(
-        ZoneInfo("Asia/Kolkata")
-    )
-    assert eng._skew_fade_used_today(now) is False
+    from atlas_lite.feed_engine import FeedEngine, PAPER_BOOK_GATES
 
-    class _Skew:
-        position = object()
-        traded_day = "2026-09-25"
-        filled_day = "2026-09-25"
-        entries_today = 1
-
-    eng._paper_skew = _Skew()
-    assert eng._skew_fade_used_today(now) is True
-    eng._paper_skew.position = None
-    assert eng._skew_fade_used_today(now) is True
-    assert eng._short_vol_blocked(now) is True
-    # Leftover flatten from the 24th: slot taken, but no 25th fill.
-    eng._paper_skew.filled_day = "2026-09-24"
-    eng._paper_skew.entries_today = 1
-    assert eng._skew_fade_used_today(now) is False
-    assert eng._short_vol_blocked(now) is False
+    assert not hasattr(FeedEngine, "_short_vol_blocked")
+    assert not hasattr(FeedEngine, "_short_vol_block_reason")
+    assert not hasattr(FeedEngine, "_skew_fade_used_today")
+    src = inspect.getsource(FeedEngine._paper_short_loop)
+    assert "_short_vol_block_reason" not in src
+    assert "_short_vol_blocked" not in src
+    assert "entries_allowed" in src
+    assert "short_straddle" in src
+    assert "allow_entry=allow" in src
+    entry_tip, _ = PAPER_BOOK_GATES["short_atm_straddle"]
+    assert "skew" not in entry_tip.lower()
+    assert "fly" not in entry_tip.lower()
 
 
-def test_open_fly_blocks_short_stack() -> None:
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
+def test_short_ic_independent_of_iron_fly_stack() -> None:
+    """Short IC must only consult agent policy gates."""
+    import inspect
 
-    eng = _engine()
-    now = datetime.fromisoformat("2026-09-25T14:00:00+05:30").astimezone(
-        ZoneInfo("Asia/Kolkata")
-    )
-    assert eng._short_vol_blocked(now) is False
+    from atlas_lite.feed_engine import FeedEngine
 
-    class _Fly:
-        position = object()
+    src = inspect.getsource(FeedEngine._paper_short_ic_loop)
+    assert "_short_vol_block_reason" not in src
+    assert "_short_vol_blocked" not in src
+    assert "entries_allowed" in src
+    assert "short_iron_condor" in src
 
-    eng._paper = _Fly()
-    assert eng._short_vol_blocked(now) is True
-    eng._paper.position = None
-    assert eng._short_vol_blocked(now) is False
+
+def test_theta_cliff_independent_of_iron_fly_stack() -> None:
+    """Theta cliff must only consult agent policy gates."""
+    import inspect
+
+    from atlas_lite.feed_engine import FeedEngine
+
+    src = inspect.getsource(FeedEngine._paper_theta_loop)
+    assert "_short_vol_block_reason" not in src
+    assert "_short_vol_blocked" not in src
+    assert "entries_allowed" in src
+    assert "theta_cliff" in src
 
 
 def test_health_ok_when_ws_live_despite_auth_error() -> None:

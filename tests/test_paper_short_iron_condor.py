@@ -1,4 +1,4 @@
-"""Paper short iron condor — credit 4–5/side, 1% of capital TP, hold to expiry."""
+"""Paper short iron condor — credit 4–5/side, ₹2k book TP, hold to expiry."""
 
 from __future__ import annotations
 
@@ -208,7 +208,7 @@ def test_target_1pct_closes_book(tmp_path: Path) -> None:
 
 
 def test_reentry_after_stop(tmp_path: Path) -> None:
-    # 6 lots (Sensibull qty 390) → 4.5×390 ≥ 0.5% of ₹2L for re-entry gate.
+    # 6 lots (Sensibull qty 390) → 4.5×390 ≥ ₹1,000 re-entry gate on default ₹20L book.
     bot = PaperShortIronCondor(path=tmp_path / "sic.jsonl", lot_size=65, lots=6)
     atm = 22400
     bot.on_frame(
