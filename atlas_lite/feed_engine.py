@@ -163,6 +163,12 @@ from atlas_lite.paper_combo import (
     PaperCombo,
     paper_combo_enabled,
 )
+from atlas_lite.paper_ict import STRATEGY as ICT_STRATEGY
+from atlas_lite.paper_ict import (
+    DEFAULT_LOT_SIZE as ICT_LOT,
+    PaperICT,
+    paper_ict_enabled,
+)
 from atlas_lite.specs import (
     HEADER_WATCHLIST,
     INDEX_SYMBOLS,
@@ -243,6 +249,12 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
         "+8% target / −6% stop / 12m hold · flatten if confluence lost · "
         "opposite letter may reverse · flat 15:14",
     ),
+    "ict": (
+        "09:35–14:00 · 15m bias · 5m sweep + displacement + MSS · enter FVG retrace · "
+        "long ATM CE / short ATM PE · 1 lot · no daily cap",
+        "spot stop beyond sweep · spot target next liquidity (min 2R) · "
+        "time exit 24×5m · flat 15:14",
+    ),
     "theta_cliff_fence": (
         "expiry only 12:00–12:10 · short CE/PE outside 0.75σ vs morning H/L · "
         "100pt wings · skip if morning RV >0.9× yesterday VIX · 1 lot",
@@ -307,6 +319,7 @@ class FeedEngine:
     _paper_short_ic: PaperShortIronCondor | None = field(default=None, repr=False)
     _paper_scalp: PaperImpulseFade | None = field(default=None, repr=False)
     _paper_combo: PaperCombo | None = field(default=None, repr=False)
+    _paper_ict: PaperICT | None = field(default=None, repr=False)
     _combo_cache_key: tuple[Any, ...] | None = field(default=None, repr=False)
     _combo_cache_row: dict[str, Any] | None = field(default=None, repr=False)
     _paper_agent: PaperAgent | None = field(default=None, repr=False)
@@ -511,6 +524,22 @@ class FeedEngine:
                 self._paper_scalp.lots,
                 self._paper_scalp.lots * lot,
             )
+        if paper_ict_enabled():
+            nifty_nb = self.notebooks.get("nifty")
+            lot = ICT_LOT
+            if nifty_nb and nifty_nb.universe:
+                lot = nifty_option_lot_size(nifty_nb.fo_csv, expiry=nifty_nb.universe.expiry)
+            elif self._paper is not None:
+                lot = self._paper.lot_size
+            self._paper_ict = PaperICT(
+                path=self.data_dir / "paper_ict.jsonl",
+                lot_size=lot,
+            )
+            self._log.info(
+                "paper ICT %d lots qty=%d (15m/5m sweep-FVG, no live orders)",
+                self._paper_ict.lots,
+                self._paper_ict.lots * lot,
+            )
         if paper_combo_enabled():
             nifty_nb = self.notebooks.get("nifty")
             lot = COMBO_LOT
@@ -584,6 +613,8 @@ class FeedEngine:
             self._tasks.append(asyncio.create_task(self._paper_scalp_loop()))
         if self._paper_combo is not None:
             self._tasks.append(asyncio.create_task(self._paper_combo_loop()))
+        if self._paper_ict is not None:
+            self._tasks.append(asyncio.create_task(self._paper_ict_loop()))
         if self._paper_agent is not None:
             self._tasks.append(asyncio.create_task(self._paper_agent_loop()))
         if self._agent is not None:
@@ -2515,6 +2546,49 @@ class FeedEngine:
                 self._log.warning("paper COMBO confluence failed: %s", exc)
                 await asyncio.sleep(1.0)
 
+    async def _paper_ict_loop(self) -> None:
+        """Paper ICT ATM CE/PE from 15m bias + 5m sweep/FVG. No broker orders."""
+        if self._paper_ict is None:
+            return
+        interval = max(1.0, STREAM_INTERVAL_MS / 1000.0)
+        while True:
+            try:
+                now = datetime.now(IST)
+                if now.weekday() >= 5 and self._paper_ict.position is None:
+                    await asyncio.sleep(30.0)
+                    continue
+                feed, ce, pe, atm = self._paper_option_ctx()
+                allow = (
+                    self._agent_gates.entries_allowed("ict", now)
+                    if self._agent_gates
+                    else True
+                )
+                nb = self.notebooks.get("nifty")
+                bars: list[dict[str, Any]] = []
+                spot = None
+                if nb is not None:
+                    spot = self._spot(nb)
+                    if spot is not None:
+                        feed["spot"] = spot
+                    bars = self._paper_combo_closed_bars(now) if nb.bar_builder else []
+                self._paper_ict.on_frame(
+                    now=now,
+                    feed=feed,
+                    book=self.book,
+                    ce_symbol=ce,
+                    pe_symbol=pe,
+                    atm=atm,
+                    bars_1m=bars,
+                    spot=spot,
+                    allow_new_entries=allow,
+                )
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                self._log.warning("paper ICT failed: %s", exc)
+                await asyncio.sleep(1.0)
+
     async def _paper_agent_loop(self) -> None:
         """Execute validated agent CE/PE intents. No broker orders."""
         if self._paper_agent is None:
@@ -3017,6 +3091,18 @@ class FeedEngine:
             combo_body = self._paper_combo.snapshot(book=self.book)
             combo_body["enabled"] = True
             body["combo"] = combo_body
+        if self._paper_ict is None:
+            body["ict"] = {
+                "ok": True,
+                "mode": "paper",
+                "enabled": False,
+                "live_orders": False,
+                "book": ICT_STRATEGY,
+            }
+        else:
+            ict_body = self._paper_ict.snapshot(book=self.book)
+            ict_body["enabled"] = True
+            body["ict"] = ict_body
         if self._paper_agent is None:
             body["agent"] = {
                 "ok": True,

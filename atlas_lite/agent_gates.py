@@ -60,6 +60,7 @@ KNOWN_BOOKS = (
     "impulse_fade",
     "combo",
     "agent",
+    "ict",
 )
 
 BOOK_ALIASES = {
@@ -69,6 +70,7 @@ BOOK_ALIASES = {
     "atm_impulse_fade": "impulse_fade",
     "scalp": "impulse_fade",
     "combo_confluence": "combo",
+    "ict_paper": "ict",
     "agent_paper": "agent",
     "paper_agent": "agent",
     "theta_cliff_fence": "theta_cliff",
