@@ -60,31 +60,29 @@ def test_chart_script_is_the_only_forecast_path() -> None:
     assert "function pred30Forecast" in js
 
 
-def test_slope_agrees_with_up_vote() -> None:
-    path = _forecast(23140.0, 37.5, 21.0, 1.2, 5, side="up", up=3, down=1)
-    assert path["drift"] == 7.2
-    assert path["target"] == 23147.2
+def test_path_is_a_range_around_the_last_price() -> None:
+    path = _forecast(23140.0, 37.5, 21.0, 1.2, 5, side="up", up=4, down=0)
+    assert path["drift"] == 0
+    assert path["target"] == 23140.0
     assert path["conflict"] is False
-    assert path["text"] == "↑ 23147 · 23110–23185"
+    assert path["lo"] == 23102.5
+    assert path["hi"] == 23177.5
+    assert path["tlo"] == 23119.0
+    assert path["thi"] == 23161.0
+    assert path["text"] == "→ 23140 · 23103–23178"
 
 
-def test_opposing_slope_uses_vote_lean() -> None:
+def test_opposing_votes_do_not_shift_the_path() -> None:
     path = _forecast(23140.0, 37.5, 21.0, -2.0, 5, side="up", up=3, down=1)
-    assert path["conflict"] is True
-    assert path["drift"] == 9.38
-    assert path["text"] == "↑ 23149 · 23112–23187"
+    assert path["drift"] == 0
+    assert path["target"] == 23140.0
+    assert path["text"] == "→ 23140 · 23103–23178"
 
 
-def test_vote_only_when_slope_missing() -> None:
+def test_missing_slope_stays_on_the_last_price() -> None:
     path = _forecast(100.0, 40.0, 20.0, None, 5, side="down", up=0, down=4)
-    assert path["conflict"] is False
-    assert path["drift"] == -20.0
-    assert path["tlo"] == 60.0
-    assert path["thi"] == 100.0
-    assert path["text"] == "↓ 80 · 40–120"
-
-
-def test_flat_vote_keeps_slope_path() -> None:
-    path = _forecast(23140.0, 37.5, 21.0, 1.2, 5, side="flat", up=2, down=2)
-    assert path["drift"] == 7.2
-    assert path["text"] == "→ 23147 · 23110–23185"
+    assert path["drift"] == 0
+    assert path["target"] == 100.0
+    assert path["tlo"] == 80.0
+    assert path["thi"] == 120.0
+    assert path["text"] == "→ 100 · 60–140"

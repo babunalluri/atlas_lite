@@ -152,36 +152,27 @@ function pred30SlopeDrift(slope, barMinutes, cap) {
 }
 
 function pred30Forecast(close, median, tight, slope, barMinutes, votes) {
+  // Slope and the four votes do not predict the next 30 minutes (about 50%
+  // either way, including a unanimous vote). The path is a range around the
+  // last price. On Jul–Oct 2026 1m Nifty, that range held the later close
+  // about two times in three. Arguments after `tight` stay so callers do not change.
+  void slope;
+  void barMinutes;
+  void votes;
   if (close == null || median == null || median <= 0) return null;
-  const cap = median;
-  const projected = pred30SlopeDrift(slope, barMinutes, cap);
-  const lean = pred30VoteLean(cap, votes.side, votes.up, votes.down);
-  let conflict = false;
-  let drift;
-  if ((votes.side === "up" || votes.side === "down") && projected != null && projected !== 0) {
-    const agrees = (projected > 0 && votes.side === "up") || (projected < 0 && votes.side === "down");
-    drift = agrees ? projected : lean;
-    conflict = !agrees;
-  } else if (projected != null && votes.side === "flat") {
-    drift = projected;
-  } else {
-    drift = lean;
-  }
-  const target = close + drift;
-  const span = tight != null && tight > 0 ? tight : cap;
-  const lo = target - cap;
-  const hi = target + cap;
-  const arrow = votes.side === "up" ? "↑" : votes.side === "down" ? "↓" : "→";
+  const span = tight != null && tight > 0 ? tight : median;
   const round2 = (n) => Math.round(n * 100) / 100;
+  const lo = close - median;
+  const hi = close + median;
   return {
-    drift: round2(drift),
-    target: round2(target),
+    drift: 0,
+    target: round2(close),
     lo: round2(lo),
     hi: round2(hi),
-    tlo: round2(target - span),
-    thi: round2(target + span),
-    conflict,
-    text: `${arrow} ${pred30Px(target)} · ${pred30Px(lo)}–${pred30Px(hi)}`,
+    tlo: round2(close - span),
+    thi: round2(close + span),
+    conflict: false,
+    text: `→ ${pred30Px(close)} · ${pred30Px(lo)}–${pred30Px(hi)}`,
   };
 }
 

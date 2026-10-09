@@ -2407,7 +2407,7 @@
     const INDICATOR_NAMES = {
       COMBO: "Confluence B/S (VWAP+BOLL+RSI+MACD+ADX)",
       OF: "Order flow B/S (1m FUT Δ / CVD; impulse flip + divergence)",
-      PRED30: "30m target and range (slope, or vote lean if slope disagrees)",
+      PRED30: "30m range around the last price. No direction call.",
       SESSION: "Session open / prev close",
       PIVOT: "Classic floor pivots (prior IST H/L/C)",
       FIB: "Auto Fibonacci (last swing pair)",
@@ -3177,11 +3177,9 @@
       const yOutDn = yAxis.convertToPixel(lo);
       const yInUp = yAxis.convertToPixel(tightUp);
       const yInDn = yAxis.convertToPixel(tightDn);
-      const up = row.side === "up";
-      const down = row.side === "down";
-      const outer = up ? "rgba(22, 163, 74, 0.16)" : down ? "rgba(220, 38, 38, 0.16)" : "rgba(148, 163, 184, 0.14)";
-      const inner = up ? "rgba(22, 163, 74, 0.28)" : down ? "rgba(220, 38, 38, 0.28)" : "rgba(148, 163, 184, 0.24)";
-      const stroke = up ? "#16a34a" : down ? "#dc2626" : "#94a3b8";
+      const outer = "rgba(148, 163, 184, 0.16)";
+      const inner = "rgba(148, 163, 184, 0.28)";
+      const stroke = "#94a3b8";
       ctx.save();
       ctx.beginPath();
       ctx.moveTo(x0, yMid);
@@ -3219,7 +3217,7 @@
       ctx.stroke();
       ctx.globalAlpha = 1;
       if (row.text) {
-        const headline = `${up ? "↑" : down ? "↓" : "→"} ${Math.round(target)}`;
+        const headline = "30m range";
         const rangeText = `${Math.round(lo)}–${Math.round(hi)}`;
         let base = Math.min(yOutUp, yOutDn);
         if (!Number.isFinite(base)) base = yTarget;
