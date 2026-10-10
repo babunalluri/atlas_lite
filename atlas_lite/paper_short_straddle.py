@@ -8,9 +8,10 @@ From OCI session recordings (ATM CE+PE, Kite NFO charges; paper size **1 lot**):
 
 Rules:
 
-* Sell ATM CE+PE, **1 lot**, **14:00–14:15 IST**, max **1**/day.
+* Sell ATM CE+PE, **1 lot**, **14:30–14:45 IST**, max **1**/day.
 * Hold to **15:14** (no profit target, no premium stop).
-* Skip when ``|NIFTY chg| > 0.75%`` (same day-trend cap as the fly).
+* No day-trend filter. At 14:30 the ``|NIFTY chg| ≤ 0.75%`` cap did not
+  change the tape result.
 * Independent of iron fly / skew / other paper books (agent policy gates only).
 * Separate ledger from iron fly / VWAP.
 """
@@ -29,7 +30,6 @@ from atlas_lite.kite_charges import kite_nfo_charges
 from atlas_lite.log_util import get_logger, ist_now
 from atlas_lite.metrics import quote_ltp
 from atlas_lite.minute_bars import hm_ge, hm_le
-from atlas_lite.paper_straddle import PAPER_INDEX_ABS
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -38,8 +38,8 @@ CAPITAL = 200_000.0
 LOTS = 1
 DEFAULT_LOT_SIZE = 65
 MAX_ENTRIES_PER_DAY = 1
-ENTRY_AFTER = (14, 0)
-ENTRY_UNTIL = (14, 15)
+ENTRY_AFTER = (14, 30)
+ENTRY_UNTIL = (14, 45)
 SQUARE_OFF = (15, 14)
 # 0 = hold to square-off. A 6% stop lost vs hold on the Sep 14–25 tape.
 STOP_PCT = 0.0
@@ -69,13 +69,6 @@ def _f(value: Any) -> float | None:
 
 def _weekday(now: datetime) -> bool:
     return now.weekday() < 5
-
-
-def _trend_ok(feed: dict[str, Any]) -> bool:
-    chg = _f(feed.get("index_nifty_chg"))
-    if chg is None:
-        return False
-    return abs(chg) <= PAPER_INDEX_ABS
 
 
 def _open_legs(ce: float, pe: float, qty: int) -> list[tuple[float, int, str]]:
@@ -375,8 +368,6 @@ class PaperShortStraddle:
         if not allow_entry:
             return None
         if not in_short_str_entry_window(now):
-            return None
-        if not _trend_ok(feed):
             return None
         return self._open(now, feed, book, ce_symbol, pe_symbol, atm)
 

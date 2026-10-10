@@ -57,7 +57,8 @@ class QuoteSource(Protocol):
 
 
 def paper_impulse_fade_enabled() -> bool:
-    raw = os.environ.get("ATLAS_LITE_PAPER_SCALP", "1").strip().lower()
+    """Off by default. Historic impulses had no edge. Set ATLAS_LITE_PAPER_SCALP=1 to run."""
+    raw = os.environ.get("ATLAS_LITE_PAPER_SCALP", "0").strip().lower()
     return raw in ("1", "true", "yes")
 
 

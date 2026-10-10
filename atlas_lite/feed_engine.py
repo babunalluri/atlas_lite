@@ -2195,8 +2195,9 @@ class FeedEngine:
         atm = None
         if nb.atm:
             ce, pe, atm = nb.atm.ce_symbol, nb.atm.pe_symbol, int(nb.atm.strike)
+        spot_row = self.book.get(nb.config.symbol)
         feed: dict[str, Any] = {
-            "index_nifty_chg": quote_change_pct(self.book.get(nb.config.symbol)),
+            "index_nifty_chg": quote_change_pct(spot_row),
         }
         if ce and pe:
             feed["ce_symbol"] = ce
@@ -2908,7 +2909,10 @@ class FeedEngine:
         if self._agent_gates is not None and not self._agent_gates.entries_allowed("agent"):
             return {"ok": False, "rejected": "agent_gate_blocked"}
         return self._paper_agent.propose_entry(
-            side=side, style=style, reason=reason, spot=spot
+            side=side,
+            style=style,
+            reason=reason,
+            spot=spot,
         )
 
     def _agent_propose_exit(self, *, reason: str = "") -> dict[str, Any]:

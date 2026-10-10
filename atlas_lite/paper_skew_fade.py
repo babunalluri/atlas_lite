@@ -58,7 +58,8 @@ class QuoteSource(Protocol):
 
 
 def paper_skew_fade_enabled() -> bool:
-    raw = os.environ.get("ATLAS_LITE_PAPER_SKEW_FADE", "1").strip().lower()
+    """Off by default. Skew faded the wrong wing. Set ATLAS_LITE_PAPER_SKEW_FADE=1 to run."""
+    raw = os.environ.get("ATLAS_LITE_PAPER_SKEW_FADE", "0").strip().lower()
     return raw in ("1", "true", "yes")
 
 

@@ -1475,7 +1475,7 @@ def test_paper_agent_trail_ledger_only_on_arm_or_stop(tmp_path: Path) -> None:
 
     path = tmp_path / "paper_agent.jsonl"
     bot = PaperAgent(path=path, lot_size=65)
-    now = datetime(2026, 9, 29, 11, 0, tzinfo=IST)
+    now = datetime(2026, 9, 29, 9, 50, tzinfo=IST)
     book = _Book()
     bot.propose_entry(side="ce", style="long", reason="up", spot=22600.0, now=now)
     bot.on_frame(
@@ -1631,7 +1631,7 @@ def _stop_long_pe(bot: PaperAgent, *, now: datetime, spot: float = 22600.0) -> N
         allow_new_entries=True,
         spot=spot,
     )
-    book.px = 94.0  # hard stop
+    book.px = 89.0  # through the 6% morning stop and the 10% late stop
     closed = bot.on_frame(
         now=now + timedelta(minutes=1),
         feed={},
@@ -2226,3 +2226,69 @@ def test_agent_advisor_tool_dispatch_without_llm(tmp_path: Path) -> None:
     )
     # already pending / or ok pending again — pending replaced
     assert "ok" in blocked
+
+
+def test_late_exit_profile_is_fixed_at_the_fill(tmp_path: Path) -> None:
+    class _Book:
+        def __init__(self) -> None:
+            self.px = 100.0
+
+        def get(self, symbol: str):
+            return {"last_price": self.px}
+
+    bot = PaperAgent(path=tmp_path / "paper_agent.jsonl", lot_size=65)
+    now = datetime(2026, 9, 29, 11, 0, tzinfo=IST)
+    book = _Book()
+    bot.propose_entry(side="ce", style="long", reason="up", spot=22600.0, now=now)
+    opened = bot.on_frame(
+        now=now + timedelta(seconds=5),
+        feed={},
+        book=book,
+        ce_symbol="NFO:XCE",
+        pe_symbol="NFO:XPE",
+        atm=22600,
+        allow_new_entries=True,
+        spot=22600.0,
+    )
+    assert opened is not None
+    assert opened["target"] == 115.0
+    assert opened["stop"] == 90.0
+    assert bot.position is not None
+    assert bot.position.trail_arm_pct == 0.02
+    assert bot.position.trail_pct == 0.02
+    assert bot.position.trail_pts == 1.0
+    book.px = 102.0
+    bot.on_frame(
+        now=now + timedelta(minutes=1),
+        feed={},
+        book=book,
+        ce_symbol="NFO:XCE",
+        pe_symbol="NFO:XPE",
+        atm=22600,
+        allow_new_entries=True,
+        spot=22600.0,
+    )
+    assert bot.position is not None
+    assert bot.position.trail_armed is True
+    assert bot.position.stop == 100.0
+    # A fill before 10:30 keeps the morning profile even if it is still open later.
+    morning = PaperAgent(path=tmp_path / "paper_agent_am.jsonl", lot_size=65)
+    am = datetime(2026, 9, 29, 10, 0, tzinfo=IST)
+    book.px = 100.0
+    morning.propose_entry(side="ce", style="long", reason="up", spot=22600.0, now=am)
+    opened_am = morning.on_frame(
+        now=am + timedelta(seconds=5),
+        feed={},
+        book=book,
+        ce_symbol="NFO:XCE",
+        pe_symbol="NFO:XPE",
+        atm=22600,
+        allow_new_entries=True,
+        spot=22600.0,
+    )
+    assert opened_am is not None
+    assert opened_am["target"] == 110.0
+    assert opened_am["stop"] == 94.0
+    assert morning.position is not None
+    assert morning.position.trail_arm_pct == 0.04
+    assert morning.position.trail_pct == 0.03

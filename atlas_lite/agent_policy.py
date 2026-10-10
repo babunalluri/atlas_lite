@@ -91,17 +91,21 @@ def regime_book_modes(regime: Regime) -> dict[str, GateMode]:
     """Capital allocation by regime — skip mismatched books, allow fits.
 
     iron_fly stays allow in every regime (multi-day evidence book).
-    skew_fade stays skipped (dead sample). impulse/agent are not managed here.
+    short_straddle, theta_cliff, and short_iron_condor stay allow: the 1-minute
+    ADX reads trend on most afternoons, and each book already has its own entry filter.
+    skew_fade stays skipped (dead sample). combo stays skipped (option-tape replay).
+    impulse/agent are not managed here.
     """
     if regime == "trend":
-        # Combo OK when directional; plain short-premium sits out.
+        # Combo stays out: the option tape lost under the live exits, including
+        # the sessions before the book went live.
         return {
-            "combo": "allow",
+            "combo": "skip_entries",
             "iron_fly": "allow",
-            "short_straddle": "skip_entries",
+            "short_straddle": "allow",
             "long_iron_condor": "skip_entries",
-            "short_iron_condor": "skip_entries",
-            "theta_cliff": "skip_entries",
+            "short_iron_condor": "allow",
+            "theta_cliff": "allow",
             "skew_fade": "skip_entries",
         }
     if regime == "range":
@@ -122,7 +126,7 @@ def regime_book_modes(regime: Regime) -> dict[str, GateMode]:
         "theta_cliff": "allow",
         "short_iron_condor": "allow",
         "combo": "skip_entries",
-        "short_straddle": "skip_entries",
+        "short_straddle": "allow",
         "long_iron_condor": "skip_entries",
         "skew_fade": "skip_entries",
     }

@@ -170,7 +170,7 @@ def test_paper_opens_on_first_7_of_7(tmp_path: Path) -> None:
         }
     )
     event = bot.on_frame(
-        now=_now("11:20"),
+        now=_now("12:05"),
         entry_ready=True,
         feed={"ce": 100.0, "pe": 95.0},
         book=book,
@@ -195,7 +195,7 @@ def test_paper_skips_second_entry_same_7_of_7_cluster(tmp_path: Path) -> None:
         }
     )
     bot.on_frame(
-        now=_now("11:20"),
+        now=_now("12:05"),
         entry_ready=True,
         feed={},
         book=book,
@@ -205,7 +205,7 @@ def test_paper_skips_second_entry_same_7_of_7_cluster(tmp_path: Path) -> None:
     )
     bot.position = None
     again = bot.on_frame(
-        now=_now("11:21"),
+        now=_now("12:06"),
         entry_ready=True,
         feed={},
         book=book,
@@ -231,12 +231,12 @@ def test_paper_reenters_after_close_on_fresh_7_of_7(tmp_path: Path) -> None:
         pe_symbol="NFO:PE",
         atm=24000,
     )
-    assert bot.on_frame(now=_now("11:20"), entry_ready=True, **kwargs)["event"] == "open"
-    _trail_off(bot, _now("11:30"), **kwargs)
+    assert bot.on_frame(now=_now("12:05"), entry_ready=True, **kwargs)["event"] == "open"
+    _trail_off(bot, _now("12:15"), **kwargs)
     book.rows["NFO:CE"] = {"last_price": 100.0}
     book.rows["NFO:PE"] = {"last_price": 95.0}
-    bot.on_frame(now=_now("10:20"), entry_ready=False, **kwargs)
-    second = bot.on_frame(now=_now("10:21"), entry_ready=True, **kwargs)
+    bot.on_frame(now=_now("12:21"), entry_ready=False, **kwargs)
+    second = bot.on_frame(now=_now("12:22"), entry_ready=True, **kwargs)
     assert second is not None
     assert second["event"] == "open"
     assert second["entry_n"] == 2
@@ -258,11 +258,11 @@ def test_paper_caps_at_five_entries_per_day(tmp_path: Path) -> None:
         atm=24000,
     )
     slots = [
-        ("09:46", "09:54", "09:55"),
-        ("10:05", "10:13", "10:14"),
-        ("10:25", "10:33", "10:34"),
-        ("10:45", "10:53", "10:54"),
-        ("11:05", "11:13", "11:14"),
+        ("12:00", "12:01", "12:02"),
+        ("12:03", "12:04", "12:05"),
+        ("12:06", "12:07", "12:08"),
+        ("12:09", "12:10", "12:11"),
+        ("12:12", "12:13", "12:14"),
     ]
     for n, (open_hm, close_hm, flat_hm) in enumerate(slots):
         opened = bot.on_frame(now=_now(open_hm), entry_ready=True, **kwargs)
@@ -273,7 +273,7 @@ def test_paper_caps_at_five_entries_per_day(tmp_path: Path) -> None:
         book.rows["NFO:CE"] = {"last_price": 100.0}
         book.rows["NFO:PE"] = {"last_price": 95.0}
         bot.on_frame(now=_now(flat_hm), entry_ready=False, **kwargs)
-    sixth = bot.on_frame(now=_now("11:20"), entry_ready=True, **kwargs)
+    sixth = bot.on_frame(now=_now("12:15"), entry_ready=True, **kwargs)
     assert sixth is None
     assert bot.entries_today == 5
 
@@ -293,11 +293,11 @@ def test_paper_trails_after_6pct(tmp_path: Path) -> None:
         pe_symbol="NFO:PE",
         atm=24000,
     )
-    bot.on_frame(now=_now("11:20"), entry_ready=True, **kwargs)
+    bot.on_frame(now=_now("12:05"), entry_ready=True, **kwargs)
     book.rows["NFO:CE"] = {"last_price": 112.0}
     book.rows["NFO:PE"] = {"last_price": 95.0}
     armed = bot.on_frame(
-        now=_now("11:30"),
+        now=_now("12:15"),
         entry_ready=False,
         feed={},
         book=book,
@@ -311,7 +311,7 @@ def test_paper_trails_after_6pct(tmp_path: Path) -> None:
     book.rows["NFO:CE"] = {"last_price": 108.0}
     book.rows["NFO:PE"] = {"last_price": 95.0}
     event = bot.on_frame(
-        now=_now("11:31"),
+        now=_now("12:16"),
         entry_ready=False,
         feed={},
         book=book,
@@ -338,7 +338,7 @@ def test_paper_exits_on_stop(tmp_path: Path) -> None:
         }
     )
     bot.on_frame(
-        now=_now("11:20"),
+        now=_now("12:05"),
         entry_ready=True,
         feed={},
         book=book,
@@ -349,7 +349,7 @@ def test_paper_exits_on_stop(tmp_path: Path) -> None:
     book.rows["NFO:CE"] = {"last_price": 90.0}
     book.rows["NFO:PE"] = {"last_price": 90.0}
     event = bot.on_frame(
-        now=_now("12:00"),
+        now=_now("12:20"),
         entry_ready=True,
         feed={},
         book=book,
@@ -370,7 +370,7 @@ def test_paper_10pt_floor_on_cheap_straddle(tmp_path: Path) -> None:
         }
     )
     open_ev = bot.on_frame(
-        now=_now("11:20"),
+        now=_now("12:05"),
         entry_ready=True,
         feed={},
         book=book,
@@ -384,7 +384,7 @@ def test_paper_10pt_floor_on_cheap_straddle(tmp_path: Path) -> None:
     book.rows["NFO:CE"] = {"last_price": 75.0}
     book.rows["NFO:PE"] = {"last_price": 75.0}
     event = bot.on_frame(
-        now=_now("12:00"),
+        now=_now("12:20"),
         entry_ready=True,
         feed={},
         book=book,
@@ -405,7 +405,7 @@ def test_paper_square_off_at_1514(tmp_path: Path) -> None:
         }
     )
     bot.on_frame(
-        now=_now("11:20"),
+        now=_now("12:05"),
         entry_ready=True,
         feed={},
         book=book,
@@ -461,7 +461,7 @@ def test_paper_still_opens_at_1300(tmp_path: Path) -> None:
         }
     )
     event = bot.on_frame(
-        now=_now("13:00"),
+        now=_now("12:30"),
         entry_ready=True,
         feed={},
         book=book,
@@ -493,8 +493,9 @@ def test_paper_no_new_entry_at_1514(tmp_path: Path) -> None:
     )
     assert (event is None) or (event.get("event") == "day_pnl")
     assert bot.position is None
-    assert in_paper_entry_window(_now("13:00")) is True
-    assert in_paper_entry_window(_now("13:01")) is False
+    assert in_paper_entry_window(_now("12:00")) is True
+    assert in_paper_entry_window(_now("12:30")) is True
+    assert in_paper_entry_window(_now("12:31")) is False
     assert in_paper_entry_window(_now("15:14")) is False
 
 
@@ -528,7 +529,7 @@ def test_paper_opens_at_0920(tmp_path: Path) -> None:
         }
     )
     event = bot.on_frame(
-        now=_now("09:20"),
+        now=_now("12:00"),
         entry_ready=True,
         feed={},
         book=book,
@@ -687,8 +688,8 @@ def test_eod_pnl_vs_2l_capital(tmp_path: Path) -> None:
         pe_symbol="NFO:PE",
         atm=24000,
     )
-    bot.on_frame(now=_now("11:20"), entry_ready=True, **kwargs)
-    closed = _trail_off(bot, _now("11:30"), **kwargs)
+    bot.on_frame(now=_now("12:05"), entry_ready=True, **kwargs)
+    closed = _trail_off(bot, _now("12:15"), **kwargs)
     assert closed["reason"] == "trail"
     eod = bot.on_frame(now=_now("15:14"), entry_ready=False, **kwargs)
     assert eod is not None
@@ -731,11 +732,11 @@ def test_failed_open_retries_when_quotes_arrive(tmp_path: Path) -> None:
         pe_symbol="NFO:PE",
         atm=24000,
     )
-    assert bot.on_frame(now=_now("11:20"), entry_ready=True, **kwargs) is None
+    assert bot.on_frame(now=_now("12:05"), entry_ready=True, **kwargs) is None
     assert bot.position is None
     book.rows["NFO:CE"] = {"last_price": 100.0}
     book.rows["NFO:PE"] = {"last_price": 95.0}
-    opened = bot.on_frame(now=_now("11:20"), entry_ready=True, **kwargs)
+    opened = bot.on_frame(now=_now("12:05"), entry_ready=True, **kwargs)
     assert opened is not None
     assert opened["event"] == "open"
 
@@ -780,7 +781,7 @@ def test_time_flat_without_quotes_does_not_book_zero_pnl(tmp_path: Path) -> None
         }
     )
     bot.on_frame(
-        now=_now("11:20"),
+        now=_now("12:05"),
         entry_ready=True,
         feed={},
         book=book,
@@ -838,7 +839,7 @@ def test_close_pct_is_percent_like_stop_loss_pct(tmp_path: Path) -> None:
         }
     )
     open_ev = bot.on_frame(
-        now=_now("11:20"),
+        now=_now("12:05"),
         entry_ready=True,
         feed={},
         book=book,
@@ -850,7 +851,7 @@ def test_close_pct_is_percent_like_stop_loss_pct(tmp_path: Path) -> None:
     book.rows["NFO:CE"] = {"last_price": 112.0}
     book.rows["NFO:PE"] = {"last_price": 95.0}
     armed = bot.on_frame(
-        now=_now("11:30"),
+        now=_now("12:15"),
         entry_ready=False,
         feed={},
         book=book,
@@ -862,7 +863,7 @@ def test_close_pct_is_percent_like_stop_loss_pct(tmp_path: Path) -> None:
     book.rows["NFO:CE"] = {"last_price": 108.0}
     book.rows["NFO:PE"] = {"last_price": 95.0}
     closed = bot.on_frame(
-        now=_now("11:31"),
+        now=_now("12:16"),
         entry_ready=False,
         feed={},
         book=book,
@@ -887,7 +888,7 @@ def test_snapshot_marks_open_trade_against_2l(tmp_path: Path) -> None:
         }
     )
     bot.on_frame(
-        now=_now("11:20"),
+        now=_now("12:05"),
         entry_ready=True,
         feed={},
         book=book,
@@ -905,7 +906,7 @@ def test_snapshot_marks_open_trade_against_2l(tmp_path: Path) -> None:
     assert snap["mtm_pnl"] == snap["open_pnl"]
     assert snap["equity"] == round(200000.0 + snap["open_pnl"], 2)
     assert snap["entry_filters"] == "rich_iv_fly"
-    assert snap["entry_window"] == "09:20-13:00"
+    assert snap["entry_window"] == "12:00-12:30"
     assert snap["square_off"] == "15:14"
 
 
@@ -982,7 +983,7 @@ def test_iron_fly_strikes_are_250_wide() -> None:
 def test_paper_opens_short_iron_fly(tmp_path: Path) -> None:
     bot = _trader(tmp_path)
     book = _fly_book()
-    event = bot.on_frame(now=_now("10:15"), **_fly_kwargs(book))
+    event = bot.on_frame(now=_now("12:10"), **_fly_kwargs(book))
     assert event is not None
     assert event["event"] == "open"
     assert event["strategy"] == "short_iron_fly"
@@ -997,11 +998,11 @@ def test_paper_opens_short_iron_fly(tmp_path: Path) -> None:
 def test_paper_fly_takes_profit_at_half_credit(tmp_path: Path) -> None:
     bot = _trader(tmp_path)
     book = _fly_book()
-    opened = bot.on_frame(now=_now("10:15"), **_fly_kwargs(book))
+    opened = bot.on_frame(now=_now("12:10"), **_fly_kwargs(book))
     assert opened is not None
     book.rows["NFO:CE"] = {"last_price": 50.0}
     book.rows["NFO:PE"] = {"last_price": 50.0}
-    closed = bot.on_frame(now=_now("11:00"), **_fly_kwargs(book, entry_ready=False))
+    closed = bot.on_frame(now=_now("12:20"), **_fly_kwargs(book, entry_ready=False))
     assert closed is not None
     assert closed["reason"] == "target"
     assert closed["strategy"] == "short_iron_fly"
@@ -1012,10 +1013,10 @@ def test_paper_fly_takes_profit_at_half_credit(tmp_path: Path) -> None:
 def test_paper_fly_stops_at_half_defined_loss(tmp_path: Path) -> None:
     bot = _trader(tmp_path)
     book = _fly_book()
-    bot.on_frame(now=_now("10:15"), **_fly_kwargs(book))
+    bot.on_frame(now=_now("12:10"), **_fly_kwargs(book))
     book.rows["NFO:CE"] = {"last_price": 160.0}
     book.rows["NFO:PE"] = {"last_price": 160.0}
-    closed = bot.on_frame(now=_now("11:00"), **_fly_kwargs(book, entry_ready=False))
+    closed = bot.on_frame(now=_now("12:20"), **_fly_kwargs(book, entry_ready=False))
     assert closed is not None
     assert closed["reason"] == "stop"
     assert closed["pnl"] < 0
@@ -1029,14 +1030,14 @@ def test_paper_fly_stop_fires_when_far_wing_quotes_zero(tmp_path: Path) -> None:
     assert fly_value_pts(0.0, 0.0, 0.0, 0.0, width=250) == 0.0
     bot = _trader(tmp_path)
     book = _fly_book()
-    opened = bot.on_frame(now=_now("10:15"), **_fly_kwargs(book))
+    opened = bot.on_frame(now=_now("12:10"), **_fly_kwargs(book))
     assert opened is not None
     assert opened["credit"] == 157.0
     book.rows["NFO:CE"] = {"last_price": 0.0}
     book.rows["NFO:PE"] = {"last_price": 350.0}
     book.rows["NFO:WCE"] = {"last_price": 0.0}
     book.rows["NFO:WPE"] = {"last_price": 100.0}
-    closed = bot.on_frame(now=_now("11:00"), **_fly_kwargs(book, entry_ready=False))
+    closed = bot.on_frame(now=_now("12:20"), **_fly_kwargs(book, entry_ready=False))
     assert closed is not None
     assert closed["reason"] == "stop"
     assert closed["pnl_known"] is True
@@ -1059,13 +1060,13 @@ def test_paper_fly_stop_fires_when_short_leg_quotes_zero(tmp_path: Path) -> None
     for i, (ce, pe, wce, wpe) in enumerate(cases):
         bot = _trader(tmp_path / f"fly_zero_{i}")
         book = _fly_book()
-        opened = bot.on_frame(now=_now("10:15"), **_fly_kwargs(book))
+        opened = bot.on_frame(now=_now("12:10"), **_fly_kwargs(book))
         assert opened is not None
         book.rows["NFO:CE"] = {"last_price": ce}
         book.rows["NFO:PE"] = {"last_price": pe}
         book.rows["NFO:WCE"] = {"last_price": wce}
         book.rows["NFO:WPE"] = {"last_price": wpe}
-        closed = bot.on_frame(now=_now("11:00"), **_fly_kwargs(book, entry_ready=False))
+        closed = bot.on_frame(now=_now("12:20"), **_fly_kwargs(book, entry_ready=False))
         assert closed is not None, (ce, pe, wce, wpe)
         assert closed["reason"] == "stop", (ce, pe, wce, wpe, closed)
         assert closed["pnl_known"] is True
@@ -1080,7 +1081,7 @@ def test_paper_fly_does_not_open_on_zero_wings(tmp_path: Path) -> None:
     book = _fly_book()
     book.rows["NFO:WCE"] = {"last_price": 0.0}
     book.rows["NFO:WPE"] = {"last_price": 0.0}
-    event = bot.on_frame(now=_now("10:15"), **_fly_kwargs(book))
+    event = bot.on_frame(now=_now("12:10"), **_fly_kwargs(book))
     assert event is None
     assert bot.position is None
 
@@ -1088,7 +1089,7 @@ def test_paper_fly_does_not_open_on_zero_wings(tmp_path: Path) -> None:
 def test_paper_fly_squares_off_at_1514(tmp_path: Path) -> None:
     bot = _trader(tmp_path)
     book = _fly_book()
-    bot.on_frame(now=_now("10:15"), **_fly_kwargs(book))
+    bot.on_frame(now=_now("12:10"), **_fly_kwargs(book))
     closed = bot.on_frame(now=_now("15:14"), **_fly_kwargs(book, entry_ready=False))
     assert closed is not None
     assert closed["reason"] == "time"
@@ -1105,7 +1106,7 @@ def test_paper_does_not_open_debit_fly(tmp_path: Path) -> None:
             "NFO:WPE": {"last_price": 40.0},
         }
     )
-    event = bot.on_frame(now=_now("10:15"), **_fly_kwargs(book))
+    event = bot.on_frame(now=_now("12:10"), **_fly_kwargs(book))
     assert event is None
     assert bot.position is None
 
@@ -1121,14 +1122,14 @@ def test_paper_does_not_open_thin_credit_fly(tmp_path: Path) -> None:
             "NFO:WPE": {"last_price": 20.0},
         }
     )
-    event = bot.on_frame(now=_now("10:15"), **_fly_kwargs(book))
+    event = bot.on_frame(now=_now("12:10"), **_fly_kwargs(book))
     assert event is None
     assert bot.position is None
     book.rows["NFO:CE"] = {"last_price": 80.0}
     book.rows["NFO:PE"] = {"last_price": 40.0}
     book.rows["NFO:WCE"] = {"last_price": 10.0}
     book.rows["NFO:WPE"] = {"last_price": 10.0}
-    opened = bot.on_frame(now=_now("10:16"), **_fly_kwargs(book))
+    opened = bot.on_frame(now=_now("12:11"), **_fly_kwargs(book))
     assert opened is not None
     assert opened["credit"] == 100.0
     assert opened["max_loss"] == 9750.0

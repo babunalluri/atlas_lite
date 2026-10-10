@@ -1,4 +1,4 @@
-"""Paper afternoon short ATM straddle — 14:00 hold, no premium stop, 1/day."""
+"""Paper afternoon short ATM straddle — 14:30 hold, no premium stop, 1/day."""
 
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def _book(ce: float, pe: float) -> _Book:
     return _Book({"NFO:CE": {"last_price": ce}, "NFO:PE": {"last_price": pe}})
 
 
-def _open(bot: PaperShortStraddle, hm: str = "14:00", **feed_kw) -> dict | None:
+def _open(bot: PaperShortStraddle, hm: str = "14:30", **feed_kw) -> dict | None:
     return bot.on_frame(
         now=_now(hm),
         feed=_feed(**feed_kw),
@@ -58,10 +58,10 @@ def _open(bot: PaperShortStraddle, hm: str = "14:00", **feed_kw) -> dict | None:
 
 
 def test_entry_window() -> None:
-    assert in_short_str_entry_window(_now("13:59")) is False
-    assert in_short_str_entry_window(_now("14:00")) is True
-    assert in_short_str_entry_window(_now("14:15")) is True
-    assert in_short_str_entry_window(_now("14:16")) is False
+    assert in_short_str_entry_window(_now("14:29")) is False
+    assert in_short_str_entry_window(_now("14:30")) is True
+    assert in_short_str_entry_window(_now("14:45")) is True
+    assert in_short_str_entry_window(_now("14:46")) is False
     assert in_short_str_entry_window(_now("15:14")) is False
 
 
@@ -78,15 +78,15 @@ def test_opens_at_1400(tmp_path: Path) -> None:
 
 def test_blocks_before_window(tmp_path: Path) -> None:
     bot = _bot(tmp_path)
-    assert _open(bot, "13:59") is None
+    assert _open(bot, "14:29") is None
     assert bot.position is None
 
 
 def test_one_entry_per_day(tmp_path: Path) -> None:
     bot = _bot(tmp_path)
-    assert _open(bot, "14:00") is not None
+    assert _open(bot, "14:30") is not None
     bot.position = None
-    assert _open(bot, "14:05") is None
+    assert _open(bot, "14:40") is None
 
 
 def test_skips_when_skew_already_used(tmp_path: Path) -> None:
@@ -104,11 +104,9 @@ def test_skips_when_skew_already_used(tmp_path: Path) -> None:
     assert bot.position is None
 
 
-def test_trend_filter_blocks(tmp_path: Path) -> None:
+def test_day_move_does_not_block(tmp_path: Path) -> None:
     bot = _bot(tmp_path)
-    assert _open(bot, index_nifty_chg=0.9) is None
-    assert _open(bot, index_nifty_chg=-0.81) is None
-    assert _open(bot, index_nifty_chg=0.75) is not None
+    assert _open(bot, index_nifty_chg=1.5) is not None
 
 
 def test_hold_to_square_off_is_profit(tmp_path: Path) -> None:
@@ -186,7 +184,7 @@ def test_session_gap_marks_when_quotes_live(tmp_path: Path) -> None:
     ]
     assert any(r.get("event") == "day_pnl" and r.get("day") == "2026-09-04" for r in rows)
     blocked = bot.on_frame(
-        now=_now("14:00", day="2026-09-07"),
+        now=_now("14:30", day="2026-09-07"),
         feed=_feed(ce=100.0, pe=90.0),
         book=_book(100.0, 90.0),
         ce_symbol="NFO:CE",
@@ -197,10 +195,9 @@ def test_session_gap_marks_when_quotes_live(tmp_path: Path) -> None:
     assert bot.position is None
 
 
-def test_trend_missing_blocks(tmp_path: Path) -> None:
+def test_missing_day_move_still_opens(tmp_path: Path) -> None:
     bot = _bot(tmp_path)
-    assert _open(bot, index_nifty_chg=None) is None
-    assert bot.position is None
+    assert _open(bot, index_nifty_chg=None) is not None
 
 
 def test_held_quotes_ignore_current_atm_feed(tmp_path: Path) -> None:
@@ -353,7 +350,7 @@ def test_restart_keeps_leftover_flatten_cap(tmp_path: Path) -> None:
     assert again.traded_day == "2026-09-07"
     assert again.entries_today == 1
     blocked = again.on_frame(
-        now=_now("14:00", day="2026-09-07"),
+        now=_now("14:30", day="2026-09-07"),
         feed=_feed(ce=100.0, pe=90.0),
         book=_book(100.0, 90.0),
         ce_symbol="NFO:CE",

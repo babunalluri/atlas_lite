@@ -35,6 +35,13 @@ STOP_PCT = 0.06
 TRAIL_ARM_PCT = 0.04
 TRAIL_PCT = 0.03
 TRAIL_PTS = 1.5
+# From 10:30 the same hold uses a wider stop, a later target, and a tighter trail.
+LATE_EXIT_AFTER = (10, 30)
+LATE_TARGET_PCT = 0.15
+LATE_STOP_PCT = 0.10
+LATE_TRAIL_ARM_PCT = 0.02
+LATE_TRAIL_PCT = 0.02
+LATE_TRAIL_PTS = 1.0
 # Persist trail ledger only when stop moves by this much (frac of gap, min pts).
 TRAIL_LEDGER_STEP_FRAC = 0.5
 TRAIL_LEDGER_STEP_MIN = 0.5
@@ -169,6 +176,24 @@ def in_agent_entry_window(now: datetime) -> bool:
     return hm_ge(now, after) and hm_le(now, until) and not hm_ge(now, SQUARE_OFF)
 
 
+def agent_exit_profile(now: datetime) -> tuple[float, float, float, float, float]:
+    """Target, stop, trail-arm, trail distance, trail minimum for an entry at ``now``.
+
+    Before 10:30: +10% / −6%, trail arms at +4% and follows by 3% (min 1.5).
+    From 10:30: +15% / −10%, trail arms at +2% and follows by 2% (min 1).
+    Hold stays 20 minutes either way. The profile is fixed at the fill.
+    """
+    if hm_ge(now, LATE_EXIT_AFTER):
+        return (
+            LATE_TARGET_PCT,
+            LATE_STOP_PCT,
+            LATE_TRAIL_ARM_PCT,
+            LATE_TRAIL_PCT,
+            LATE_TRAIL_PTS,
+        )
+    return (TARGET_PCT, STOP_PCT, TRAIL_ARM_PCT, TRAIL_PCT, TRAIL_PTS)
+
+
 def _f(value: Any) -> float | None:
     if value is None or value == "":
         return None
@@ -265,6 +290,9 @@ class AgentPosition:
     trail_armed: bool = False
     best_px: float = 0.0  # peak for long / trough for short
     trail_ledger_stop: float | None = None  # last stop written to ledger
+    trail_arm_pct: float = TRAIL_ARM_PCT
+    trail_pct: float = TRAIL_PCT
+    trail_pts: float = TRAIL_PTS
 
 
 @dataclass
@@ -397,8 +425,13 @@ class PaperAgent:
         if last_open:
             entry = float(last_open.get("entry") or 0)
             style = _normalize_style(str(last_open.get("style") or "long")) or "long"
+            opened_at = str(last_open.get("ts") or "")
+            opened_dt = _parse_ts(opened_at)
+            target_pct, stop_pct, arm_pct, trail_pct, trail_pts = agent_exit_profile(
+                opened_dt or datetime.now(IST)
+            )
             target, stop = initial_target_stop(
-                entry, style, target_pct=self.target_pct, stop_pct=self.stop_pct
+                entry, style, target_pct=target_pct, stop_pct=stop_pct
             )
             best = float(last_open.get("best_px") or entry)
             trail_armed = bool(last_open.get("trail_armed"))
@@ -423,12 +456,15 @@ class PaperAgent:
                 target=float(last_open.get("target") or target),
                 stop=stop_px,
                 hold_until=str(last_open.get("hold_until") or ""),
-                opened_at=str(last_open.get("ts") or ""),
+                opened_at=opened_at,
                 charges_open=float(last_open.get("charges") or 0.0),
                 reason=str(last_open.get("reason") or ""),
                 trail_armed=trail_armed,
                 best_px=best,
                 trail_ledger_stop=stop_px if last_trail else None,
+                trail_arm_pct=arm_pct,
+                trail_pct=trail_pct,
+                trail_pts=trail_pts,
             )
 
     def _append(self, event: dict[str, Any]) -> dict[str, Any] | None:
@@ -1344,8 +1380,9 @@ class PaperAgent:
         qty = int(self.lots) * int(self.lot_size)
         entry = round(float(px), 2)
         style = intent.style
+        target_pct, stop_pct, arm_pct, trail_pct, trail_pts = agent_exit_profile(now)
         target, stop = initial_target_stop(
-            entry, style, target_pct=self.target_pct, stop_pct=self.stop_pct
+            entry, style, target_pct=target_pct, stop_pct=stop_pct
         )
         hold_until = (now + timedelta(minutes=int(self.hold_minutes))).isoformat()
         charges_open = float(kite_nfo_charges(_open_legs(style, entry, qty))["total"])
@@ -1368,6 +1405,9 @@ class PaperAgent:
             reason=intent.reason,
             trail_armed=False,
             best_px=entry,
+            trail_arm_pct=arm_pct,
+            trail_pct=trail_pct,
+            trail_pts=trail_pts,
         )
         event = self._append(
             {
@@ -1422,10 +1462,10 @@ class PaperAgent:
         """
         px = float(px)
         armed_before = pos.trail_armed
-        gap = trail_gap_px(pos.entry, trail_pct=self.trail_pct, trail_pts=self.trail_pts)
+        gap = trail_gap_px(pos.entry, trail_pct=pos.trail_pct, trail_pts=pos.trail_pts)
         if pos.style == "short":
             pos.best_px = round(min(pos.best_px or pos.entry, px), 2)
-            arm_level = pos.entry * (1.0 - float(self.trail_arm_pct))
+            arm_level = pos.entry * (1.0 - float(pos.trail_arm_pct))
             if not pos.trail_armed and px <= arm_level:
                 pos.trail_armed = True
             if pos.trail_armed:
@@ -1433,7 +1473,7 @@ class PaperAgent:
                 pos.stop = round(min(pos.stop, trailed), 2)
         else:
             pos.best_px = round(max(pos.best_px or pos.entry, px), 2)
-            arm_level = pos.entry * (1.0 + float(self.trail_arm_pct))
+            arm_level = pos.entry * (1.0 + float(pos.trail_arm_pct))
             if not pos.trail_armed and px >= arm_level:
                 pos.trail_armed = True
             if pos.trail_armed:
@@ -1448,8 +1488,8 @@ class PaperAgent:
             else:
                 step = trail_ledger_step_px(
                     pos.entry,
-                    trail_pct=self.trail_pct,
-                    trail_pts=self.trail_pts,
+                    trail_pct=pos.trail_pct,
+                    trail_pts=pos.trail_pts,
                     step_frac=self.trail_ledger_step_frac,
                     step_min=self.trail_ledger_step_min,
                 )

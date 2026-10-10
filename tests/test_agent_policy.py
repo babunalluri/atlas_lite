@@ -29,10 +29,12 @@ def test_classify_regime_bands() -> None:
 
 def test_regime_book_modes_prefer_evidence() -> None:
     trend = regime_book_modes("trend")
-    assert trend["combo"] == "allow"
+    assert trend["combo"] == "skip_entries"
     assert trend["iron_fly"] == "allow"  # evidence book — never regime-skipped
-    assert trend["short_straddle"] == "skip_entries"
-    assert trend["theta_cliff"] == "skip_entries"
+    assert trend["short_straddle"] == "allow"
+    assert trend["theta_cliff"] == "allow"
+    assert trend["short_iron_condor"] == "allow"
+    assert trend["long_iron_condor"] == "skip_entries"
     assert trend["skew_fade"] == "skip_entries"
 
     ranging = regime_book_modes("range")
@@ -44,6 +46,8 @@ def test_regime_book_modes_prefer_evidence() -> None:
     mixed = regime_book_modes("mixed")
     assert mixed["iron_fly"] == "allow"
     assert mixed["theta_cliff"] == "allow"
+    assert mixed["short_straddle"] == "allow"
+    assert mixed["short_iron_condor"] == "allow"
     assert mixed["combo"] == "skip_entries"
 
 

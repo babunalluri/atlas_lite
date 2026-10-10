@@ -9,8 +9,9 @@ session recordings (ATM-straddle proxy on ~11 cash days):
 * Long straddle overlay was rare and mixed → **removed** from the live book.
 * Structure kept as **short iron fly** (ATM short + 250-pt wings) for
   defined risk on ₹2L / 1 lot (credit ≥ 100, max loss bounded by wing width).
-* Entries only **09:20–13:00**; flatten by **15:14**. Skip open noise; leave
-  time for theta. Day-trend filter ``|NIFTY chg| ≤ 0.75%``.
+* Entries only **12:00–12:30**; flatten by **15:14**. The morning window
+  was entering near 10:00 and lost on the tape. Day-trend filter
+  ``|NIFTY chg| ≤ 0.75%``.
 
 Soft sheet metrics (ADX, PCR, VIX, BN, SENSEX) are display-only — not ANDs.
 
@@ -41,9 +42,9 @@ CAPITAL = 200_000.0
 TARGET_PCT = 0.06
 STOP_PCT = -0.04
 STOP_PTS = 10.0
-# Skip open auction; no new risk after 13:00 (afternoon fills were the losers).
-ENTRY_AFTER = (9, 20)
-ENTRY_UNTIL = (13, 0)
+# Noon slot. The 09:20–13:00 window was filling near 10:00 and lost on the tape.
+ENTRY_AFTER = (12, 0)
+ENTRY_UNTIL = (12, 30)
 SQUARE_OFF = (15, 14)
 DEFAULT_LOT_SIZE = 65
 PAPER_IVP_LT = 40.0  # legacy long-overlay helper only (not used for entries)
