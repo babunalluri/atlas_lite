@@ -86,6 +86,7 @@ def load_minute_rows(rec_dir: Path) -> List[MinuteRow]:
                 "mp": _fnum(feed.get("max_pain")),
                 "vix": _fnum(feed.get("vix_chg")),
                 "nifty_chg": _fnum(feed.get("index_nifty_chg")),
+                "expiry": str(feed.get("expiry") or "")[:10] or None,
                 "iv": _fnum(feed.get("iv")),
             }
     return sorted(by_min.values(), key=lambda r: (r["date"], r["hm"]))

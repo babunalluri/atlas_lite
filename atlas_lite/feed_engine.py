@@ -2696,6 +2696,12 @@ class FeedEngine:
                 feed, ce, pe, atm = self._paper_option_ctx()
                 nifty_nb = self.notebooks.get("nifty")
                 spot = self._spot(nifty_nb) if nifty_nb else None
+                if atm is not None:
+                    feed["atm"] = atm
+                if spot is not None:
+                    feed["spot"] = spot
+                if nifty_nb is not None and nifty_nb.universe is not None:
+                    feed["expiry"] = nifty_nb.universe.expiry.isoformat()
                 if nifty_nb is not None:
                     if nifty_nb.adx is not None:
                         feed["adx"] = nifty_nb.adx

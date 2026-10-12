@@ -94,6 +94,7 @@ def load_tape_rows(rec_dir: Path) -> list[dict[str, Any]]:
                 "adx": _num(feed.get("adx")),
                 "pcr": _num(feed.get("pcr")),
                 "nifty_chg": _num(feed.get("index_nifty_chg")),
+                "expiry": str(feed.get("expiry") or "")[:10] or None,
                 "source": "tape",
             }
     return [by_min[key] for key in sorted(by_min)]

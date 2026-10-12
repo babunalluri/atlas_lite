@@ -9,7 +9,7 @@ the learned book makes more, after charges, on the days it did not train on.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
@@ -36,6 +36,11 @@ FEATURE_NAMES = (
     "atr",
     "minute",
     "nifty_chg",
+    # The option itself: where spot sits versus the strike, time left, and the last 15 minutes of premium.
+    "strike_gap",
+    "days_left",
+    "ce_chg",
+    "pe_chg",
 )
 MODEL_NAME = "ai_agent_model.json"
 RIDGE = 1.0
@@ -48,6 +53,9 @@ MIN_TEST_TRADES = 20
 SLIPPAGE_PTS = 0.5
 # A prediction must clear charges plus a buffer, and the book cannot refill all day.
 MIN_PREDICTED_NET = 150.0
+# The fit learns whether a normal trade paid. A freak print does not own the weights.
+TARGET_CLIP = 1300.0
+PREMIUM_LOOKBACK_MIN = 15
 MAX_ENTRIES_PER_DAY = 8
 SESSION_OPEN_HM = "09:15"
 
@@ -74,6 +82,46 @@ def _dt(day: str, hm: str) -> datetime:
     return datetime.fromisoformat(f"{day}T{hm}:00{IST_OFFSET}")
 
 
+def _weekly_expiry(session: date) -> date:
+    """Nifty weekly expiry: Tuesday, or the previous session when Tuesday is shut."""
+    from atlas_lite.agent_gates import NSE_HOLIDAYS
+
+    expiry = session + timedelta(days=(1 - session.weekday()) % 7)
+    while expiry.weekday() >= 5 or expiry.isoformat() in NSE_HOLIDAYS:
+        expiry -= timedelta(days=1)
+    return expiry
+
+
+def _days_left(day: str, hm: str, expiry: str | None) -> float:
+    """Calendar days until 15:30 on expiry. A blank expiry is the Tuesday of that week."""
+    if not day or not hm:
+        return 0.0
+    exp_iso = str(expiry or "")[:10]
+    if not exp_iso:
+        try:
+            exp_iso = _weekly_expiry(date.fromisoformat(day)).isoformat()
+        except ValueError:
+            return 0.0
+    try:
+        exp = datetime.fromisoformat(f"{exp_iso}T15:30:00{IST_OFFSET}")
+        now = _dt(day, hm)
+    except ValueError:
+        return 0.0
+    hours = (exp - now).total_seconds() / 3600.0
+    if hours <= 0:
+        return 0.0
+    return hours / 24.0
+
+
+def _train_target(pnl: float) -> float:
+    """Direction of a normal one-lot result. Larger than about 20 points is clipped."""
+    if pnl > TARGET_CLIP:
+        return TARGET_CLIP
+    if pnl < -TARGET_CLIP:
+        return -TARGET_CLIP
+    return pnl
+
+
 def features_from_values(
     *,
     spot_open_pct: float | None,
@@ -83,9 +131,15 @@ def features_from_values(
     atr: float | None,
     hm: str,
     nifty_chg: float | None,
+    spot: float | None = None,
+    atm: float | None = None,
+    days_left: float = 0.0,
+    ce_chg: float | None = None,
+    pe_chg: float | None = None,
 ) -> list[float]:
     """Fixed-length inputs. Missing numbers become 0 so a thin feed still scores."""
     minute = _hm_to_min(hm) if hm and ":" in hm else 0
+    strike_gap = 0.0 if spot is None or atm is None else (float(spot) - float(atm)) / 50.0
     return [
         1.0,
         float(spot_open_pct or 0.0),
@@ -95,6 +149,10 @@ def features_from_values(
         float(atr or 0.0) / 10.0,
         minute / 360.0,
         float(nifty_chg or 0.0),
+        strike_gap,
+        float(days_left or 0.0),
+        float(ce_chg or 0.0) / 10.0,
+        float(pe_chg or 0.0) / 10.0,
     ]
 
 
@@ -111,15 +169,40 @@ def features_from_row(row: dict[str, Any], *, day_open: float | None) -> list[fl
     open_pct = _f(row.get("spot_chg_open_pct"))
     if open_pct is None and spot is not None and day_open not in (None, 0):
         open_pct = (spot - float(day_open)) / float(day_open) * 100.0
+    hm = str(row.get("hm") or "")
     return features_from_values(
         spot_open_pct=open_pct,
         adx=_f(row.get("adx")),
         pcr=_f(row.get("pcr")),
         skew=_f(row.get("skew")) if row.get("skew") is not None else _row_skew(row),
         atr=_f(row.get("atr")),
-        hm=str(row.get("hm") or ""),
+        hm=hm,
         nifty_chg=_f(row.get("nifty_chg") if row.get("nifty_chg") is not None else row.get("index_nifty_chg")),
+        spot=spot,
+        atm=_f(row.get("atm")),
+        days_left=_days_left(str(row.get("date") or ""), hm, str(row.get("expiry") or "") or None),
+        ce_chg=_f(row.get("ce_chg_15")),
+        pe_chg=_f(row.get("pe_chg_15")),
     )
+
+
+def _attach_premium_change(days: dict[str, dict[str, dict[str, Any]]]) -> None:
+    """Last 15 minutes of the same strike. A strike change leaves the change blank."""
+    for minutes in days.values():
+        for hm, row in minutes.items():
+            prev = minutes.get(_min_to_hm(_hm_to_min(hm) - PREMIUM_LOOKBACK_MIN))
+            row["ce_chg_15"] = None
+            row["pe_chg_15"] = None
+            if prev is None:
+                continue
+            if row.get("atm") is not None and prev.get("atm") is not None and int(row["atm"]) != int(prev["atm"]):
+                continue
+            ce, prev_ce = _f(row.get("ce")), _f(prev.get("ce"))
+            pe, prev_pe = _f(row.get("pe")), _f(prev.get("pe"))
+            if ce is not None and prev_ce is not None:
+                row["ce_chg_15"] = ce - prev_ce
+            if pe is not None and prev_pe is not None:
+                row["pe_chg_15"] = pe - prev_pe
 
 
 def _in_entry_window(hm: str) -> bool:
@@ -419,6 +502,7 @@ def walk_forward(rows: list[dict[str, Any]], *, qty: int = DEFAULT_LOT_SIZE) -> 
     """Train on earlier days. Promote only if unseen days beat the scorecard and finish green."""
     ordered, days, opens = _index_days(rows)
     ordered = [day for day in ordered if not _dead_session(days[day])]
+    _attach_premium_change(days)
     width = len(FEATURE_NAMES)
     blank = {action: [0.0] * width for action in ACTIONS}
     if len(ordered) < MIN_DAYS:
@@ -459,7 +543,7 @@ def walk_forward(rows: list[dict[str, Any]], *, qty: int = DEFAULT_LOT_SIZE) -> 
                 continue
             for action, pnl in priced.items():
                 samples[action].append(features)
-                targets[action].append(pnl)
+                targets[action].append(_train_target(pnl))
     weights = {
         action: _fit_ridge(samples[action], targets[action]) for action in ACTIONS
     }

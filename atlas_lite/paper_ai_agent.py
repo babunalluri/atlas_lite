@@ -20,6 +20,8 @@ from atlas_lite.ai_agent_model import (
     FEATURE_NAMES,
     MAX_ENTRIES_PER_DAY,
     MODEL_NAME,
+    PREMIUM_LOOKBACK_MIN,
+    _days_left,
     features_from_values,
     load_model,
     predict_action,
@@ -133,6 +135,7 @@ class PaperAiAgent:
     max_entries_per_day: int = MAX_ENTRIES_PER_DAY
     shadow: AiPosition | None = None
     model: dict[str, Any] | None = None
+    _premium_memory: dict[str, tuple[int | None, float | None, float | None]] = field(default_factory=dict)
     _log: Any = field(default_factory=lambda: get_logger("atlas_lite.paper_ai_agent"), repr=False)
 
     def __post_init__(self) -> None:
@@ -297,6 +300,38 @@ class PaperAiAgent:
             return False
         return now < self.last_exit_at + timedelta(minutes=int(self.cooldown_min))
 
+    def _note_session_premium(self, now: datetime, feed: dict[str, Any], atm: int | None) -> None:
+        """Store this minute's premium from the open, before any entry gate."""
+        if now.weekday() >= 5:
+            return
+        hm = now.strftime("%H:%M")
+        if hm < "09:15" or hm > "15:30":
+            return
+        strike = float(atm) if atm is not None else _f(feed.get("atm"))
+        self._note_premium(now, strike, _f(feed.get("ce")), _f(feed.get("pe")))
+
+    def _note_premium(self, now: datetime, atm: float | None, ce: float | None, pe: float | None) -> None:
+        key = now.strftime("%Y-%m-%dT%H:%M")
+        atm_i = int(atm) if atm is not None else None
+        self._premium_memory[key] = (atm_i, ce, pe)
+        cutoff = (now - timedelta(minutes=40)).strftime("%Y-%m-%dT%H:%M")
+        for old in [item for item in self._premium_memory if item < cutoff]:
+            del self._premium_memory[old]
+
+    def _premium_change(self, now: datetime, atm: float | None) -> tuple[float | None, float | None]:
+        """Change in the call and the put over 15 minutes, on this strike only."""
+        prev = self._premium_memory.get((now - timedelta(minutes=PREMIUM_LOOKBACK_MIN)).strftime("%Y-%m-%dT%H:%M"))
+        cur = self._premium_memory.get(now.strftime("%Y-%m-%dT%H:%M"))
+        if prev is None or cur is None:
+            return None, None
+        if prev[0] is None or cur[0] is None or prev[0] != cur[0]:
+            return None, None
+        if atm is not None and cur[0] != int(atm):
+            return None, None
+        ce_chg = None if cur[1] is None or prev[1] is None else cur[1] - prev[1]
+        pe_chg = None if cur[2] is None or prev[2] is None else cur[2] - prev[2]
+        return ce_chg, pe_chg
+
     def _decide(self, feed: dict[str, Any], now: datetime) -> tuple[str, str] | None:
         weights = self._weights()
         if weights is None:
@@ -306,6 +341,9 @@ class PaperAiAgent:
         ce = _f(feed.get("ce"))
         pe = _f(feed.get("pe"))
         skew = (ce - pe) if ce is not None and pe is not None else None
+        atm = _f(feed.get("atm"))
+        ce_chg, pe_chg = self._premium_change(now, atm)
+        expiry = str(feed.get("expiry") or "")[:10] or None
         features = features_from_values(
             spot_open_pct=_f(feed.get("spot_chg_open_pct")),
             adx=_f(feed.get("adx")),
@@ -314,6 +352,11 @@ class PaperAiAgent:
             atr=_f(feed.get("atr")),
             hm=now.strftime("%H:%M"),
             nifty_chg=_f(feed.get("index_nifty_chg")),
+            spot=_f(feed.get("spot") if feed.get("spot") is not None else feed.get("nifty_ltp")),
+            atm=atm,
+            days_left=_days_left(now.strftime("%Y-%m-%d"), now.strftime("%H:%M"), expiry),
+            ce_chg=ce_chg,
+            pe_chg=pe_chg,
         )
         if len(features) != len(FEATURE_NAMES):
             self.last_reject = "bad_features"
@@ -704,6 +747,8 @@ class PaperAiAgent:
         allow_new_entries: bool = True,
         spot: float | None = None,
     ) -> dict[str, Any] | None:
+        # Remember the premium from 09:15, including while a trade is open or in cooldown.
+        self._note_session_premium(now, feed, atm)
         day = now.strftime("%Y-%m-%d")
         if now.weekday() >= 5:
             if self.position is not None:

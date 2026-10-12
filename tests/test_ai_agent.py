@@ -75,6 +75,66 @@ def _rows_for_pattern() -> list[dict]:
     return rows
 
 
+def test_option_path_uses_the_same_strike_only() -> None:
+    from atlas_lite.ai_agent_model import FEATURE_NAMES, _attach_premium_change, _train_target, features_from_row
+
+    assert _train_target(5000) == 1300
+    assert _train_target(-5000) == -1300
+    days = {
+        "2026-10-08": {
+            "10:00": {"date": "2026-10-08", "hm": "10:00", "atm": 22500, "ce": 100.0, "pe": 100.0, "spot": 22510.0},
+            "10:15": {
+                "date": "2026-10-08",
+                "hm": "10:15",
+                "atm": 22500,
+                "ce": 110.0,
+                "pe": 90.0,
+                "spot": 22520.0,
+                "expiry": "2026-10-13",
+            },
+            "10:16": {"date": "2026-10-08", "hm": "10:16", "atm": 22550, "ce": 80.0, "pe": 120.0, "spot": 22540.0},
+        }
+    }
+    _attach_premium_change(days)
+    assert days["2026-10-08"]["10:15"]["ce_chg_15"] == 10
+    assert days["2026-10-08"]["10:16"]["ce_chg_15"] is None
+    feats = features_from_row(days["2026-10-08"]["10:15"], day_open=22500.0)
+    assert len(feats) == len(FEATURE_NAMES)
+    assert abs(feats[FEATURE_NAMES.index("strike_gap")] - 0.4) < 1e-9
+    assert abs(feats[FEATURE_NAMES.index("ce_chg")] - 1.0) < 1e-9
+    assert feats[FEATURE_NAMES.index("days_left")] > 5
+    blank = dict(days["2026-10-08"]["10:15"])
+    blank["expiry"] = None
+    derived = features_from_row(blank, day_open=22500.0)
+    assert derived[FEATURE_NAMES.index("days_left")] > 5
+
+
+def test_tuesday_holiday_expiry_moves_to_monday() -> None:
+    from datetime import date
+
+    from atlas_lite.ai_agent_model import _weekly_expiry
+
+    assert _weekly_expiry(date(2026, 9, 4)) == date(2026, 9, 8)
+    assert _weekly_expiry(date(2026, 10, 19)) == date(2026, 10, 19)
+
+
+def test_premium_is_remembered_before_the_entry_window(tmp_path) -> None:
+    paper = PaperAiAgent(path=tmp_path / "paper_ai_agent.jsonl", model_path=tmp_path / "missing.json", lot_size=65)
+    kwargs = {
+        "feed": {"ce": 100.0, "pe": 100.0, "atm": 22500},
+        "book": Book(),
+        "ce_symbol": "NIFTY25O1322500CE",
+        "pe_symbol": "NIFTY25O1322500PE",
+        "atm": 22500,
+    }
+    assert paper.on_frame(now=_stamp("2026-10-13", "09:20"), **kwargs) is None
+    kwargs["feed"] = {"ce": 110.0, "pe": 90.0, "atm": 22500}
+    assert paper.on_frame(now=_stamp("2026-10-13", "09:35"), **kwargs) is None
+    ce_chg, pe_chg = paper._premium_change(_stamp("2026-10-13", "09:35"), 22500)
+    assert ce_chg == 10
+    assert pe_chg == -10
+
+
 def test_sticky_feed_strike_is_not_treated_as_one_contract() -> None:
     """Spot still rounds to 22450, but the feed has stepped up to 22500."""
     minutes = {
