@@ -45,10 +45,11 @@ POLICY_BOOKS = (
     "short_iron_condor",
     "theta_cliff",
     "combo",
+    "ai_agent",
 )
 
 KILL_SWITCH_BOOKS = frozenset(
-    {"combo", "short_straddle", "skew_fade", "theta_cliff", "short_iron_condor"}
+    {"combo", "short_straddle", "skew_fade", "theta_cliff", "short_iron_condor", "ai_agent"}
 )
 
 BOOK_LEDGERS: dict[str, str] = {
@@ -61,6 +62,7 @@ BOOK_LEDGERS: dict[str, str] = {
     "combo": "paper_combo.jsonl",
     "impulse_fade": "paper_impulse_fade.jsonl",
     "agent": "paper_agent.jsonl",
+    "ai_agent": "paper_ai_agent.jsonl",
 }
 
 REASON_REGIME = "policy:regime:"
@@ -107,6 +109,7 @@ def regime_book_modes(regime: Regime) -> dict[str, GateMode]:
             "short_iron_condor": "allow",
             "theta_cliff": "allow",
             "skew_fade": "skip_entries",
+            "ai_agent": "allow",
         }
     if regime == "range":
         # Short premium OK; combo letter-churn sits out.
@@ -118,6 +121,7 @@ def regime_book_modes(regime: Regime) -> dict[str, GateMode]:
             "theta_cliff": "allow",
             "combo": "skip_entries",
             "skew_fade": "skip_entries",
+            "ai_agent": "allow",
         }
     # mixed / chop — prefer evidence books; park weak / twitchy ones.
     # Expiry fence stays allow (only fires on expiry noon + RV filter).
@@ -129,6 +133,7 @@ def regime_book_modes(regime: Regime) -> dict[str, GateMode]:
         "short_straddle": "allow",
         "long_iron_condor": "skip_entries",
         "skew_fade": "skip_entries",
+        "ai_agent": "allow",
     }
 
 

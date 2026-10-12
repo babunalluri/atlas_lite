@@ -60,6 +60,7 @@ KNOWN_BOOKS = (
     "impulse_fade",
     "combo",
     "agent",
+    "ai_agent",
     "ict",
 )
 
@@ -73,6 +74,8 @@ BOOK_ALIASES = {
     "ict_paper": "ict",
     "agent_paper": "agent",
     "paper_agent": "agent",
+    "ai_agent_paper": "ai_agent",
+    "paper_ai_agent": "ai_agent",
     "theta_cliff_fence": "theta_cliff",
     "theta-cliff": "theta_cliff",
     "fence": "theta_cliff",

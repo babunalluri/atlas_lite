@@ -28,6 +28,13 @@ from atlas_lite.paper_agent import (
     PaperAgent,
     paper_agent_enabled,
 )
+from atlas_lite.ai_agent_learn import learn_due, read_learn_day, run_daily_learn
+from atlas_lite.paper_ai_agent import (
+    STRATEGY as AI_AGENT_STRATEGY,
+    DEFAULT_LOT_SIZE as AI_AGENT_LOT,
+    PaperAiAgent,
+    paper_ai_agent_enabled,
+)
 from atlas_lite.notebook import NotebookConfig, get_notebook, NOTEBOOK_IDS, parse_notebook
 from atlas_lite.notebook_runtime import NotebookRuntime, NotebookSession
 from atlas_lite.instruments import (
@@ -323,6 +330,8 @@ class FeedEngine:
     _combo_cache_key: tuple[Any, ...] | None = field(default=None, repr=False)
     _combo_cache_row: dict[str, Any] | None = field(default=None, repr=False)
     _paper_agent: PaperAgent | None = field(default=None, repr=False)
+    _paper_ai_agent: PaperAiAgent | None = field(default=None, repr=False)
+    _ai_learn_running: bool = field(default=False, repr=False)
     _agent_gates: AgentGateStore | None = field(default=None, repr=False)
     _agent: AgentAdvisor | None = field(default=None, repr=False)
     _last_book_policy: dict[str, Any] | None = field(default=None, repr=False)
@@ -572,6 +581,22 @@ class FeedEngine:
                 self._paper_agent.lots,
                 self._paper_agent.lots * lot,
             )
+        if paper_ai_agent_enabled():
+            nifty_nb = self.notebooks.get("nifty")
+            lot = AI_AGENT_LOT
+            if nifty_nb and nifty_nb.universe:
+                lot = nifty_option_lot_size(nifty_nb.fo_csv, expiry=nifty_nb.universe.expiry)
+            elif self._paper is not None:
+                lot = self._paper.lot_size
+            self._paper_ai_agent = PaperAiAgent(
+                path=self.data_dir / "paper_ai_agent.jsonl",
+                lot_size=lot,
+            )
+            self._log.info(
+                "paper AI agent %d lots qty=%d (tape model, separate ledger, no live orders)",
+                self._paper_ai_agent.lots,
+                self._paper_ai_agent.lots * lot,
+            )
 
         self._agent_gates = AgentGateStore(self.data_dir / "agent_gates.json")
         if agent_enabled():
@@ -617,6 +642,8 @@ class FeedEngine:
             self._tasks.append(asyncio.create_task(self._paper_ict_loop()))
         if self._paper_agent is not None:
             self._tasks.append(asyncio.create_task(self._paper_agent_loop()))
+        if self._paper_ai_agent is not None:
+            self._tasks.append(asyncio.create_task(self._paper_ai_agent_loop()))
         if self._agent is not None:
             self._tasks.append(asyncio.create_task(self._agent_loop()))
 
@@ -1965,7 +1992,37 @@ class FeedEngine:
                 await asyncio.to_thread(maintain_recordings, record_dir(self.data_dir))
             except Exception as exc:  # noqa: BLE001
                 warnings.append(f"Recording maintain failed: {exc}")
+            try:
+                await self._maybe_learn_ai_agent()
+            except Exception as exc:  # noqa: BLE001
+                warnings.append(f"AI agent learn failed: {exc}")
             await asyncio.sleep(MAINTENANCE_LOOP_S)
+
+    async def _maybe_learn_ai_agent(self) -> None:
+        """One fit after 15:40 IST. The scorecard agent is not touched."""
+        book = self._paper_ai_agent
+        if book is None or self._ai_learn_running:
+            return
+        now = datetime.now(IST)
+        if book.position is not None:
+            return
+        if not learn_due(now, read_learn_day(self.data_dir)):
+            return
+        self._ai_learn_running = True
+        try:
+            report = await asyncio.to_thread(
+                run_daily_learn, self.data_dir, record_dir(self.data_dir)
+            )
+            book.reload_model()
+            self._log.info(
+                "ai agent learned day=%s promoted=%s reason=%s rows=%s",
+                report.get("learned_day"),
+                report.get("promoted"),
+                report.get("reason"),
+                report.get("rows"),
+            )
+        finally:
+            self._ai_learn_running = False
 
     def _refresh_adx_from_bars(self, nb: NotebookRuntime, *, purge: bool = True) -> None:
         """ADX/ATR/+DI/-DI from Kite REST 1m bars (matches Kite chart; WS bars are chart-only)."""
@@ -2625,6 +2682,60 @@ class FeedEngine:
                 self._log.warning("paper agent book failed: %s", exc)
                 await asyncio.sleep(1.0)
 
+    async def _paper_ai_agent_loop(self) -> None:
+        """AI agent paper book. Separate ledger. Does not place broker orders."""
+        if self._paper_ai_agent is None:
+            return
+        interval = max(1.0, STREAM_INTERVAL_MS / 1000.0)
+        while True:
+            try:
+                now = datetime.now(IST)
+                if now.weekday() >= 5 and self._paper_ai_agent.position is None:
+                    await asyncio.sleep(30.0)
+                    continue
+                feed, ce, pe, atm = self._paper_option_ctx()
+                nifty_nb = self.notebooks.get("nifty")
+                spot = self._spot(nifty_nb) if nifty_nb else None
+                if nifty_nb is not None:
+                    if nifty_nb.adx is not None:
+                        feed["adx"] = nifty_nb.adx
+                    if nifty_nb.atr is not None:
+                        feed["atr"] = nifty_nb.atr
+                    spot_row = self.book.get(nifty_nb.config.symbol)
+                    open_pct = quote_change_from_open_pct(spot_row)
+                    if open_pct is not None:
+                        feed["spot_chg_open_pct"] = open_pct
+                    strikes, ce_syms, pe_syms = self._metrics_chain(nifty_nb)
+                    if strikes:
+                        feed.update(
+                            chain_pcr_max_pain(
+                                strikes,
+                                [self.book.get(sym) for sym in ce_syms],
+                                [self.book.get(sym) for sym in pe_syms],
+                            )
+                        )
+                allow = (
+                    self._agent_gates.entries_allowed("ai_agent", now)
+                    if self._agent_gates
+                    else True
+                )
+                self._paper_ai_agent.on_frame(
+                    now=now,
+                    feed=feed,
+                    book=self.book,
+                    ce_symbol=ce,
+                    pe_symbol=pe,
+                    atm=atm,
+                    allow_new_entries=allow,
+                    spot=spot,
+                )
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                self._log.warning("paper AI agent failed: %s", exc)
+                await asyncio.sleep(1.0)
+
     async def _agent_loop(self) -> None:
         """Periodic agent advise (scorecard autopilot or LLM; not every tick)."""
         if self._agent is None:
@@ -3121,6 +3232,21 @@ class FeedEngine:
             agent_body = self._paper_agent.snapshot(book=self.book, spot=spot)
             agent_body["enabled"] = True
             body["agent"] = agent_body
+        if self._paper_ai_agent is None:
+            body["ai_agent"] = {
+                "ok": True,
+                "mode": "paper",
+                "enabled": False,
+                "live_orders": False,
+                "book": AI_AGENT_STRATEGY,
+                "name": "AI agent",
+            }
+        else:
+            nifty_nb = self.notebooks.get("nifty")
+            spot = self._spot(nifty_nb) if nifty_nb else None
+            ai_body = self._paper_ai_agent.snapshot(book=self.book, spot=spot)
+            ai_body["enabled"] = True
+            body["ai_agent"] = ai_body
         if self._agent_gates is not None:
             body["agent_gates"] = self._agent_gates.snapshot().get("gates")
         return body

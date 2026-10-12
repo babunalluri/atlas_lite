@@ -64,11 +64,17 @@ def load_minute_rows(rec_dir: Path) -> List[MinuteRow]:
             ce = _fnum(feed.get("ce"))
             pe = _fnum(feed.get("pe"))
             key = (dt.date().isoformat(), dt.strftime("%H:%M"))
+            atm_raw = feed.get("atm")
+            try:
+                atm_i = int(atm_raw) if atm_raw not in (None, "") else None
+            except (TypeError, ValueError):
+                atm_i = None
             by_min[key] = {
                 "date": key[0],
                 "hm": key[1],
                 "hour": dt.hour,
                 "minute": dt.minute,
+                "atm": atm_i,
                 "ce": ce,
                 "pe": pe,
                 "straddle": (ce + pe) if ce is not None and pe is not None else None,
