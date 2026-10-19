@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from atlas_lite.ai_agent_model import (
     FEATURE_NAMES,
     MIN_TEST_DAYS,
     MIN_TEST_TRADES,
+    _model_decide,
     predict_action,
     save_model,
     simulate_action,
+    skip_rising_short,
     walk_forward,
 )
 from atlas_lite.paper_agent import PaperAgent
@@ -312,8 +314,7 @@ def test_missing_model_does_not_open_and_does_not_touch_the_agent_ledger(tmp_pat
     quotes.quotes["NIFTY25O1322500CE"] = {"last_price": 100.0}
     quotes.quotes["NIFTY25O1322500PE"] = {"last_price": 100.0}
     now = _stamp("2026-10-12", "10:00")
-    opened = book.on_frame(
-        now=now,
+    frame = dict(
         feed={"ce": 100.0, "pe": 100.0, "adx": 30.0, "spot_chg_open_pct": 0.4, "atr": 8.0, "pcr": 1.0},
         book=quotes,
         ce_symbol="NIFTY25O1322500CE",
@@ -321,6 +322,8 @@ def test_missing_model_does_not_open_and_does_not_touch_the_agent_ledger(tmp_pat
         atm=22500,
         spot=22570.0,
     )
+    assert book.on_frame(now=now, **frame) is None
+    opened = book.on_frame(now=now + timedelta(minutes=1), **frame)
     assert opened is None
     assert book.last_reject == "model_missing"
     assert book.position is None
@@ -348,8 +351,7 @@ def test_failed_model_is_shadow_only(tmp_path) -> None:
     pe = "NIFTY25O1322500PE"
     quotes.quotes[ce] = {"last_price": 100.0}
     quotes.quotes[pe] = {"last_price": 90.0}
-    opened = paper.on_frame(
-        now=_stamp("2026-10-12", "10:00"),
+    frame = dict(
         feed={"ce": 100.0, "pe": 90.0, "adx": 25.0, "spot_chg_open_pct": 0.2, "atr": 5.0, "pcr": 1.0},
         book=quotes,
         ce_symbol=ce,
@@ -357,6 +359,9 @@ def test_failed_model_is_shadow_only(tmp_path) -> None:
         atm=22500,
         spot=22540.0,
     )
+    assert paper.on_frame(now=_stamp("2026-10-12", "10:00"), **frame) is None
+    assert paper.shadow is None
+    opened = paper.on_frame(now=_stamp("2026-10-12", "10:01"), **frame)
     assert paper.position is None
     assert paper.shadow is not None
     assert opened is not None and opened["event"] == "shadow_open"
@@ -393,8 +398,7 @@ def test_promoted_model_without_approval_only_shadows(tmp_path) -> None:
     ce = "NIFTY25O1322500CE"
     quotes.quotes[ce] = {"last_price": 100.0}
     quotes.quotes["NIFTY25O1322500PE"] = {"last_price": 100.0}
-    opened = paper.on_frame(
-        now=_stamp("2026-10-12", "10:00"),
+    frame = dict(
         feed={"ce": 100.0, "pe": 90.0, "adx": 25.0, "spot_chg_open_pct": 0.2, "atr": 5.0, "pcr": 1.0},
         book=quotes,
         ce_symbol=ce,
@@ -402,6 +406,8 @@ def test_promoted_model_without_approval_only_shadows(tmp_path) -> None:
         atm=22500,
         spot=22540.0,
     )
+    assert paper.on_frame(now=_stamp("2026-10-12", "10:00"), **frame) is None
+    opened = paper.on_frame(now=_stamp("2026-10-12", "10:01"), **frame)
     assert paper.position is None
     assert opened is not None and opened["event"] == "shadow_open"
 
@@ -464,8 +470,7 @@ def test_loaded_model_opens_its_own_ledger_and_exits_on_target(tmp_path) -> None
     quotes.quotes[ce] = {"last_price": 100.0}
     quotes.quotes[pe] = {"last_price": 100.0}
     now = _stamp("2026-10-12", "10:00")
-    opened = paper.on_frame(
-        now=now,
+    frame = dict(
         feed={"ce": 100.0, "pe": 90.0, "adx": 25.0, "spot_chg_open_pct": 0.2, "atr": 5.0, "pcr": 1.0, "index_nifty_chg": 0.2},
         book=quotes,
         ce_symbol=ce,
@@ -473,6 +478,8 @@ def test_loaded_model_opens_its_own_ledger_and_exits_on_target(tmp_path) -> None
         atm=22500,
         spot=22540.0,
     )
+    assert paper.on_frame(now=now, **frame) is None
+    opened = paper.on_frame(now=now + timedelta(minutes=1), **frame)
     assert opened is not None
     assert opened["strategy"] == "ai_agent"
     assert opened["side"] == "ce"
@@ -498,3 +505,158 @@ def test_loaded_model_opens_its_own_ledger_and_exits_on_target(tmp_path) -> None
     action, predicted = predict_action(weights, [1.0] + [0.0] * (len(FEATURE_NAMES) - 1))
     assert action == "long_ce"
     assert predicted > 0
+
+
+def _weights(bias_action: str) -> dict:
+    weights = {name: [0.0] * len(FEATURE_NAMES) for name in ("long_ce", "long_pe", "short_ce", "short_pe")}
+    weights[bias_action][0] = 5000.0
+    return weights
+
+
+def test_a_spike_inside_the_minute_does_not_open(tmp_path) -> None:
+    model_path = tmp_path / "ai_agent_model.json"
+    save_model(model_path, {"promoted": False, "reason": "test", "feature_names": list(FEATURE_NAMES), "weights": _weights("short_pe")})
+    paper = PaperAiAgent(path=tmp_path / "paper_ai_agent.jsonl", model_path=model_path, lot_size=65)
+    quotes = Book()
+    ce, pe = "NIFTY26O1923000CE", "NIFTY26O1923000PE"
+    quotes.quotes[ce] = {"last_price": 40.0}
+    quotes.quotes[pe] = {"last_price": 80.0}
+    frame = dict(
+        feed={"ce": 40.0, "pe": 80.0, "adx": 25.0, "spot_chg_open_pct": -0.4, "atr": 8.0, "pcr": 1.2},
+        book=quotes,
+        ce_symbol=ce,
+        pe_symbol=pe,
+        atm=23000,
+        spot=22980.0,
+    )
+    assert paper.on_frame(now=_stamp("2026-10-19", "11:34"), **frame) is None
+    quotes.quotes[pe] = {"last_price": 95.0}
+    frame["feed"] = {"ce": 30.0, "pe": 95.0, "adx": 25.0, "spot_chg_open_pct": -0.6, "atr": 8.0, "pcr": 1.3}
+    assert paper.on_frame(now=_stamp("2026-10-19", "11:34").replace(second=38), **frame) is None
+    assert paper.shadow is None
+    opened = paper.on_frame(now=_stamp("2026-10-19", "11:35"), **frame)
+    assert opened is not None and opened["event"] == "shadow_open"
+    assert opened["style"] == "short"
+    assert opened["side"] == "pe"
+
+
+def test_short_is_skipped_when_that_option_is_already_up(tmp_path) -> None:
+    model_path = tmp_path / "ai_agent_model.json"
+    save_model(model_path, {"promoted": False, "reason": "test", "feature_names": list(FEATURE_NAMES), "weights": _weights("short_pe")})
+    paper = PaperAiAgent(path=tmp_path / "paper_ai_agent.jsonl", model_path=model_path, lot_size=65)
+    quotes = Book()
+    ce, pe = "NIFTY26O1923000CE", "NIFTY26O1923000PE"
+    quotes.quotes[ce] = {"last_price": 40.0}
+    quotes.quotes[pe] = {"last_price": 70.0}
+
+    def frame(hm: str, put: float, atm: int = 23000):
+        quotes.quotes[pe] = {"last_price": put}
+        return paper.on_frame(
+            now=_stamp("2026-10-19", hm),
+            feed={"ce": 40.0, "pe": put, "adx": 25.0, "spot_chg_open_pct": -0.4, "atr": 8.0, "pcr": 1.2},
+            book=quotes,
+            ce_symbol=ce,
+            pe_symbol=pe,
+            atm=atm,
+            spot=22980.0,
+        )
+
+    assert frame("09:30", 40.0) is None
+    assert frame("09:45", 70.0) is None
+    assert frame("09:46", 70.0) is None
+    assert paper.shadow is None
+    assert paper.last_reject == "rising_premium"
+    assert skip_rising_short("short_pe", None, 30.0) == "wait"
+    assert skip_rising_short("short_pe", None, -5.0) == "short_pe"
+    assert skip_rising_short("short_pe", None, None) == "short_pe"
+    assert skip_rising_short("long_ce", 12.0, 12.0) == "long_ce"
+
+
+def test_a_new_strike_can_still_be_sold(tmp_path) -> None:
+    model_path = tmp_path / "ai_agent_model.json"
+    save_model(model_path, {"promoted": False, "reason": "test", "feature_names": list(FEATURE_NAMES), "weights": _weights("short_pe")})
+    paper = PaperAiAgent(path=tmp_path / "paper_ai_agent.jsonl", model_path=model_path, lot_size=65)
+    quotes = Book()
+    old_pe, new_pe = "NIFTY26O1923050PE", "NIFTY26O1923000PE"
+    ce = "NIFTY26O1923000CE"
+    quotes.quotes[ce] = {"last_price": 50.0}
+    quotes.quotes[old_pe] = {"last_price": 40.0}
+    quotes.quotes[new_pe] = {"last_price": 79.0}
+    assert paper.on_frame(
+        now=_stamp("2026-10-19", "09:30"),
+        feed={"ce": 70.0, "pe": 40.0, "adx": 20.0, "spot_chg_open_pct": -0.2, "atr": 8.0, "pcr": 1.1},
+        book=quotes,
+        ce_symbol="NIFTY26O1923050CE",
+        pe_symbol=old_pe,
+        atm=23050,
+        spot=23040.0,
+    ) is None
+    assert paper.on_frame(
+        now=_stamp("2026-10-19", "09:45"),
+        feed={"ce": 50.0, "pe": 79.0, "adx": 28.0, "spot_chg_open_pct": -0.5, "atr": 8.0, "pcr": 1.0},
+        book=quotes,
+        ce_symbol=ce,
+        pe_symbol=new_pe,
+        atm=23000,
+        spot=22990.0,
+    ) is None
+    opened = paper.on_frame(
+        now=_stamp("2026-10-19", "09:46"),
+        feed={"ce": 50.0, "pe": 79.0, "adx": 28.0, "spot_chg_open_pct": -0.5, "atr": 8.0, "pcr": 1.0},
+        book=quotes,
+        ce_symbol=ce,
+        pe_symbol=new_pe,
+        atm=23000,
+        spot=22990.0,
+    )
+    assert opened is not None and opened["event"] == "shadow_open"
+    assert opened["side"] == "pe"
+    assert opened["atm"] == 23000
+
+
+def test_replay_skips_a_short_that_is_already_up() -> None:
+    decide = _model_decide(_weights("short_pe"))
+    row = {
+        "hm": "10:00",
+        "date": "2026-10-13",
+        "spot": 23000.0,
+        "atm": 23000,
+        "ce": 40.0,
+        "pe": 80.0,
+        "adx": 20.0,
+        "atr": 8.0,
+        "pcr": 1.1,
+        "ce_chg_15": -4.0,
+        "pe_chg_15": 12.0,
+    }
+    assert decide(row, 23100.0) == "wait"
+    row["pe_chg_15"] = -5.0
+    assert decide(row, 23100.0) == "short_pe"
+    row["pe_chg_15"] = None
+    assert decide(row, 23100.0) == "short_pe"
+
+
+def test_a_missing_quote_is_retried_on_the_same_bar(tmp_path) -> None:
+    model_path = tmp_path / "ai_agent_model.json"
+    save_model(model_path, {"promoted": False, "reason": "test", "feature_names": list(FEATURE_NAMES), "weights": _weights("short_pe")})
+    paper = PaperAiAgent(path=tmp_path / "paper_ai_agent.jsonl", model_path=model_path, lot_size=65)
+    quotes = Book()
+    ce, pe = "NIFTY26O1923000CE", "NIFTY26O1923000PE"
+    frame = dict(
+        feed={"ce": 40.0, "pe": 80.0, "adx": 25.0, "spot_chg_open_pct": -0.4, "atr": 8.0, "pcr": 1.2},
+        book=quotes,
+        ce_symbol=ce,
+        pe_symbol=pe,
+        atm=23000,
+        spot=22980.0,
+    )
+    assert paper.on_frame(now=_stamp("2026-10-19", "11:34"), **frame) is None
+    missed = paper.on_frame(now=_stamp("2026-10-19", "11:35"), **frame)
+    assert missed is None
+    assert paper.shadow is None
+    assert paper.last_reject == "no_quote"
+    quotes.quotes[ce] = {"last_price": 40.0}
+    quotes.quotes[pe] = {"last_price": 80.0}
+    opened = paper.on_frame(now=_stamp("2026-10-19", "11:35").replace(second=1), **frame)
+    assert opened is not None and opened["event"] == "shadow_open"
+    assert opened["entry"] == 80.0

@@ -3,6 +3,8 @@
 Independent of the scorecard agent: own ledger, own switch, own position.
 The exit profile matches the agent (morning and after-10:30). The model only
 chooses the side. It does not move the stop, the day-loss line, or the flat time.
+A new entry is scored once, on the minute that just closed, which is the bar
+the fit sees. A short is skipped when that option is already up over 15 minutes.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from atlas_lite.ai_agent_model import (
     features_from_values,
     load_model,
     predict_action,
+    skip_rising_short,
 )
 from atlas_lite.kite_charges import kite_nfo_charges
 from atlas_lite.log_util import get_logger
@@ -136,6 +139,10 @@ class PaperAiAgent:
     shadow: AiPosition | None = None
     model: dict[str, Any] | None = None
     _premium_memory: dict[str, tuple[int | None, float | None, float | None]] = field(default_factory=dict)
+    _open_minute_key: str = ""
+    _open_minute: dict[str, Any] | None = None
+    _pending_minute: dict[str, Any] | None = None
+    _decided_minute: str = ""
     _log: Any = field(default_factory=lambda: get_logger("atlas_lite.paper_ai_agent"), repr=False)
 
     def __post_init__(self) -> None:
@@ -364,6 +371,9 @@ class PaperAiAgent:
         action, predicted = predict_action(weights, features)
         self.last_action = action
         self.last_predicted_net = predicted
+        if skip_rising_short(action, ce_chg, pe_chg) == "wait" and action in ACTIONS:
+            self.last_reject = "rising_premium"
+            return None
         if action not in ACTIONS:
             self.last_reject = "model_wait" if predicted <= 0 else "edge_too_small"
             return None
@@ -749,6 +759,9 @@ class PaperAiAgent:
     ) -> dict[str, Any] | None:
         # Remember the premium from 09:15, including while a trade is open or in cooldown.
         self._note_session_premium(now, feed, atm)
+        closed = self._finish_minute(now, feed, atm, ce_symbol, pe_symbol)
+        if closed is not None:
+            self._pending_minute = closed
         day = now.strftime("%Y-%m-%d")
         if now.weekday() >= 5:
             if self.position is not None:
@@ -768,45 +781,106 @@ class PaperAiAgent:
             return self._maybe_exit(now, book, spot=spot)
         if self.shadow is not None:
             return self._maybe_shadow_exit(now, book, spot=spot)
-        if not allow_new_entries or not in_ai_entry_window(now):
+        pending = self._pending_minute
+        if pending is None or str(pending.get("key") or "") == self._decided_minute:
+            return None
+        bar_key = str(pending["key"])
+        bar_now = pending.get("as_of")
+        if not isinstance(bar_now, datetime):
+            self._decided_minute = bar_key
+            return None
+        if not allow_new_entries or not in_ai_entry_window(bar_now) or hm_ge(now, SQUARE_OFF):
+            self._decided_minute = bar_key
             return None
         if self.day_pnl <= float(self.daily_loss_stop):
             self.last_reject = "daily_loss_stop"
+            self._decided_minute = bar_key
             return None
         if self.entries_today >= int(self.max_entries_per_day):
             self.last_reject = "max_trades_day"
+            self._decided_minute = bar_key
             return None
         if self._in_cooldown(now):
             self.last_reject = "cooldown"
+            self._decided_minute = bar_key
             return None
-        if not ce_symbol or not pe_symbol or atm is None:
+        bar_ce = pending.get("ce_symbol")
+        bar_pe = pending.get("pe_symbol")
+        bar_atm = pending.get("atm")
+        if not bar_ce or not bar_pe or bar_atm is None:
             self.last_reject = "no_atm"
+            self._decided_minute = bar_key
             return None
-        chosen = self._decide(feed, now)
+        bar_feed = pending.get("feed")
+        if not isinstance(bar_feed, dict):
+            self._decided_minute = bar_key
+            return None
+        chosen = self._decide(bar_feed, bar_now)
         if chosen is None:
+            self._decided_minute = bar_key
             return None
         side, style = chosen
         if not self.can_open:
-            return self._open_shadow(
+            opened = self._open_shadow(
                 now,
                 book,
                 side=side,
                 style=style,
-                ce_symbol=ce_symbol,
-                pe_symbol=pe_symbol,
-                atm=int(atm),
+                ce_symbol=str(bar_ce),
+                pe_symbol=str(bar_pe),
+                atm=int(bar_atm),
                 spot=spot,
             )
-        return self._open(
-            now,
-            book,
-            side=side,
-            style=style,
-            ce_symbol=ce_symbol,
-            pe_symbol=pe_symbol,
-            atm=int(atm),
-            spot=spot,
-        )
+        else:
+            opened = self._open(
+                now,
+                book,
+                side=side,
+                style=style,
+                ce_symbol=str(bar_ce),
+                pe_symbol=str(bar_pe),
+                atm=int(bar_atm),
+                spot=spot,
+            )
+        if opened is None:
+            return None
+        self._decided_minute = bar_key
+        return opened
+
+    def _finish_minute(
+        self,
+        now: datetime,
+        feed: dict[str, Any],
+        atm: int | None,
+        ce_symbol: str | None,
+        pe_symbol: str | None,
+    ) -> dict[str, Any] | None:
+        """Keep the latest quote of this minute. Return the previous minute once it has closed."""
+        key = now.strftime("%Y-%m-%dT%H:%M")
+        closed = self._open_minute if self._open_minute_key and key != self._open_minute_key else None
+        snap = {
+            "ce": feed.get("ce"),
+            "pe": feed.get("pe"),
+            "spot": feed.get("spot"),
+            "nifty_ltp": feed.get("nifty_ltp"),
+            "spot_chg_open_pct": feed.get("spot_chg_open_pct"),
+            "adx": feed.get("adx"),
+            "atr": feed.get("atr"),
+            "pcr": feed.get("pcr"),
+            "index_nifty_chg": feed.get("index_nifty_chg"),
+            "expiry": feed.get("expiry"),
+            "atm": atm if atm is not None else feed.get("atm"),
+        }
+        self._open_minute_key = key
+        self._open_minute = {
+            "key": key,
+            "as_of": now,
+            "feed": snap,
+            "atm": atm,
+            "ce_symbol": ce_symbol,
+            "pe_symbol": pe_symbol,
+        }
+        return closed
 
     def snapshot(self, book: QuoteSource | None = None, *, spot: float | None = None) -> dict[str, Any]:
         pos = self.position

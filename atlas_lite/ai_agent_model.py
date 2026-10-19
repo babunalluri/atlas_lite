@@ -474,9 +474,22 @@ def _replay(
     return {"net": round(net, 2), "trades": trades, "by_day": by_day}
 
 
+def skip_rising_short(action: str, ce_chg: float | None, pe_chg: float | None) -> str:
+    """Wait instead of shorting an option that is already higher than 15 minutes ago.
+
+    A blank change means the strike changed, so that short is still allowed.
+    """
+    if action == "short_ce" and ce_chg is not None and ce_chg > 0:
+        return "wait"
+    if action == "short_pe" and pe_chg is not None and pe_chg > 0:
+        return "wait"
+    return action
+
+
 def _model_decide(weights: dict[str, list[float]]) -> Callable[[dict[str, Any], float | None], str]:
     def decide(row: dict[str, Any], day_open: float | None) -> str:
-        return predict_action(weights, features_from_row(row, day_open=day_open))[0]
+        action = predict_action(weights, features_from_row(row, day_open=day_open))[0]
+        return skip_rising_short(action, _f(row.get("ce_chg_15")), _f(row.get("pe_chg_15")))
 
     return decide
 

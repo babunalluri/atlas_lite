@@ -130,11 +130,11 @@ def build_daily_review(
                 f"{str(les.get('lesson') or '')[:120]}"
             )
 
-    # Stance must not flip the whole day to "cautious" on one stop / any red print.
-    # Thesis avoid + 15m stop block already handle single-setup pain.
+    # One stop must not raise the bar for every other setup, even when that
+    # loss is past -500. The day avoid list already blocks the setup that lost.
     if net <= -1500 or stops >= 3:
         stance = "defensive"
-    elif stops >= 2 or scratches >= 2 or net <= -500.0:
+    elif stops >= 2 or scratches >= 2:
         stance = "cautious"
     elif net > 300 and wins >= 2:
         stance = "selective"
