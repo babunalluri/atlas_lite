@@ -3279,13 +3279,16 @@ class FeedEngine:
         *,
         limit: int = 200,
         day: str | None = None,
+        book: str | None = None,
     ) -> dict[str, Any]:
         """Paper fills across books — paired open/close, consolidated PnL by book×day."""
         # close_set / reentry: short IC (and similar) book PnL per side, not on flatten close.
         want = self._PAPER_OPEN_EVENTS | self._PAPER_CLOSE_EVENTS
         day_key = (day or "").strip() or None
+        book_key = (book or "").strip() or None
         rows: list[dict[str, Any]] = []
         all_days: set[str] = set()
+        all_books: set[str] = set()
         for path in sorted(self.data_dir.glob("paper_*.jsonl")):
             try:
                 text = path.read_text(encoding="utf-8")
@@ -3304,9 +3307,14 @@ class FeedEngine:
                 if event.get("event") not in want:
                     continue
                 event_day = str(event.get("day") or "").strip()
+                event_book = str(event.get("strategy") or event.get("book") or "").strip()
                 if event_day:
                     all_days.add(event_day)
+                if event_book:
+                    all_books.add(event_book)
                 if day_key and event_day != day_key:
+                    continue
+                if book_key and event_book != book_key:
                     continue
                 stop = self._paper_trade_px(event.get("stop"), event.get("stop_loss"))
                 # Prefer per-unit premiums. credit_entry before credit so short-IC
@@ -3388,6 +3396,7 @@ class FeedEngine:
         paired.sort(key=lambda row: str(row.get("ts") or ""), reverse=True)
         capped = max(1, min(int(limit), 1000))
         days = sorted(all_days, reverse=True)
+        books = sorted(all_books)
         open_n = sum(1 for r in paired if r.get("event") in self._PAPER_OPEN_EVENTS)
         closed_n = sum(1 for r in paired if r.get("event") in self._PAPER_CLOSE_EVENTS)
         return {
@@ -3395,12 +3404,14 @@ class FeedEngine:
             "mode": "paper",
             "live_orders": False,
             "day": day_key,
+            "book": book_key,
             "count": len(paired),
             "open_count": open_n,
             "closed_count": closed_n,
             "pnl_total": pnl_total,
             "by_book_day": by_book_day,
             "days": days,
+            "books": books,
             "trades": paired[:capped],
         }
 

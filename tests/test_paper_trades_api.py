@@ -137,6 +137,60 @@ def test_list_paper_trades_day_filter(tmp_path: Path) -> None:
     assert out["trades"][0]["atm"] == 22600
     assert "entry=fly" in out["trades"][0]["info"]
     assert out["days"] == ["2026-09-29", "2026-09-28"]
+    assert out["books"] == ["short_iron_fly"]
+
+
+def test_list_paper_trades_book_and_day_filter(tmp_path: Path) -> None:
+    path = tmp_path / "paper_trades.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "ts": "2026-10-19T10:00:00+05:30",
+                        "day": "2026-10-19",
+                        "event": "open",
+                        "strategy": "agent_paper",
+                        "side": "ce",
+                        "atm": 23150,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "ts": "2026-10-19T14:30:00+05:30",
+                        "day": "2026-10-19",
+                        "event": "open",
+                        "strategy": "short_atm_straddle",
+                        "atm": 22850,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "ts": "2026-10-16T10:00:00+05:30",
+                        "day": "2026-10-16",
+                        "event": "open",
+                        "strategy": "agent_paper",
+                        "side": "pe",
+                        "atm": 23000,
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    by_book = _engine(tmp_path).list_paper_trades(book="agent_paper")
+    assert by_book["count"] == 2
+    assert {t["day"] for t in by_book["trades"]} == {"2026-10-19", "2026-10-16"}
+    assert all(t["strategy"] == "agent_paper" for t in by_book["trades"])
+    assert by_book["books"] == ["agent_paper", "short_atm_straddle"]
+    both = _engine(tmp_path).list_paper_trades(day="2026-10-19", book="agent_paper")
+    assert both["count"] == 1
+    assert both["trades"][0]["atm"] == 23150
+    assert both["day"] == "2026-10-19"
+    assert both["book"] == "agent_paper"
+    assert len(both["by_book_day"]) == 1
+    assert both["by_book_day"][0]["strategy"] == "agent_paper"
 
 
 def test_paper_trade_stop_zero_is_kept() -> None:
