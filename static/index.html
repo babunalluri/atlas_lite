@@ -2314,7 +2314,7 @@
         <div class="login-brand">
           <span class="login-brand-mark">Atlas Lite</span>
           <h2 id="loginTitle">Operator sign-in</h2>
-          <p>Required to turn Live agent on or off.</p>
+          <p>Required to turn Live agent on. Off needs no sign-in.</p>
         </div>
         <button type="button" class="login-close" id="loginClose" aria-label="Close sign-in">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
@@ -6918,15 +6918,21 @@
     }
 
     async function uiLogin(email, password) {
-      const resp = await fetch("/api/auth/login", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
-      });
+      let resp;
+      try {
+        resp = await fetch("/api/auth/login", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, password }),
+        });
+      } catch (_) {
+        throw new Error("Cannot reach server — hard-refresh and try again");
+      }
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok || data.ok === false) {
-        throw new Error(data.detail || data.error || `HTTP ${resp.status}`);
+        const detail = data.detail || data.error || `HTTP ${resp.status}`;
+        throw new Error(detail === "invalid_credentials" ? "Wrong email or password" : String(detail));
       }
       await refreshUiAuth();
       setLoginOpen(false);
@@ -7055,16 +7061,16 @@
           toggle.checked = false;
           return;
         }
-      }
-      try {
         await refreshUiAuth();
         if (!atlasUiAuth.authenticated) {
           toggle.checked = false;
           setLoginOpen(true);
           const meta = document.getElementById("agentMeta");
-          if (meta) meta.textContent = "Sign in to change Live agent";
+          if (meta) meta.textContent = "Sign in to turn Live agent on";
           return;
         }
+      }
+      try {
         await setAgentLive(want);
       } catch (err) {
         toggle.checked = !want;
@@ -7072,7 +7078,7 @@
         const meta = document.getElementById("agentMeta");
         if (msg === "login_required") {
           setLoginOpen(true);
-          if (meta) meta.textContent = "Sign in to change Live agent";
+          if (meta) meta.textContent = "Sign in to turn Live agent on";
         } else if (meta) {
           meta.textContent = msg;
         }

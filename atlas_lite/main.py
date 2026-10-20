@@ -338,8 +338,9 @@ async def api_agent_live(
     request: Request,
     enabled: bool = Query(..., description="true = real Kite orders for agent_paper"),
 ) -> dict[str, Any]:
-    """Enable or disable live Kite orders. Requires UI login cookie."""
-    _ui_session_required(request)
+    """Toggle live Kite orders. Sign-in required to enable; disable is always allowed."""
+    if enabled:
+        _ui_session_required(request)
     if _engine is None:
         raise HTTPException(status_code=503, detail="engine not started")
     try:

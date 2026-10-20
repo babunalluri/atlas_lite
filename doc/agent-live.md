@@ -16,7 +16,7 @@ There is **one** book: `agent_paper`. Live is not a second parallel book.
 
 ## Auth (required)
 
-- **Live agent** checkbox requires UI **Sign in** (HttpOnly session cookie, `SameSite=strict`).
+- Turning **Live on** requires UI **Sign in** (HttpOnly session cookie, `SameSite=strict`). Turning **Live off** needs no login (kill switch).
 - Set in host `.env` (never commit credentials). Login is disabled until all three are set:
 
 ```bash
