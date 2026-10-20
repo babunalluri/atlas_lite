@@ -2149,6 +2149,10 @@
       <div class="history-toolbar">
         <button type="button" id="agentAdviseBtn">Run trade cycle</button>
         <button type="button" id="agentRefreshBtn">Refresh</button>
+        <label class="history-meta" for="agentLiveToggle" style="display:inline-flex;align-items:center;gap:6px;" title="Real Kite orders for agent_paper only">
+          <input type="checkbox" id="agentLiveToggle" />
+          Live agent
+        </label>
         <label class="history-meta" for="agentApiToken" style="display:inline-flex;align-items:center;gap:6px;">
           API token
           <input type="password" id="agentApiToken" autocomplete="off" placeholder="X-Atlas-Token" style="min-width:10rem;padding:4px 8px;" />
@@ -2156,6 +2160,7 @@
         <button type="button" id="agentTokenSaveBtn">Save token</button>
         <span class="history-meta" id="agentMeta">Paper fills only · agent opens CE/PE · no live orders</span>
       </div>
+      <div class="history-detail" id="agentLiveLine">Live: off (paper only)</div>
       <div class="history-detail" id="agentPositionLine">Agent book: —</div>
       <div class="history-detail" id="agentMacroLine">Macro: —</div>
       <div class="history-detail" id="agentDecision">Last cycle: —</div>
@@ -6628,6 +6633,55 @@
       }).join("");
     }
 
+    function renderAgentLive(st, paper) {
+      const liveEl = document.getElementById("agentLiveLine");
+      const toggle = document.getElementById("agentLiveToggle");
+      const live = st.live || {};
+      const on = !!live.enabled;
+      const allowed = live.allowed !== false;
+      const ag = (paper && paper.agent) || {};
+      const posLive = !!(ag.position && ag.position.live) || !!st.agent_position_live;
+      if (toggle) {
+        toggle.checked = on;
+        toggle.disabled = !allowed;
+      }
+      if (!liveEl) return;
+      if (!allowed) {
+        liveEl.textContent = "Live: locked off on this host (ATLAS_LITE_AGENT_LIVE_ALLOWED=0)";
+        return;
+      }
+      if (on) {
+        liveEl.textContent = posLive
+          ? "Live: ON · real Kite orders · open live position must close on broker"
+          : "Live: ON · next agent entry places a real Kite market order (1 lot MIS)";
+      } else {
+        liveEl.textContent = posLive
+          ? "Live: OFF for new entries · open live position still closes on broker"
+          : "Live: off (paper only)";
+      }
+    }
+
+    async function setAgentLive(enabled) {
+      const meta = document.getElementById("agentMeta");
+      const url = new URL("/api/agent/live", window.location.origin);
+      url.searchParams.set("enabled", enabled ? "true" : "false");
+      const resp = await fetch(url.pathname + "?" + url.searchParams.toString(), {
+        method: "POST",
+        headers: atlasApiHeaders(),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (resp.status === 401) {
+        throw new Error("401 — set API token in the Agent panel (same as ATLAS_LITE_API_TOKEN)");
+      }
+      if (!resp.ok || data.ok === false) {
+        throw new Error(data.detail || data.error || `HTTP ${resp.status}`);
+      }
+      if (meta) {
+        meta.textContent = enabled ? "Live agent enabled" : "Live agent disabled (paper only)";
+      }
+      await loadAgentPanel();
+    }
+
     async function loadAgentPanel() {
       const meta = document.getElementById("agentMeta");
       const macroEl = document.getElementById("agentMacroLine");
@@ -6639,23 +6693,27 @@
           fetch("/api/agent/macro").then((r) => r.json()),
           fetch("/api/paper").then((r) => r.json()),
         ]);
+        const liveOn = !!(st.live && st.live.enabled);
         if (meta) {
+          const mode = liveOn ? "LIVE Kite orders" : "paper only";
           if (st.scorecard_autopilot || st.executor === "scorecard") {
-            meta.textContent = `Scorecard autopilot · every ${st.interval_s || "—"}s · no LLM · paper only`;
+            meta.textContent = `Scorecard autopilot · every ${st.interval_s || "—"}s · no LLM · ${mode}`;
           } else if (st.has_credentials) {
             const sparse = st.llm_sparse ? " · sparse LLM" : "";
-            meta.textContent = `Trading · ${st.model || "—"} · every ${st.interval_s || "—"}s${sparse} · paper only`;
+            meta.textContent = `Trading · ${st.model || "—"} · every ${st.interval_s || "—"}s${sparse} · ${mode}`;
           } else {
             meta.textContent =
               "No LLM credentials · set OPENROUTER_API_KEY or llm_credentials (or enable scorecard autopilot)";
           }
         }
+        renderAgentLive(st, paper);
         if (posEl) {
           const ag = paper.agent || {};
           const p = ag.position;
           const pend = ag.pending;
+          const liveTag = p && p.live ? " LIVE" : "";
           if (p) {
-            posEl.textContent = `Agent book OPEN ${String(p.side || "").toUpperCase()} @ ${p.entry} · tgt ${p.target} · stop ${p.stop} · day PnL ${ag.day_pnl ?? "—"}`;
+            posEl.textContent = `Agent book OPEN${liveTag} ${String(p.side || "").toUpperCase()} @ ${p.entry} · tgt ${p.target} · stop ${p.stop} · day PnL ${ag.day_pnl ?? "—"}`;
           } else if (pend && !pend.want_exit) {
             posEl.textContent = `Agent book pending ${String(pend.side || "").toUpperCase()} entry · ${pend.reason || ""}`;
           } else {
@@ -6708,6 +6766,26 @@
     document.getElementById("agentClose")?.addEventListener("click", () => { setAgentOpen(false); });
     document.getElementById("agentBackdrop")?.addEventListener("click", () => { setAgentOpen(false); });
     document.getElementById("agentRefreshBtn")?.addEventListener("click", () => { loadAgentPanel(); });
+    document.getElementById("agentLiveToggle")?.addEventListener("change", async (ev) => {
+      const toggle = ev.target;
+      const want = !!toggle?.checked;
+      if (want) {
+        const ok = window.confirm(
+          "Enable LIVE agent?\n\nNext agent_paper entries will place real Kite market orders (1 lot MIS). An open live position still closes on the broker if you turn this off later.",
+        );
+        if (!ok) {
+          toggle.checked = false;
+          return;
+        }
+      }
+      try {
+        await setAgentLive(want);
+      } catch (err) {
+        toggle.checked = !want;
+        const meta = document.getElementById("agentMeta");
+        if (meta) meta.textContent = String(err?.message || err);
+      }
+    });
     document.getElementById("agentAdviseBtn")?.addEventListener("click", async () => {
       const meta = document.getElementById("agentMeta");
       if (meta) meta.textContent = "Running trade cycle…";

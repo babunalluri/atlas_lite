@@ -16,6 +16,8 @@ services:
       ATLAS_LITE_LLM_CREDENTIALS_PATH: /secrets/llm_credentials
       # Set on the host before `docker compose up` so agent POSTs require X-Atlas-Token.
       ATLAS_LITE_API_TOKEN: ${ATLAS_LITE_API_TOKEN:-}
+      # Live agent stays locked until explicitly set to 1 on the host.
+      ATLAS_LITE_AGENT_LIVE_ALLOWED: ${ATLAS_LITE_AGENT_LIVE_ALLOWED:-0}
     volumes:
       - ./kite_credentials:/secrets/kite_credentials:ro
       - ./llm_credentials:/secrets/llm_credentials:ro

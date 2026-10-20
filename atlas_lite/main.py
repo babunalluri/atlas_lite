@@ -224,7 +224,7 @@ async def api_paper_trades(
 
 @app.get("/api/agent")
 async def api_agent_status() -> dict[str, Any]:
-    """Paper agent status, gates, last decision. Never live orders."""
+    """Agent status, gates, last decision, and live-orders flag."""
     if _engine is None:
         raise HTTPException(status_code=503, detail="engine not started")
     return _engine.agent_status()
@@ -240,7 +240,7 @@ async def api_agent_advise(
     ),
     x_atlas_token: Optional[str] = Header(default=None, alias="X-Atlas-Token"),
 ) -> dict[str, Any]:
-    """Run one OpenRouter advise cycle (paper tools only)."""
+    """Run one advise cycle (scorecard or LLM). Live fills only if the live flag is on."""
     _agent_write_authorized(request, x_atlas_token=x_atlas_token)
     if _engine is None:
         raise HTTPException(status_code=503, detail="engine not started")
@@ -267,6 +267,26 @@ async def api_agent_gates(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "gate": row}
+
+
+@app.post("/api/agent/live")
+async def api_agent_live(
+    request: Request,
+    enabled: bool = Query(..., description="true = real Kite orders for agent_paper"),
+    x_atlas_token: Optional[str] = Header(default=None, alias="X-Atlas-Token"),
+) -> dict[str, Any]:
+    """Enable or disable live Kite orders for the scorecard agent book. Off by default."""
+    _agent_write_authorized(request, x_atlas_token=x_atlas_token)
+    # Enabling live always requires a configured API token (even if unset locally).
+    if enabled and not os.environ.get("ATLAS_LITE_API_TOKEN", "").strip():
+        raise HTTPException(status_code=400, detail="api_token_required_for_live")
+    if _engine is None:
+        raise HTTPException(status_code=503, detail="engine not started")
+    try:
+        live = await asyncio.to_thread(_engine.set_agent_live, enabled)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "live": live}
 
 
 @app.get("/api/agent/macro")

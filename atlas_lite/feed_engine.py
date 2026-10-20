@@ -20,8 +20,10 @@ from atlas_lite.config import STREAM_INTERVAL_MS, read_kite_credentials, read_ll
 from atlas_lite.frame_util import frame_revision
 from atlas_lite.strategy_hint import suggest_strategy
 from atlas_lite.agent_gates import AgentGateStore
+from atlas_lite.agent_live import AgentLiveFlag, LIVE_FLAG_NAME
 from atlas_lite.agent_policy import ADX_RANGE, ADX_TREND, apply_book_policy
 from atlas_lite.agent_advisor import AgentAdvisor, agent_enabled
+from atlas_lite.kite_orders import KiteOrderClient
 from atlas_lite.paper_agent import (
     STRATEGY as AGENT_STRATEGY,
     DEFAULT_LOT_SIZE as AGENT_LOT,
@@ -333,6 +335,7 @@ class FeedEngine:
     _paper_ai_agent: PaperAiAgent | None = field(default=None, repr=False)
     _ai_learn_running: bool = field(default=False, repr=False)
     _agent_gates: AgentGateStore | None = field(default=None, repr=False)
+    _agent_live: AgentLiveFlag | None = field(default=None, repr=False)
     _agent: AgentAdvisor | None = field(default=None, repr=False)
     _last_book_policy: dict[str, Any] | None = field(default=None, repr=False)
     _chain_greeks_at: dict[str, float] = field(default_factory=dict, repr=False)
@@ -565,6 +568,7 @@ class FeedEngine:
                 self._paper_combo.lots,
                 self._paper_combo.lots * lot,
             )
+        self._agent_live = AgentLiveFlag(self.data_dir / LIVE_FLAG_NAME)
         if paper_agent_enabled():
             nifty_nb = self.notebooks.get("nifty")
             lot = AGENT_LOT
@@ -575,11 +579,14 @@ class FeedEngine:
             self._paper_agent = PaperAgent(
                 path=self.data_dir / "paper_agent.jsonl",
                 lot_size=lot,
+                live_flag=self._agent_live,
+                order_client=KiteOrderClient(self.credentials_path),
             )
             self._log.info(
-                "paper agent book %d lots qty=%d (ATM CE/PE intents, no live orders)",
+                "agent book %d lots qty=%d (ATM CE/PE; live=%s)",
                 self._paper_agent.lots,
                 self._paper_agent.lots * lot,
+                self._agent_live.is_enabled(),
             )
         if paper_ai_agent_enabled():
             nifty_nb = self.notebooks.get("nifty")
@@ -2648,15 +2655,19 @@ class FeedEngine:
                 await asyncio.sleep(1.0)
 
     async def _paper_agent_loop(self) -> None:
-        """Execute validated agent CE/PE intents. No broker orders."""
+        """Execute validated agent CE/PE intents. Live only when the UI flag is on."""
         if self._paper_agent is None:
             return
         interval = max(1.0, STREAM_INTERVAL_MS / 1000.0)
+        order_busy = False
         while True:
             try:
                 now = datetime.now(IST)
                 if now.weekday() >= 5 and self._paper_agent.position is None:
                     await asyncio.sleep(30.0)
+                    continue
+                if order_busy:
+                    await asyncio.sleep(interval)
                     continue
                 feed, ce, pe, atm = self._paper_option_ctx()
                 allow = (
@@ -2665,20 +2676,38 @@ class FeedEngine:
                     else True
                 )
                 nifty_nb = self.notebooks.get("nifty")
-                self._paper_agent.on_frame(
-                    now=now,
-                    feed=feed,
-                    book=self.book,
-                    ce_symbol=ce,
-                    pe_symbol=pe,
-                    atm=atm,
-                    allow_new_entries=allow,
-                    spot=self._spot(nifty_nb) if nifty_nb else None,
+                spot = self._spot(nifty_nb) if nifty_nb else None
+                # Broker fills are blocking httpx — keep them off the event loop.
+                needs_thread = bool(
+                    self._paper_agent.live_orders_enabled
+                    or (self._paper_agent.position and self._paper_agent.position.live)
                 )
+                def _run_agent_frame() -> dict[str, Any] | None:
+                    assert self._paper_agent is not None
+                    return self._paper_agent.on_frame(
+                        now=now,
+                        feed=feed,
+                        book=self.book,
+                        ce_symbol=ce,
+                        pe_symbol=pe,
+                        atm=atm,
+                        allow_new_entries=allow,
+                        spot=spot,
+                    )
+
+                if needs_thread:
+                    order_busy = True
+                    try:
+                        await asyncio.to_thread(_run_agent_frame)
+                    finally:
+                        order_busy = False
+                else:
+                    _run_agent_frame()
                 await asyncio.sleep(interval)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
+                order_busy = False
                 self._log.warning("paper agent book failed: %s", exc)
                 await asyncio.sleep(1.0)
 
@@ -3064,6 +3093,21 @@ class FeedEngine:
                 "applied": self._last_book_policy.get("applied") or [],
                 "desired": self._last_book_policy.get("desired") or {},
             }
+        live = (
+            self._agent_live.snapshot()
+            if self._agent_live is not None
+            else AgentLiveFlag(self.data_dir / LIVE_FLAG_NAME).snapshot()
+        )
+        body["live"] = live
+        body["live_orders"] = bool(live.get("enabled"))
+        if self._paper_agent is not None:
+            body["agent_book_enabled"] = True
+            body["agent_position_live"] = bool(
+                self._paper_agent.position and self._paper_agent.position.live
+            )
+        else:
+            body["agent_book_enabled"] = False
+            body["agent_position_live"] = False
         return body
 
     def agent_advise(self, *, dry_run: bool = False, force: bool = False) -> dict[str, Any]:
@@ -3085,6 +3129,12 @@ class FeedEngine:
         return self._agent_gates.set_gate(
             book, mode, until=until, reason=reason, source=source  # type: ignore[arg-type]
         )
+
+    def set_agent_live(self, enabled: bool, *, source: str = "ui") -> dict[str, Any]:
+        """Enable or disable real Kite orders for agent_paper. Off by default."""
+        if self._agent_live is None:
+            self._agent_live = AgentLiveFlag(self.data_dir / LIVE_FLAG_NAME)
+        return self._agent_live.set_enabled(bool(enabled), source=source)
 
     def paper_snapshot(self) -> dict[str, Any]:
         if self._paper is None:
@@ -3271,8 +3321,8 @@ class FeedEngine:
                 return value
         return None
 
-    _PAPER_OPEN_EVENTS = frozenset({"open", "reentry"})
-    _PAPER_CLOSE_EVENTS = frozenset({"close", "close_vertical", "close_set"})
+    _PAPER_OPEN_EVENTS = frozenset({"open", "reentry", "live_adopt"})
+    _PAPER_CLOSE_EVENTS = frozenset({"close", "close_vertical", "close_set", "live_partial_close"})
 
     def list_paper_trades(
         self,

@@ -140,7 +140,7 @@ def regime_book_modes(regime: Regime) -> dict[str, GateMode]:
 # Ledger events that book a realized close PnL (trades API + kill switch).
 # Short IC uses close_set; theta_cliff uses close_vertical; most books (incl. long IC) use close.
 # Flatten ``close`` rows with pnl=null are markers only — skip those.
-_CLOSE_PNL_EVENTS = frozenset({"close", "close_set", "close_vertical"})
+_CLOSE_PNL_EVENTS = frozenset({"close", "close_set", "close_vertical", "live_partial_close"})
 
 
 def day_close_stats(
@@ -190,6 +190,14 @@ def day_close_stats(
             continue
         kind = ev.get("event")
         if kind in _CLOSE_PNL_EVENTS and ev.get("pnl") is not None:
+            # Seal row after partial chunks — PnL already counted on live_partial_close.
+            if kind == "close" and str(ev.get("pnl_source") or "") == "partials_sealed":
+                if ev.get("day_pnl") is not None:
+                    try:
+                        day_pnl = float(ev["day_pnl"])
+                    except (TypeError, ValueError):
+                        pass
+                continue
             try:
                 pnl = float(ev["pnl"])
             except (TypeError, ValueError):

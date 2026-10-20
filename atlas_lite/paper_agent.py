@@ -1,4 +1,9 @@
-"""Paper agent book — ATM CE/PE long or short from agent intents (never Kite orders)."""
+"""Agent book — ATM CE/PE long or short from scorecard intents.
+
+Default is paper (LTP ledger only). When the live flag is on, opens and closes
+send Kite market orders for one lot. A position opened live always closes live,
+even if the UI flag is flipped off mid-trade.
+"""
 
 from __future__ import annotations
 
@@ -10,7 +15,16 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 from zoneinfo import ZoneInfo
 
+from atlas_lite.agent_live import AgentLiveFlag
 from atlas_lite.kite_charges import kite_nfo_charges
+from atlas_lite.kite_orders import (
+    KiteOrderClient,
+    KiteOrderError,
+    kite_order_dead,
+    kite_order_finished,
+    transaction_for_close,
+    transaction_for_open,
+)
 from atlas_lite.log_util import get_logger, ist_now
 from atlas_lite.metrics import quote_ltp
 from atlas_lite.minute_bars import hm_ge, hm_le
@@ -293,6 +307,11 @@ class AgentPosition:
     trail_arm_pct: float = TRAIL_ARM_PCT
     trail_pct: float = TRAIL_PCT
     trail_pts: float = TRAIL_PTS
+    live: bool = False
+    order_id: str = ""
+    close_order_id: str = ""
+    # Kite day-realised snapshot at open — used to delta on broker_squared_off.
+    realised_at_open: float | None = None
 
 
 @dataclass
@@ -330,6 +349,8 @@ class PaperAgent:
     max_cut_net: float = field(default_factory=agent_max_cut_net)
     intent_max_age_s: int = INTENT_MAX_AGE_S
     daily_loss_stop: float = field(default_factory=agent_daily_loss_stop)
+    live_flag: AgentLiveFlag | None = None
+    order_client: KiteOrderClient | None = None
     position: AgentPosition | None = None
     pending: PendingIntent | None = None
     traded_day: str = ""
@@ -343,7 +364,18 @@ class PaperAgent:
     last_reject_thesis_key: str | None = None
     # Keyed by ``{style}_{side}`` so CE/PE (or long/short) blocks do not overwrite each other.
     thesis_blocks: dict[str, dict[str, Any]] = field(default_factory=dict)
+    live_close_fails: int = 0
+    live_close_next_at: datetime | None = None
+    # After a failed open whose broker state we cannot read, block further live opens today.
+    live_opens_blocked: bool = False
+    # Own open order still working after a timeout — watch until finished, then adopt.
+    live_pending_open_order_id: str = ""
+    live_pending_open_meta: dict[str, Any] = field(default_factory=dict)
     _log: Any = field(default_factory=lambda: get_logger("atlas_lite.paper_agent"), repr=False)
+
+    @property
+    def live_orders_enabled(self) -> bool:
+        return bool(self.live_flag and self.live_flag.is_enabled() and self.order_client)
 
     @staticmethod
     def _thesis_key(side: str, style: str) -> str:
@@ -365,6 +397,7 @@ class PaperAgent:
             return
         last_open: dict[str, Any] | None = None
         last_trail: dict[str, Any] | None = None
+        pending_close_id = ""
         day = ""
         day_pnl = 0.0
         entries = 0
@@ -375,6 +408,7 @@ class PaperAgent:
             lines = self.path.read_text(encoding="utf-8").splitlines()
         except OSError:
             return
+        open_kinds = ("open", "live_adopt")
         for line in lines:
             line = line.strip()
             if not line:
@@ -394,18 +428,35 @@ class PaperAgent:
                 entries = 0
                 last_open = None
                 last_trail = None
+                pending_close_id = ""
                 last_exit_at = None
                 eod_written = False
-            if kind == "open":
+            if kind in open_kinds:
                 last_open = ev
                 last_trail = None
+                pending_close_id = ""
                 entries += 1
             elif kind == "trail":
                 if last_open is not None:
                     last_trail = ev
+            elif kind == "live_partial_close":
+                if last_open is not None and ev.get("qty_remain") is not None:
+                    last_open = dict(last_open)
+                    last_open["qty"] = int(ev["qty_remain"])
+                    if ev.get("charges_open_remain") is not None:
+                        last_open["charges"] = float(ev["charges_open_remain"])
+                    if ev.get("realised_at_open") is not None:
+                        last_open["realised_at_open"] = float(ev["realised_at_open"])
+                if ev.get("day_pnl") is not None:
+                    day_pnl = float(ev["day_pnl"])
+                pending_close_id = ""
+            elif kind == "live_close_submit":
+                if last_open is not None:
+                    pending_close_id = str(ev.get("order_id") or "")
             elif kind == "close":
                 last_open = None
                 last_trail = None
+                pending_close_id = ""
                 if entries == 0:
                     entries = 1
                 if ev.get("day_pnl") is not None:
@@ -421,6 +472,7 @@ class PaperAgent:
         self.day_pnl = round(day_pnl, 2)
         self.eod_written = bool(eod_written)
         self.last_exit_at = last_exit_at
+        self._warn_orphan_live_submit(lines)
         self._restore_thesis_blocks()
         if last_open:
             entry = float(last_open.get("entry") or 0)
@@ -442,6 +494,7 @@ class PaperAgent:
                 if last_trail.get("stop") is not None:
                     stop_px = float(last_trail["stop"])
                 trail_armed = bool(last_trail.get("trail_armed", trail_armed))
+            realised_at = last_open.get("realised_at_open")
             self.position = AgentPosition(
                 day=str(last_open["day"]),
                 atm=int(last_open["atm"]),
@@ -465,11 +518,20 @@ class PaperAgent:
                 trail_arm_pct=arm_pct,
                 trail_pct=trail_pct,
                 trail_pts=trail_pts,
+                live=bool(last_open.get("live") or last_open.get("live_orders")),
+                order_id=str(last_open.get("order_id") or ""),
+                close_order_id=str(pending_close_id or last_open.get("close_order_id") or ""),
+                realised_at_open=(
+                    float(realised_at) if realised_at is not None else None
+                ),
             )
 
     def _append(self, event: dict[str, Any]) -> dict[str, Any] | None:
         event = dict(event)
-        event.setdefault("mode", "paper")
+        if event.get("live") or event.get("live_orders"):
+            event.setdefault("mode", "live")
+        else:
+            event.setdefault("mode", "paper")
         event.setdefault("strategy", STRATEGY)
         event.setdefault("logged_at", ist_now())
         try:
@@ -480,6 +542,378 @@ class PaperAgent:
             return None
         self.last_event = event
         return event
+
+    def _note_live_close_fail(self, now: datetime, exc: BaseException) -> None:
+        self.live_close_fails = int(self.live_close_fails) + 1
+        backoff_s = min(60, 2 ** min(self.live_close_fails, 6))
+        self.live_close_next_at = now + timedelta(seconds=backoff_s)
+        self.last_reject = f"live_close_failed:{exc}"
+        self._log.warning(
+            "agent live close failed (%s) backoff=%ss: %s",
+            self.live_close_fails,
+            backoff_s,
+            exc,
+        )
+        if self.live_close_fails >= 3:
+            self._log.error(
+                "agent live close failed %s times — check broker / credentials",
+                self.live_close_fails,
+            )
+
+    def _warn_orphan_live_submit(self, lines: list[str]) -> None:
+        """Restart safety: live_submit without a following open/failed is a dangling broker risk."""
+        orphan: dict[str, Any] | None = None
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if ev.get("strategy") != STRATEGY:
+                continue
+            kind = ev.get("event")
+            if kind == "live_submit":
+                orphan = ev
+            elif kind in ("open", "live_submit_failed", "live_adopt"):
+                orphan = None
+        if orphan is None:
+            return
+        self._log.error(
+            "orphan live_submit at restart ts=%s symbol=%s qty=%s — check Kite for an unmanaged lot",
+            orphan.get("ts"),
+            orphan.get("symbol"),
+            orphan.get("qty"),
+        )
+
+    def _broker_position(self, symbol: str) -> dict[str, Any] | None:
+        assert self.order_client is not None
+        return self.order_client.position_row(symbol)
+
+    def _expected_live_net(self, style: str, qty: int) -> int:
+        q = abs(int(qty))
+        return q if str(style).lower() != "short" else -q
+
+    def _net_matches_style(self, style: str, net: int) -> bool:
+        if net == 0:
+            return False
+        return (str(style).lower() == "short" and net < 0) or (
+            str(style).lower() != "short" and net > 0
+        )
+
+    def _snapshot_realised(self, symbol: str) -> float | None:
+        if self.order_client is None:
+            return None
+        try:
+            row = self.order_client.position_row(symbol)
+        except (KiteOrderError, Exception):  # noqa: BLE001
+            return None
+        if not row or row.get("realised") is None:
+            return None
+        return float(row["realised"])
+
+    def _book_live_open(
+        self,
+        *,
+        now: datetime,
+        intent: PendingIntent,
+        ce_sym: str,
+        pe_sym: str,
+        atm: int,
+        symbol: str,
+        style: str,
+        qty: int,
+        entry: float,
+        order_id: str,
+        spot: float | None,
+        reason_suffix: str = "",
+        event_name: str = "open",
+    ) -> dict[str, Any]:
+        target_pct, stop_pct, arm_pct, trail_pct, trail_pts = agent_exit_profile(now)
+        target, stop = initial_target_stop(
+            entry, style, target_pct=target_pct, stop_pct=stop_pct
+        )
+        hold_until = (now + timedelta(minutes=int(self.hold_minutes))).isoformat()
+        charges_open = float(kite_nfo_charges(_open_legs(style, entry, qty))["total"])
+        reason = intent.reason
+        if reason_suffix:
+            reason = f"{reason}|{reason_suffix}" if reason else reason_suffix
+        realised_at_open = self._snapshot_realised(symbol)
+        pos = AgentPosition(
+            day=now.strftime("%Y-%m-%d"),
+            atm=int(atm),
+            side=intent.side,
+            style=style,  # type: ignore[arg-type]
+            symbol=symbol,
+            ce_symbol=ce_sym,
+            pe_symbol=pe_sym,
+            qty=int(qty),
+            lots=max(1, int(round(int(qty) / max(1, int(self.lot_size))))),
+            entry=float(entry),
+            target=target,
+            stop=stop,
+            hold_until=hold_until,
+            opened_at=now.isoformat(),
+            charges_open=round(charges_open, 2),
+            reason=reason,
+            trail_armed=False,
+            best_px=float(entry),
+            trail_arm_pct=arm_pct,
+            trail_pct=trail_pct,
+            trail_pts=trail_pts,
+            live=True,
+            order_id=order_id,
+            realised_at_open=realised_at_open,
+        )
+        event_body = {
+            "event": event_name,
+            "ts": now.isoformat(),
+            "day": pos.day,
+            "atm": pos.atm,
+            "side": pos.side,
+            "style": pos.style,
+            "symbol": pos.symbol,
+            "ce_symbol": pos.ce_symbol,
+            "pe_symbol": pos.pe_symbol,
+            "qty": pos.qty,
+            "lots": pos.lots,
+            "lot_size": self.lot_size,
+            "entry": pos.entry,
+            "target": pos.target,
+            "stop": pos.stop,
+            "trail_armed": False,
+            "best_px": pos.best_px,
+            "hold_until": pos.hold_until,
+            "charges": pos.charges_open,
+            "reason": pos.reason,
+            "gates": "agent",
+            "spot": spot,
+            "live": True,
+            "live_orders": True,
+            "order_id": order_id or None,
+            "realised_at_open": realised_at_open,
+        }
+        event = self._append(event_body)
+        self.position = pos
+        self.entries_today += 1
+        self.traded_day = pos.day
+        self.pending = None
+        self.last_reject = None
+        if event is None:
+            self._log.warning(
+                "agent open ledger write failed after fill live=True order_id=%s",
+                order_id or "-",
+            )
+            return dict(event_body)
+        return event
+
+    def _try_adopt_own_order(
+        self,
+        *,
+        now: datetime,
+        intent: PendingIntent,
+        ce_sym: str,
+        pe_sym: str,
+        atm: int,
+        symbol: str,
+        style: str,
+        want_qty: int,
+        spot: float | None,
+        order_id: str,
+    ) -> dict[str, Any] | None:
+        """Adopt only our own order's fill — never a pre-existing manual lot."""
+        if not order_id or self.order_client is None:
+            return None
+        try:
+            row = self.order_client.order_status(order_id)
+        except KiteOrderError as exc:
+            self.live_opens_blocked = True
+            self.last_reject = f"live_open_unknown:{exc}"
+            self._log.error(
+                "agent live open failed and order %s unread — blocking further live opens: %s",
+                order_id,
+                exc,
+            )
+            return None
+        except Exception as exc:  # noqa: BLE001
+            self.live_opens_blocked = True
+            self.last_reject = f"live_open_unknown:{type(exc).__name__}:{exc}"
+            self._log.error(
+                "agent live open failed and order %s unread — blocking further live opens: %s",
+                order_id,
+                exc,
+            )
+            return None
+        status = str(row.get("status") or "").upper()
+        filled = int(float(row.get("filled_quantity") or 0))
+        if filled <= 0 and status == "COMPLETE":
+            filled = int(float(row.get("quantity") or 0))
+        if not kite_order_finished(status):
+            # Still working (OPEN PENDING / VALIDATION PENDING / …) — do not grab a manual lot.
+            self.live_opens_blocked = True
+            self.live_pending_open_order_id = order_id
+            self.live_pending_open_meta = {
+                "side": intent.side,
+                "style": style,
+                "ce_sym": ce_sym,
+                "pe_sym": pe_sym,
+                "atm": int(atm),
+                "symbol": symbol,
+                "want_qty": int(want_qty),
+                "spot": spot,
+                "reason": intent.reason,
+            }
+            self.last_reject = f"live_open_pending:{order_id}:{status or 'unknown'}"
+            self._log.error(
+                "own open order %s still %s — blocking live opens until it finishes",
+                order_id,
+                status or "unknown",
+            )
+            self.pending = None
+            return None
+        if filled <= 0:
+            # Finished with no fill (cancelled/rejected) — clear watch; allow a fresh open.
+            if self.live_pending_open_order_id == order_id:
+                self.live_pending_open_order_id = ""
+                self.live_pending_open_meta = {}
+                self.live_opens_blocked = False
+            return None
+        qty = min(filled, abs(int(want_qty)))
+        avg = _f(row.get("average_price"))
+        if avg is None or avg <= 0:
+            self.live_opens_blocked = True
+            self.last_reject = "live_open_unknown:no_avg_price"
+            self._log.error(
+                "own order %s filled qty=%s but no average_price — blocking live opens",
+                order_id,
+                filled,
+            )
+            return None
+        side = str(row.get("transaction_type") or "").upper()
+        expect_buy = str(style).lower() != "short"
+        if side and ((expect_buy and side != "BUY") or ((not expect_buy) and side != "SELL")):
+            self._log.warning(
+                "own order %s side=%s does not match style=%s — not adopting",
+                order_id,
+                side,
+                style,
+            )
+            return None
+        self._log.warning(
+            "agent adopting own order %s filled=%s entry=%s (cap want=%s)",
+            order_id,
+            qty,
+            avg,
+            want_qty,
+        )
+        if self.live_pending_open_order_id == order_id:
+            self.live_pending_open_order_id = ""
+            self.live_pending_open_meta = {}
+            self.live_opens_blocked = False
+        return self._book_live_open(
+            now=now,
+            intent=intent,
+            ce_sym=ce_sym,
+            pe_sym=pe_sym,
+            atm=atm,
+            symbol=symbol,
+            style=style,
+            qty=qty,
+            entry=round(float(avg), 2),
+            order_id=order_id,
+            spot=spot,
+            reason_suffix="adopt_after_open_fail",
+            event_name="live_adopt",
+        )
+
+    def _poll_pending_open_order(
+        self,
+        now: datetime,
+        *,
+        spot: float | None,
+    ) -> dict[str, Any] | None:
+        """If a timed-out open is still working, adopt it once Kite finishes."""
+        oid = str(self.live_pending_open_order_id or "").strip()
+        meta = dict(self.live_pending_open_meta or {})
+        if not oid or not meta or self.order_client is None:
+            return None
+        if self.position is not None:
+            return None
+        intent = PendingIntent(
+            side="pe" if meta.get("side") == "pe" else "ce",
+            style=_normalize_style(str(meta.get("style") or "long")) or "long",
+            ts=now,
+            spot=meta.get("spot") if meta.get("spot") is not None else spot,
+            reason=str(meta.get("reason") or "pending_open_watch"),
+        )
+        return self._try_adopt_own_order(
+            now=now,
+            intent=intent,
+            ce_sym=str(meta.get("ce_sym") or ""),
+            pe_sym=str(meta.get("pe_sym") or ""),
+            atm=int(meta.get("atm") or 0),
+            symbol=str(meta.get("symbol") or ""),
+            style=str(meta.get("style") or "long"),
+            want_qty=int(meta.get("want_qty") or self.lots * self.lot_size),
+            spot=spot if spot is not None else meta.get("spot"),
+            order_id=oid,
+        )
+
+    def _live_open_failure(
+        self,
+        *,
+        now: datetime,
+        intent: PendingIntent,
+        ce_sym: str,
+        pe_sym: str,
+        atm: int,
+        symbol: str,
+        style: str,
+        qty: int,
+        spot: float | None,
+        exc: BaseException,
+    ) -> dict[str, Any] | None:
+        err = str(exc)
+        order_id = getattr(exc, "order_id", "") or ""
+        self.last_reject = f"live_open_failed:{exc}"
+        self._log.warning("agent live open failed: %s", exc)
+        self._append(
+            {
+                "event": "live_submit_failed",
+                "ts": now.isoformat(),
+                "day": now.strftime("%Y-%m-%d"),
+                "side": intent.side,
+                "style": style,
+                "symbol": symbol,
+                "qty": qty,
+                "error": err,
+                "order_id": order_id or None,
+                "live": True,
+                "live_orders": True,
+                "gates": "agent",
+            }
+        )
+        if not order_id:
+            # place_market rejected before an id existed — nothing to adopt.
+            self.pending = None
+            return None
+        adopted = self._try_adopt_own_order(
+            now=now,
+            intent=intent,
+            ce_sym=ce_sym,
+            pe_sym=pe_sym,
+            atm=atm,
+            symbol=symbol,
+            style=style,
+            want_qty=qty,
+            spot=spot,
+            order_id=order_id,
+        )
+        if adopted is not None:
+            return adopted
+        self.pending = None
+        return None
 
     def _book_quotes(
         self, book: QuoteSource | None, ce_sym: str, pe_sym: str
@@ -1148,6 +1582,8 @@ class PaperAgent:
                 "mark": mark,
                 "hold_until": pos.hold_until,
                 "reason": pos.reason,
+                "live": bool(pos.live),
+                "order_id": pos.order_id or None,
                 "gross": None,
                 "charges_est": None,
                 "net": None,
@@ -1160,10 +1596,17 @@ class PaperAgent:
                 pos_body["charges_est"] = charges
                 pos_body["net"] = net
                 pos_body["exit_allowed"] = ok_exit
+        live_on = self.live_orders_enabled
         return {
             "ok": True,
-            "mode": "paper",
-            "live_orders": False,
+            "mode": "live" if live_on else "paper",
+            "live_orders": live_on,
+            "live": self.live_flag.snapshot() if self.live_flag else {
+                "ok": True,
+                "enabled": False,
+                "file_enabled": False,
+                "allowed": True,
+            },
             "book": STRATEGY,
             "position": pos_body,
             "pending": None
@@ -1221,6 +1664,10 @@ class PaperAgent:
                 return sealed
             if self.traded_day != day:
                 return None
+        if self.position is None and self.live_pending_open_order_id:
+            adopted = self._poll_pending_open_order(now, spot=spot)
+            if adopted is not None:
+                return adopted
         if self.position is not None:
             pos = self.position
             ce_m, pe_m = self._book_quotes(book, pos.ce_symbol, pos.pe_symbol)
@@ -1233,18 +1680,24 @@ class PaperAgent:
                     self.last_reject = rejected
                     closed = self._maybe_exit(now, book, spot=spot)
                     if hm_ge(now, SQUARE_OFF):
-                        return closed or self._write_eod_if_needed(now)
+                        out = closed or self._write_eod_if_needed(now)
+                        self._maybe_auto_off_live(now)
+                        return out
                     return closed
                 self.pending = None
                 return self._close(now, book, "agent_exit", spot=spot)
             closed = self._maybe_exit(now, book, spot=spot)
             if hm_ge(now, SQUARE_OFF):
-                return closed or self._write_eod_if_needed(now)
+                out = closed or self._write_eod_if_needed(now)
+                self._maybe_auto_off_live(now)
+                return out
             return closed
         self._scrub_stale_last_reject(now=now, spot=spot)
         if hm_ge(now, SQUARE_OFF):
             self.pending = None
-            return self._write_eod_if_needed(now)
+            eod = self._write_eod_if_needed(now)
+            self._maybe_auto_off_live(now)
+            return eod
         if not allow_new_entries:
             self.pending = None
             return None
@@ -1254,6 +1707,34 @@ class PaperAgent:
             now, feed, book, ce_symbol, pe_symbol, atm, spot=spot
         )
 
+    def _maybe_auto_off_live(self, now: datetime) -> None:
+        """After square-off time, once flat, turn Live off so next day needs a fresh UI on."""
+        if not hm_ge(now, SQUARE_OFF):
+            return
+        if self.position is not None:
+            return
+        if self.live_flag is None:
+            return
+        snap = self.live_flag.snapshot()
+        if not snap.get("file_enabled"):
+            return
+        try:
+            self.live_flag.set_enabled(False, source="square_off")
+        except ValueError:
+            return
+        self._log.warning("agent live auto-off after square-off")
+        self._append(
+            {
+                "event": "live_auto_off",
+                "ts": now.isoformat(),
+                "day": now.strftime("%Y-%m-%d"),
+                "reason": "square_off",
+                "live": False,
+                "live_orders": False,
+                "gates": "agent",
+            }
+        )
+
     def _roll_to_day(self, day: str) -> None:
         self.traded_day = day
         self.entries_today = 0
@@ -1261,6 +1742,11 @@ class PaperAgent:
         self.eod_written = False
         self.pending = None
         self.last_exit_at = None
+        self.live_opens_blocked = False
+        self.live_pending_open_order_id = ""
+        self.live_pending_open_meta = {}
+        self.live_close_fails = 0
+        self.live_close_next_at = None
         self._clear_thesis_block()
 
     def _seal_then_roll(self, now: datetime, day: str) -> dict[str, Any] | None:
@@ -1378,8 +1864,105 @@ class PaperAgent:
             self.last_reject = "missing_ltp"
             return None
         qty = int(self.lots) * int(self.lot_size)
-        entry = round(float(px), 2)
         style = intent.style
+        symbol = ce_sym if intent.side == "ce" else pe_sym
+        live = self.live_orders_enabled
+        order_id = ""
+        entry = round(float(px), 2)
+        if live:
+            assert self.order_client is not None
+            if self.live_opens_blocked:
+                self.last_reject = "live_opens_blocked"
+                self.pending = None
+                return None
+            # Never double-up and never take over a manual lot — broker must be flat.
+            try:
+                pre = self._broker_position(symbol)
+            except (KiteOrderError, Exception) as exc:  # noqa: BLE001
+                self.live_opens_blocked = True
+                self.last_reject = f"live_open_unknown:{exc}"
+                self._log.error("live open blocked — cannot read broker position: %s", exc)
+                self.pending = None
+                return None
+            pre_net = int(pre["quantity"]) if pre else 0
+            if pre_net != 0:
+                self.last_reject = f"live_broker_not_flat:{pre_net}"
+                self.pending = None
+                self._log.warning(
+                    "live open skipped — broker already has %s net=%s (manual or other)",
+                    symbol,
+                    pre_net,
+                )
+                return None
+            # Ledger breadcrumb before the broker call so a crash mid-fill is visible.
+            self._append(
+                {
+                    "event": "live_submit",
+                    "ts": now.isoformat(),
+                    "day": now.strftime("%Y-%m-%d"),
+                    "side": intent.side,
+                    "style": style,
+                    "symbol": symbol,
+                    "qty": qty,
+                    "atm": int(atm),
+                    "spot": spot,
+                    "live": True,
+                    "live_orders": True,
+                    "reason": intent.reason,
+                    "gates": "agent",
+                }
+            )
+            try:
+                fill = self.order_client.market_fill(
+                    symbol=symbol,
+                    transaction_type=transaction_for_open(style),
+                    qty=qty,
+                    tag="atlas_agent",
+                )
+            except KiteOrderError as exc:
+                return self._live_open_failure(
+                    now=now,
+                    intent=intent,
+                    ce_sym=ce_sym,
+                    pe_sym=pe_sym,
+                    atm=int(atm),
+                    symbol=symbol,
+                    style=style,
+                    qty=qty,
+                    spot=spot,
+                    exc=exc,
+                )
+            except Exception as exc:  # noqa: BLE001 — never leave pending for a retry storm
+                return self._live_open_failure(
+                    now=now,
+                    intent=intent,
+                    ce_sym=ce_sym,
+                    pe_sym=pe_sym,
+                    atm=int(atm),
+                    symbol=symbol,
+                    style=style,
+                    qty=qty,
+                    spot=spot,
+                    exc=exc,
+                )
+            entry = round(float(fill["average_price"]), 2)
+            order_id = str(fill.get("order_id") or "")
+            fill_qty = int(fill.get("quantity") or qty)
+            if fill_qty > 0:
+                qty = fill_qty
+            return self._book_live_open(
+                now=now,
+                intent=intent,
+                ce_sym=ce_sym,
+                pe_sym=pe_sym,
+                atm=int(atm),
+                symbol=symbol,
+                style=style,
+                qty=qty,
+                entry=entry,
+                order_id=order_id,
+                spot=spot,
+            )
         target_pct, stop_pct, arm_pct, trail_pct, trail_pts = agent_exit_profile(now)
         target, stop = initial_target_stop(
             entry, style, target_pct=target_pct, stop_pct=stop_pct
@@ -1391,7 +1974,7 @@ class PaperAgent:
             atm=int(atm),
             side=intent.side,
             style=style,
-            symbol=ce_sym if intent.side == "ce" else pe_sym,
+            symbol=symbol,
             ce_symbol=ce_sym,
             pe_symbol=pe_sym,
             qty=qty,
@@ -1408,40 +1991,45 @@ class PaperAgent:
             trail_arm_pct=arm_pct,
             trail_pct=trail_pct,
             trail_pts=trail_pts,
+            live=False,
+            order_id="",
         )
-        event = self._append(
-            {
-                "event": "open",
-                "ts": now.isoformat(),
-                "day": pos.day,
-                "atm": pos.atm,
-                "side": pos.side,
-                "style": pos.style,
-                "symbol": pos.symbol,
-                "ce_symbol": pos.ce_symbol,
-                "pe_symbol": pos.pe_symbol,
-                "qty": pos.qty,
-                "lots": pos.lots,
-                "lot_size": self.lot_size,
-                "entry": pos.entry,
-                "target": pos.target,
-                "stop": pos.stop,
-                "trail_armed": False,
-                "best_px": pos.best_px,
-                "hold_until": pos.hold_until,
-                "charges": pos.charges_open,
-                "reason": pos.reason,
-                "gates": "agent",
-                "spot": spot,
-            }
-        )
-        if event is None:
-            return None
+        event_body = {
+            "event": "open",
+            "ts": now.isoformat(),
+            "day": pos.day,
+            "atm": pos.atm,
+            "side": pos.side,
+            "style": pos.style,
+            "symbol": pos.symbol,
+            "ce_symbol": pos.ce_symbol,
+            "pe_symbol": pos.pe_symbol,
+            "qty": pos.qty,
+            "lots": pos.lots,
+            "lot_size": self.lot_size,
+            "entry": pos.entry,
+            "target": pos.target,
+            "stop": pos.stop,
+            "trail_armed": False,
+            "best_px": pos.best_px,
+            "hold_until": pos.hold_until,
+            "charges": pos.charges_open,
+            "reason": pos.reason,
+            "gates": "agent",
+            "spot": spot,
+            "live": False,
+            "live_orders": False,
+            "order_id": None,
+        }
+        event = self._append(event_body)
         self.position = pos
         self.entries_today += 1
         self.traded_day = pos.day
         self.pending = None
         self.last_reject = None
+        if event is None:
+            self._log.warning("agent open ledger write failed after fill live=False")
+            return dict(event_body)
         return event
 
     def _hold_due(self, now: datetime, pos: AgentPosition) -> bool:
@@ -1550,6 +2138,355 @@ class PaperAgent:
             return self._close(now, book, "time", exit_px=px, spot=spot)
         return None
 
+    def _apply_broker_realised(
+        self,
+        pos: AgentPosition,
+        *,
+        exit_px: float,
+        marked: bool,
+    ) -> tuple[bool, float, str | None]:
+        """Delta Kite day-realised since open (not the whole-day total).
+
+        Falls back to unknown PnL when the snapshot is missing.
+        """
+        self._pending_broker_pnl = None
+        if self.order_client is None or pos.realised_at_open is None:
+            return False, exit_px, None
+        try:
+            row = self.order_client.position_row(pos.symbol)
+        except (KiteOrderError, Exception):  # noqa: BLE001
+            return False, exit_px, None
+        if not row or row.get("realised") is None:
+            return False, exit_px, None
+        delta = float(row["realised"]) - float(pos.realised_at_open)
+        # Rough charge haircut so day-loss stop is not overstated.
+        close_ch = float(kite_nfo_charges(_close_legs(pos.style, exit_px, pos.qty))["total"])
+        net = round(delta - float(pos.charges_open) - close_ch, 2)
+        self._pending_broker_pnl = net
+        qty = abs(int(pos.qty)) or 1
+        if pos.style == "short":
+            implied = float(pos.entry) - (delta / qty)
+        else:
+            implied = float(pos.entry) + (delta / qty)
+        if implied > 0:
+            exit_px = round(implied, 2)
+        return True, exit_px, "kite_realised_delta"
+
+    def _book_live_partial_chunk(
+        self,
+        now: datetime,
+        pos: AgentPosition,
+        *,
+        filled_qty: int,
+        exit_px: float,
+        order_id: str = "",
+    ) -> bool:
+        """Book a partial close chunk onto day_pnl; shrink book qty. Returns True if applied."""
+        filled_qty = min(abs(int(filled_qty)), abs(int(pos.qty)))
+        if filled_qty <= 0:
+            return False
+        exit_px = round(float(exit_px), 2)
+        remain_book = abs(int(pos.qty)) - filled_qty
+        chunk_gross = float(_pnl_gross(pos.style, pos.entry, exit_px, filled_qty))
+        chunk_close_ch = float(
+            kite_nfo_charges(_close_legs(pos.style, exit_px, filled_qty))["total"]
+        )
+        open_share = round(
+            float(pos.charges_open) * (filled_qty / max(1, abs(int(pos.qty)))),
+            2,
+        )
+        chunk_pnl = round(chunk_gross - open_share - chunk_close_ch, 2)
+        self.day_pnl = round(float(self.day_pnl) + chunk_pnl, 2)
+        pos.charges_open = round(max(0.0, float(pos.charges_open) - open_share), 2)
+        pos.qty = remain_book
+        # Keep kite realised delta honest for a later broker_squared_off.
+        if pos.realised_at_open is not None:
+            pos.realised_at_open = round(float(pos.realised_at_open) + chunk_gross, 2)
+        self._append(
+            {
+                "event": "live_partial_close",
+                "ts": now.isoformat(),
+                "day": pos.day,
+                "symbol": pos.symbol,
+                "style": pos.style,
+                "qty_closed": filled_qty,
+                "qty_remain": remain_book,
+                "entry": pos.entry,
+                "exit": exit_px,
+                "pnl": chunk_pnl,
+                "day_pnl": self.day_pnl,
+                "charges_open_remain": pos.charges_open,
+                "realised_at_open": pos.realised_at_open,
+                "close_order_id": order_id or None,
+                "live": True,
+                "live_orders": True,
+                "gates": "agent",
+            }
+        )
+        self._log.warning(
+            "agent live partial close filled=%s remain_book=%s pnl=%s",
+            filled_qty,
+            remain_book,
+            chunk_pnl,
+        )
+        return True
+
+    def _absorb_dead_close_fills(
+        self,
+        now: datetime,
+        pos: AgentPosition,
+        row: dict[str, Any],
+        *,
+        order_id: str,
+    ) -> int:
+        """If a CANCELLED/REJECTED close filled partly, book that chunk. Returns filled qty."""
+        filled = int(float(row.get("filled_quantity") or 0))
+        avg = _f(row.get("average_price"))
+        if filled <= 0 or avg is None or avg <= 0:
+            return 0
+        self._book_live_partial_chunk(
+            now,
+            pos,
+            filled_qty=filled,
+            exit_px=round(float(avg), 2),
+            order_id=order_id,
+        )
+        return filled
+
+    def _live_close_fill(
+        self, now: datetime, pos: AgentPosition
+    ) -> tuple[str, dict[str, Any] | None]:
+        """Return (outcome, fill).
+
+        outcome: ``ok`` fill dict, ``flat`` broker already square, ``wait`` retry later.
+        """
+        assert self.order_client is not None
+        # Resume a still-working close order instead of stacking a second one.
+        pending_id = str(pos.close_order_id or "").strip()
+        if pending_id:
+            try:
+                status_row = self.order_client.order_status(pending_id)
+            except (KiteOrderError, Exception) as exc:  # noqa: BLE001
+                self._note_live_close_fail(now, exc)
+                return "wait", None
+            status = str(status_row.get("status") or "").upper()
+            if status == "COMPLETE":
+                try:
+                    fill = self.order_client.fill_from_order(
+                        pending_id, fallback_qty=pos.qty
+                    )
+                except KiteOrderError as exc:
+                    self._note_live_close_fail(now, exc)
+                    return "wait", None
+                pos.close_order_id = ""
+                return "ok", fill
+            if kite_order_dead(status):
+                filled = self._absorb_dead_close_fills(
+                    now, pos, status_row, order_id=pending_id
+                )
+                self._log.warning(
+                    "agent pending close %s ended %s filled=%s remain_book=%s — requote remaining",
+                    pending_id,
+                    status,
+                    filled,
+                    pos.qty,
+                )
+                pos.close_order_id = ""
+                if abs(int(pos.qty)) <= 0:
+                    # Entire book closed via cancelled-order fills (PnL already on day).
+                    return "sealed", {
+                        "order_id": pending_id,
+                        "average_price": round(
+                            float(_f(status_row.get("average_price")) or pos.entry), 2
+                        ),
+                        "quantity": int(float(status_row.get("filled_quantity") or 0)),
+                        "status": "COMPLETE",
+                    }
+                # Fall through to place a new close for the remainder only.
+            else:
+                # Intermediate status — keep watching; never drop the id.
+                # Still OPEN / TRIGGER PENDING — wait for this id only.
+                try:
+                    fill_row = self.order_client.wait_fill(pending_id)
+                    fill = {
+                        "order_id": pending_id,
+                        "average_price": round(float(fill_row.get("average_price") or 0), 2),
+                        "quantity": int(
+                            fill_row.get("filled_quantity")
+                            or fill_row.get("quantity")
+                            or pos.qty
+                        ),
+                        "status": "COMPLETE",
+                    }
+                    if fill["average_price"] <= 0:
+                        raise KiteOrderError(
+                            f"bad_fill_price:{pending_id}", order_id=pending_id
+                        )
+                    pos.close_order_id = ""
+                    return "ok", fill
+                except KiteOrderError as exc:
+                    try:
+                        again = self.order_client.order_status(pending_id)
+                        st = str(again.get("status") or "").upper()
+                    except (KiteOrderError, Exception):
+                        st = ""
+                        again = {}
+                    if st == "COMPLETE":
+                        try:
+                            fill = self.order_client.fill_from_order(
+                                pending_id, fallback_qty=pos.qty
+                            )
+                            pos.close_order_id = ""
+                            return "ok", fill
+                        except KiteOrderError as exc2:
+                            pos.close_order_id = pending_id
+                            self._note_live_close_fail(now, exc2)
+                            return "wait", None
+                    if kite_order_dead(st):
+                        filled = self._absorb_dead_close_fills(
+                            now, pos, again, order_id=pending_id
+                        )
+                        pos.close_order_id = ""
+                        self._log.warning(
+                            "agent close %s dead after wait (%s) filled=%s remain=%s",
+                            pending_id,
+                            st,
+                            filled,
+                            pos.qty,
+                        )
+                        if abs(int(pos.qty)) <= 0:
+                            return "sealed", {
+                                "order_id": pending_id,
+                                "average_price": round(
+                                    float(_f(again.get("average_price")) or pos.entry), 2
+                                ),
+                                "quantity": int(float(again.get("filled_quantity") or 0)),
+                                "status": "COMPLETE",
+                            }
+                        # Fall through to requote remainder.
+                    else:
+                        # Any non-terminal status (OPEN PENDING, CANCEL PENDING, …) — keep watching.
+                        pos.close_order_id = pending_id
+                        self._note_live_close_fail(now, exc)
+                        return "wait", None
+
+        if abs(int(pos.qty)) <= 0:
+            return "flat", None
+
+        try:
+            net = self.order_client.net_position_qty(pos.symbol)
+        except KiteOrderError as exc:
+            self._note_live_close_fail(now, exc)
+            return "wait", None
+        except Exception as exc:  # noqa: BLE001
+            self._note_live_close_fail(now, exc)
+            return "wait", None
+
+        if not self._net_matches_style(pos.style, net):
+            self._log.warning(
+                "agent live close skipped — broker flat/mismatch symbol=%s net=%s book_qty=%s",
+                pos.symbol,
+                net,
+                pos.qty,
+            )
+            return "flat", None
+
+        # Never close more than the book owns (manual adds stay on the broker).
+        close_qty = min(abs(int(net)), abs(int(pos.qty)))
+        if close_qty <= 0:
+            return "flat", None
+
+        try:
+            order_id = self.order_client.place_market(
+                symbol=pos.symbol,
+                transaction_type=transaction_for_close(pos.style),
+                qty=close_qty,
+                tag="atlas_agent",
+            )
+        except KiteOrderError as exc:
+            self._note_live_close_fail(now, exc)
+            return "wait", None
+        except Exception as exc:  # noqa: BLE001
+            self._note_live_close_fail(now, exc)
+            return "wait", None
+
+        pos.close_order_id = order_id
+        self._append(
+            {
+                "event": "live_close_submit",
+                "ts": now.isoformat(),
+                "day": pos.day,
+                "symbol": pos.symbol,
+                "style": pos.style,
+                "qty": close_qty,
+                "order_id": order_id,
+                "live": True,
+                "live_orders": True,
+                "gates": "agent",
+            }
+        )
+        try:
+            fill_row = self.order_client.wait_fill(order_id)
+            avg = float(fill_row.get("average_price") or 0)
+            if avg <= 0:
+                raise KiteOrderError(f"bad_fill_price:{order_id}", order_id=order_id)
+            fill = {
+                "order_id": order_id,
+                "average_price": round(avg, 2),
+                "quantity": int(
+                    fill_row.get("filled_quantity") or fill_row.get("quantity") or close_qty
+                ),
+                "status": "COMPLETE",
+            }
+            pos.close_order_id = ""
+            return "ok", fill
+        except KiteOrderError as exc:
+            try:
+                again = self.order_client.order_status(order_id)
+                st = str(again.get("status") or "").upper()
+            except (KiteOrderError, Exception):
+                st = ""
+                again = {}
+            if st == "COMPLETE":
+                try:
+                    fill = self.order_client.fill_from_order(
+                        order_id, fallback_qty=close_qty
+                    )
+                    pos.close_order_id = ""
+                    return "ok", fill
+                except KiteOrderError as exc2:
+                    pos.close_order_id = order_id
+                    self._note_live_close_fail(now, exc2)
+                    return "wait", None
+            if kite_order_dead(st):
+                filled = self._absorb_dead_close_fills(
+                    now, pos, again, order_id=order_id
+                )
+                pos.close_order_id = ""
+                self._log.warning(
+                    "agent new close %s dead (%s) filled=%s remain=%s",
+                    order_id,
+                    st,
+                    filled,
+                    pos.qty,
+                )
+                if abs(int(pos.qty)) <= 0:
+                    return "sealed", {
+                        "order_id": order_id,
+                        "average_price": round(
+                            float(_f(again.get("average_price")) or pos.entry), 2
+                        ),
+                        "quantity": int(float(again.get("filled_quantity") or 0)),
+                        "status": "COMPLETE",
+                    }
+                # Remainder still open — backoff then retry with book qty.
+                self._note_live_close_fail(now, exc)
+                return "wait", None
+            # Intermediate / unknown / unread — keep the id, never place a second close.
+            pos.close_order_id = order_id
+            self._note_live_close_fail(now, exc)
+            return "wait", None
+
     def _close(
         self,
         now: datetime,
@@ -1571,45 +2508,138 @@ class PaperAgent:
             marked = False
             exit_px = pos.entry
         exit_px = round(float(exit_px), 2)
+        close_order_id = ""
+        pnl_source: str | None = None
+        calendar_day = now.strftime("%Y-%m-%d")
+        # A live open always closes on the broker, even if the UI flag is now off.
+        # Never paper-flat a live lot — that would leave the broker position open.
+        if pos.live:
+            if self.order_client is None:
+                self.last_reject = "live_close_no_client"
+                self._log.warning("agent live close blocked: order client missing")
+                return None
+            # MIS from a prior session is already squared by Zerodha. Do not send a
+            # close — that would open a fresh opposite lot.
+            if pos.day != calendar_day:
+                reason = "broker_squared_off"
+                marked, exit_px, pnl_source = self._apply_broker_realised(
+                    pos, exit_px=exit_px, marked=False
+                )
+                self.live_close_fails = 0
+                self.live_close_next_at = None
+                self._log.warning(
+                    "agent live stale day=%s now=%s — ledger flat, no broker order",
+                    pos.day,
+                    calendar_day,
+                )
+            else:
+                if self.live_close_next_at is not None and now < self.live_close_next_at:
+                    self.last_reject = "live_close_backoff"
+                    return None
+                outcome, fill = self._live_close_fill(now, pos)
+                if outcome == "wait":
+                    return None
+                if outcome == "sealed":
+                    # Partials already counted into day_pnl; write a zero-incremental close.
+                    exit_px = round(float((fill or {}).get("average_price") or exit_px), 2)
+                    close_order_id = str((fill or {}).get("order_id") or "")
+                    marked = True
+                    pnl_source = "partials_sealed"
+                    self._pending_broker_pnl = 0.0
+                    self.live_close_fails = 0
+                    self.live_close_next_at = None
+                    if abs(int(pos.qty)) <= 0:
+                        pos.qty = int((fill or {}).get("quantity") or pos.qty) or pos.qty
+                elif outcome == "flat" or fill is None:
+                    reason = "broker_squared_off"
+                    marked, exit_px, pnl_source = self._apply_broker_realised(
+                        pos, exit_px=exit_px, marked=False
+                    )
+                    self.live_close_fails = 0
+                    self.live_close_next_at = None
+                else:
+                    exit_px = round(float(fill["average_price"]), 2)
+                    close_order_id = str(fill.get("order_id") or "")
+                    filled_qty = min(abs(int(fill.get("quantity") or 0)), abs(int(pos.qty)))
+                    marked = True
+                    pos.close_order_id = ""
+                    self.live_close_fails = 0
+                    self.live_close_next_at = None
+                    remain_book = abs(int(pos.qty)) - filled_qty
+                    if remain_book > 0 and filled_qty > 0:
+                        self._book_live_partial_chunk(
+                            now,
+                            pos,
+                            filled_qty=filled_qty,
+                            exit_px=exit_px,
+                            order_id=close_order_id,
+                        )
+                        return None
+                    if filled_qty <= 0:
+                        self._note_live_close_fail(
+                            now, KiteOrderError("close_fill_qty_zero")
+                        )
+                        return None
+                    # Full book close — keep filled qty for PnL below.
+                    pos.qty = filled_qty if filled_qty > 0 else pos.qty
         book_day = book_day or pos.day
         rolling = book_day != (self.traded_day or pos.day)
         new_day_pnl = 0.0 if rolling else self.day_pnl
-        charges_close = (
-            float(kite_nfo_charges(_close_legs(pos.style, exit_px, pos.qty))["total"]) if marked else 0.0
-        )
-        charges = round(pos.charges_open + charges_close, 2) if marked else round(pos.charges_open, 2)
-        pnl_gross = _pnl_gross(pos.style, pos.entry, exit_px, pos.qty) if marked else None
-        pnl = round(float(pnl_gross) - charges, 2) if pnl_gross is not None else None
+        broker_pnl = getattr(self, "_pending_broker_pnl", None)
+        self._pending_broker_pnl = None
+        if pnl_source in ("kite_realised_delta", "partials_sealed") and broker_pnl is not None:
+            charges = 0.0
+            pnl_gross = float(broker_pnl)
+            pnl = round(float(broker_pnl), 2)
+            marked = True
+        else:
+            charges_close = (
+                float(kite_nfo_charges(_close_legs(pos.style, exit_px, pos.qty))["total"])
+                if marked
+                else 0.0
+            )
+            charges = round(pos.charges_open + charges_close, 2) if marked else round(pos.charges_open, 2)
+            pnl_gross = _pnl_gross(pos.style, pos.entry, exit_px, pos.qty) if marked else None
+            pnl = round(float(pnl_gross) - charges, 2) if pnl_gross is not None else None
         if pnl is not None:
             new_day_pnl = round(new_day_pnl + pnl, 2)
-        event = self._append(
-            {
-                "event": "close",
-                "ts": now.isoformat(),
-                "day": book_day,
-                "atm": pos.atm,
-                "side": pos.side,
-                "style": pos.style,
-                "symbol": pos.symbol,
-                "qty": pos.qty,
-                "entry": pos.entry,
-                "exit": exit_px,
-                "target": pos.target,
-                "stop": pos.stop,
-                "trail_armed": pos.trail_armed,
-                "best_px": pos.best_px,
-                "pnl_gross": pnl_gross,
-                "charges": charges,
-                "pnl": pnl,
-                "reason": reason,
-                "pnl_known": marked and pnl is not None,
-                "day_pnl": round(new_day_pnl, 2),
-                "spot": spot,
-                "gates": "agent",
-            }
-        )
+        event_body = {
+            "event": "close",
+            "ts": now.isoformat(),
+            "day": book_day,
+            "atm": pos.atm,
+            "side": pos.side,
+            "style": pos.style,
+            "symbol": pos.symbol,
+            "qty": pos.qty,
+            "entry": pos.entry,
+            "exit": exit_px,
+            "target": pos.target,
+            "stop": pos.stop,
+            "trail_armed": pos.trail_armed,
+            "best_px": pos.best_px,
+            "pnl_gross": pnl_gross,
+            "charges": charges,
+            "pnl": pnl,
+            "reason": reason,
+            "pnl_known": bool(pnl is not None),
+            "pnl_source": pnl_source,
+            "day_pnl": round(new_day_pnl, 2),
+            "spot": spot,
+            "gates": "agent",
+            "live": bool(pos.live),
+            "live_orders": bool(pos.live),
+            "order_id": pos.order_id or None,
+            "close_order_id": close_order_id or None,
+        }
+        event = self._append(event_body)
         if event is None:
-            return None
+            self._log.warning(
+                "agent close ledger write failed live=%s close_order_id=%s",
+                bool(pos.live),
+                close_order_id or "-",
+            )
+            event = dict(event_body)
         if not rolling and pnl is not None and pnl < 0:
             if reason == "stop":
                 self._record_stop_lesson(
