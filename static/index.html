@@ -1341,6 +1341,177 @@
       padding: 16px;
     }
     .history-modal.open { display: flex; }
+    /* Sign-in opens from inside Agent — must sit above other history modals. */
+    #loginModal {
+      z-index: 1100;
+    }
+    #loginModal .history-backdrop {
+      background: rgba(0, 0, 0, 0.72);
+      backdrop-filter: blur(4px);
+    }
+    [data-theme="light"] #loginModal .history-backdrop {
+      background: rgba(15, 23, 42, 0.55);
+    }
+    #loginPanel.login-card {
+      width: min(380px, 100%);
+      max-height: none;
+      padding: 0;
+      overflow: hidden;
+      border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
+      border-radius: 14px;
+      background:
+        linear-gradient(
+          165deg,
+          color-mix(in srgb, var(--accent) 10%, var(--card-bg-top)) 0%,
+          var(--panel) 42%,
+          var(--card-bg-bottom) 100%
+        );
+      box-shadow:
+        0 0 0 1px color-mix(in srgb, var(--accent) 12%, transparent),
+        0 24px 64px rgba(0, 0, 0, 0.45);
+    }
+    .login-card-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 18px 18px 0;
+    }
+    .login-brand {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 0;
+    }
+    .login-brand-mark {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+    .login-brand h2 {
+      margin: 0;
+      font-size: 1.15rem;
+      font-weight: 650;
+      letter-spacing: -0.02em;
+      color: var(--ink);
+    }
+    .login-brand p {
+      margin: 2px 0 0;
+      font-size: 0.78rem;
+      line-height: 1.35;
+      color: var(--muted);
+    }
+    .login-close {
+      flex-shrink: 0;
+      width: 32px;
+      height: 32px;
+      margin: -2px -2px 0 0;
+      padding: 0;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--parity-bg) 80%, transparent);
+      color: var(--muted);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .login-close svg {
+      width: 14px;
+      height: 14px;
+      fill: currentColor;
+    }
+    .login-close:hover {
+      color: var(--ink);
+      border-color: var(--accent);
+    }
+    .login-form {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding: 18px;
+    }
+    .login-field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin: 0;
+    }
+    .login-field span {
+      font-size: 0.7rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .login-field input {
+      width: 100%;
+      margin: 0;
+      padding: 10px 12px;
+      border: 1px solid var(--control-border);
+      border-radius: 9px;
+      background: color-mix(in srgb, var(--bg) 65%, var(--panel));
+      color: var(--ink);
+      font-size: 0.92rem;
+      font-family: ui-sans-serif, system-ui, sans-serif;
+      line-height: 1.3;
+      box-shadow: var(--control-shadow);
+      outline: none;
+      transition: border-color 0.12s ease, box-shadow 0.12s ease;
+    }
+    .login-field input::placeholder {
+      color: color-mix(in srgb, var(--muted) 75%, transparent);
+    }
+    .login-field input:focus {
+      border-color: var(--accent);
+      box-shadow:
+        0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent),
+        var(--control-shadow);
+    }
+    .login-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 4px;
+    }
+    #loginSubmitBtn {
+      width: 100%;
+      border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+      border-radius: 9px;
+      background: color-mix(in srgb, var(--accent) 22%, transparent);
+      color: var(--ink);
+      font-size: 0.88rem;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+      padding: 11px 14px;
+      cursor: pointer;
+      transition: background 0.12s ease, border-color 0.12s ease;
+    }
+    #loginSubmitBtn:hover {
+      background: color-mix(in srgb, var(--accent) 34%, transparent);
+      border-color: var(--accent);
+    }
+    #loginSubmitBtn:disabled {
+      opacity: 0.55;
+      cursor: wait;
+    }
+    #loginMeta {
+      min-height: 1.1em;
+      margin: 0;
+      font-size: 0.75rem;
+      line-height: 1.35;
+      color: var(--muted);
+      text-align: center;
+    }
+    #loginMeta.is-error {
+      color: var(--fail);
+    }
+    #loginMeta.is-ok {
+      color: var(--pass);
+    }
     .history-backdrop {
       position: absolute;
       inset: 0;
@@ -2138,26 +2309,31 @@
   </div>
   <div class="history-modal" id="loginModal" aria-hidden="true">
     <div class="history-backdrop" id="loginBackdrop"></div>
-    <section class="history-dialog" id="loginPanel" role="dialog" aria-modal="true" aria-label="Sign in">
-      <div class="history-head">
-        <h2>Sign in</h2>
-        <button type="button" class="history-close" id="loginClose">
+    <section class="history-dialog login-card" id="loginPanel" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
+      <div class="login-card-top">
+        <div class="login-brand">
+          <span class="login-brand-mark">Atlas Lite</span>
+          <h2 id="loginTitle">Operator sign-in</h2>
+          <p>Required to turn Live agent on or off.</p>
+        </div>
+        <button type="button" class="login-close" id="loginClose" aria-label="Close sign-in">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-          Close
         </button>
       </div>
-      <div class="history-toolbar" style="flex-direction:column;align-items:stretch;gap:10px;">
-        <label class="history-meta" for="loginEmail">Email
-          <input type="email" id="loginEmail" autocomplete="username" placeholder="email" style="width:100%;padding:6px 8px;margin-top:4px;" />
+      <form class="login-form" id="loginForm" autocomplete="on">
+        <label class="login-field" for="loginEmail">
+          <span>Email</span>
+          <input type="email" id="loginEmail" name="username" autocomplete="username" placeholder="you@example.com" required />
         </label>
-        <label class="history-meta" for="loginPassword">Password
-          <input type="password" id="loginPassword" autocomplete="current-password" placeholder="password" style="width:100%;padding:6px 8px;margin-top:4px;" />
+        <label class="login-field" for="loginPassword">
+          <span>Password</span>
+          <input type="password" id="loginPassword" name="password" autocomplete="current-password" placeholder="••••••••" required />
         </label>
-        <div style="display:flex;gap:8px;align-items:center;">
-          <button type="button" id="loginSubmitBtn">Sign in</button>
-          <span class="history-meta" id="loginMeta"></span>
+        <div class="login-actions">
+          <button type="submit" id="loginSubmitBtn">Sign in</button>
+          <p class="history-meta" id="loginMeta" role="status" aria-live="polite"></p>
         </div>
-      </div>
+      </form>
     </section>
   </div>
   <div class="history-modal" id="agentModal" aria-hidden="true">
@@ -6696,7 +6872,15 @@
       modal.classList.toggle("open", !!open);
       modal.setAttribute("aria-hidden", open ? "false" : "true");
       if (open) {
-        document.getElementById("loginPassword")?.focus();
+        const meta = document.getElementById("loginMeta");
+        if (meta) {
+          meta.textContent = "";
+          meta.classList.remove("is-error", "is-ok");
+        }
+        const email = document.getElementById("loginEmail");
+        const password = document.getElementById("loginPassword");
+        if (email && !String(email.value || "").trim()) email.focus();
+        else password?.focus();
       }
     }
 
@@ -6902,24 +7086,36 @@
     });
     document.getElementById("loginClose")?.addEventListener("click", () => setLoginOpen(false));
     document.getElementById("loginBackdrop")?.addEventListener("click", () => setLoginOpen(false));
-    document.getElementById("loginSubmitBtn")?.addEventListener("click", async () => {
+    document.getElementById("loginForm")?.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
       const meta = document.getElementById("loginMeta");
+      const btn = document.getElementById("loginSubmitBtn");
       const email = document.getElementById("loginEmail")?.value || "";
       const password = document.getElementById("loginPassword")?.value || "";
-      if (meta) meta.textContent = "Signing in…";
+      if (meta) {
+        meta.classList.remove("is-error", "is-ok");
+        meta.textContent = "Signing in…";
+      }
+      if (btn) btn.disabled = true;
       try {
         await uiLogin(email, password);
         const pw = document.getElementById("loginPassword");
         if (pw) pw.value = "";
-        if (meta) meta.textContent = "";
+        if (meta) {
+          meta.textContent = "";
+          meta.classList.remove("is-error", "is-ok");
+        }
         const am = document.getElementById("agentMeta");
         if (am) am.textContent = "Signed in — you can toggle Live agent";
       } catch (err) {
-        if (meta) meta.textContent = String(err?.message || err);
+        if (meta) {
+          meta.classList.add("is-error");
+          meta.textContent = String(err?.message || err);
+        }
+        document.getElementById("loginPassword")?.focus();
+      } finally {
+        if (btn) btn.disabled = false;
       }
-    });
-    document.getElementById("loginPassword")?.addEventListener("keydown", (ev) => {
-      if (ev.key === "Enter") document.getElementById("loginSubmitBtn")?.click();
     });
     document.getElementById("agentAdviseBtn")?.addEventListener("click", async () => {
       const meta = document.getElementById("agentMeta");
