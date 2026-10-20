@@ -1,4 +1,4 @@
-"""Persist the agent live-orders switch. Off by default.
+"""Persist the agent live-orders switch. File off by default; env allows the UI.
 
 The UI writes this file through a token-gated API. Ops can force the book to stay
 paper-only with ATLAS_LITE_AGENT_LIVE_ALLOWED=0 even if the file says enabled.
@@ -19,9 +19,9 @@ LIVE_FLAG_NAME = "agent_live.json"
 
 
 def live_allowed_by_env() -> bool:
-    """Master kill. Default locked off. Set ATLAS_LITE_AGENT_LIVE_ALLOWED=1 to unlock the UI."""
-    raw = os.environ.get("ATLAS_LITE_AGENT_LIVE_ALLOWED", "0").strip().lower()
-    return raw in ("1", "true", "yes", "on")
+    """Master kill. Default unlocked. Set ATLAS_LITE_AGENT_LIVE_ALLOWED=0 to lock the UI off."""
+    raw = os.environ.get("ATLAS_LITE_AGENT_LIVE_ALLOWED", "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
 
 
 class AgentLiveFlag:

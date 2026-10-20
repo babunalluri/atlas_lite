@@ -182,13 +182,13 @@ def _live_bot(tmp_path, monkeypatch, orders: FakeOrders) -> tuple[PaperAgent, Bo
     return bot, quotes, ce, pe
 
 
-def test_live_flag_locked_by_default(tmp_path, monkeypatch) -> None:
+def test_live_flag_unlocked_by_default(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("ATLAS_LITE_AGENT_LIVE_ALLOWED", raising=False)
     flag = AgentLiveFlag(tmp_path / "agent_live.json")
-    assert flag.is_enabled() is False
-    assert flag.snapshot()["allowed"] is False
-    with pytest.raises(ValueError, match="live_not_allowed"):
-        flag.set_enabled(True, source="test")
+    assert flag.is_enabled() is False  # file still off
+    assert flag.snapshot()["allowed"] is True
+    snap = flag.set_enabled(True, source="test")
+    assert snap["enabled"] is True
 
 
 def test_live_flag_enable_and_env_lock(tmp_path, monkeypatch) -> None:

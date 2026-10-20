@@ -16,7 +16,7 @@ There is **one** book: `agent_paper`. Live is not a second parallel book.
 - Only `agent_paper`. Other books stay paper.
 - UI toggle requires `X-Atlas-Token` (same as gates / advise).
 - **Enabling** live also requires `ATLAS_LITE_API_TOKEN` to be set on the host (refuses with `api_token_required_for_live` if unset).
-- Ops kill switch: `ATLAS_LITE_AGENT_LIVE_ALLOWED` defaults to **0** (locked). Set to `1` on the host to unlock the UI.
+- Ops kill switch: `ATLAS_LITE_AGENT_LIVE_ALLOWED` defaults to **1** (UI unlocked). Set to `0` on the host to lock the checkbox off.
 
 Exit **triggers** (stop / trail / target / time / square-off) still watch the live LTP mark. The broker fill can slip vs that mark.
 
@@ -58,11 +58,10 @@ Verify in the Kite developer console (not automated here):
 | Book wiring | `atlas_lite/paper_agent.py` |
 | API | `POST /api/agent/live?enabled=true\|false` |
 | UI | Agent panel → Live agent checkbox |
-| Env | `ATLAS_LITE_AGENT_LIVE_ALLOWED` (default 0), `ATLAS_LITE_API_TOKEN` |
+| Env | `ATLAS_LITE_AGENT_LIVE_ALLOWED` (default 1), `ATLAS_LITE_API_TOKEN` |
 
 ## Enable checklist
 
 1. Valid Kite access token on the host.
 2. `ATLAS_LITE_API_TOKEN` set and known to the UI.
-3. `ATLAS_LITE_AGENT_LIVE_ALLOWED=1` then recreate/restart the container.
-4. Confirm `/health` and paper book first; only then tick Live agent.
+3. Tick **Live agent** when you want real orders (untick to stay paper). Set `ATLAS_LITE_AGENT_LIVE_ALLOWED=0` only to lock the checkbox host-wide.
