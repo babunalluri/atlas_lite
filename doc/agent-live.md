@@ -1,51 +1,59 @@
 # Agent paper — live Kite orders
 
-Status: implemented locally. Deploy only when asked. **Do not enable until ops unlock + token are set and the Kite console checks below are done.**
+Status: implemented locally. Deploy only when asked.
 
-Off by default. The scorecard agent book (`agent_paper`) can place real Zerodha market orders when the **Live agent** checkbox in the Agent panel is on.
+Off by default. The scorecard agent book (`agent_paper`) can place real Zerodha market orders when the **Live agent** checkbox is on **and** the operator is signed in.
 
 ## Behaviour
 
 There is **one** book: `agent_paper`. Live is not a second parallel book.
 
 - **Live off (default):** same scorecard entry/exit rules, fills at LTP, ledger only.
-- **Live on:** the **same** entry/exit rules decide when to trade; the fill is a Kite market order instead of LTP. One lot MIS.
-- Turning live on does **not** run paper and live side by side. The next open is live; while a live position is open there is only that one position.
-- A position opened live **always closes live**, even if you turn the checkbox off mid-trade.
-- Turning live **off does not flatten** an open live lot — exits still follow stop/trail/target/time/square-off on the broker.
+- **Live on:** the same entry/exit rules decide when to trade; the fill is a Kite market order. One lot MIS.
+- Turning live **off does not flatten** an open live lot.
+- Live **auto-offs after square-off** (15:14, once flat).
 - Only `agent_paper`. Other books stay paper.
-- **Live agent** checkbox alone toggles live (no API token). Gates / advise still use the token if set.
-- Ops kill switch: `ATLAS_LITE_AGENT_LIVE_ALLOWED` defaults to **1** (UI unlocked). Set to `0` on the host to lock the checkbox off.
 
-Exit **triggers** (stop / trail / target / time / square-off) still watch the live LTP mark. The broker fill can slip vs that mark.
+## Auth (required)
+
+- **Live agent** checkbox requires UI **Sign in** (HttpOnly session cookie, `SameSite=strict`).
+- Set in host `.env` (never commit credentials). Login is disabled until all three are set:
+
+```bash
+ATLAS_LITE_UI_EMAIL=...
+ATLAS_LITE_UI_PASSWORD=...
+ATLAS_LITE_SESSION_SECRET=...   # or rely on ATLAS_LITE_API_TOKEN
+```
+
+- No hardcoded email or session-signing fallback. Missing secret ⇒ sign-in stays off.
+
+- Unauthenticated `POST /api/agent/live` returns `401 login_required`.
+- Ops kill switch: `ATLAS_LITE_AGENT_LIVE_ALLOWED` defaults to **0** (locked). Set to `1` to unlock the checkbox host-wide.
+- Gates / advise may still use optional `ATLAS_LITE_API_TOKEN` / `X-Atlas-Token`.
 
 ## Safety
 
-- `wait_fill` cancels on timeout, then **re-reads** status so a fill that raced the cancel is not treated as a miss.
-- Transport / network errors raise `KiteOrderError`.
-- `net_position_qty` / `position_row` read Kite **`net` only** (never sum `net` + `day`).
-- Before every live open: broker must be **flat**. Pre-existing / manual lots are never taken over.
-- After a failed live open with an `order_id`: adopt **only that order’s** fill (`filled_quantity` / `average_price`, capped at ordered qty) as `live_adopt`. Unreadable order status blocks further live opens for the day.
-- Restart restores `live_adopt` like `open`, and restores a pending `live_close_submit` order id.
-- Stale-day `broker_squared_off` uses **delta** of Kite realised since open (`pnl_source=kite_realised_delta`); otherwise PnL unknown.
-- Close qty = `min(abs(broker net), book qty)` — never sells manual extras. Partial remain = book − filled (`live_partial_close` records chunk PnL).
-- CANCELLED/REJECTED close with `filled_quantity > 0` books that chunk first, then requotes only the **remaining book** qty.
-- An order is **finished only** on COMPLETE / CANCELLED / REJECTED. Any other Kite status (OPEN PENDING, CANCEL PENDING, …) keeps the saved id — never a second close.
-- Timed-out opens that are still working block further live opens until that order_id finishes (then `live_adopt`).
-- Pending close order id is kept across retries and restarts; do **not** place a second close.
-- Live flag **auto-offs after square-off** (15:14, once flat). Turn it on each morning with the Kite token.
-- Do not hand-trade the agent’s strike in the same account while live is on.
-- Close failures use exponential backoff (cap 60s).
-- Broker fills run via `asyncio.to_thread`.
-- Ledger: `live_submit` / `live_submit_failed` / `live_close_submit` / `live_adopt` / `live_partial_close`.
-- On restart, an orphan `live_submit` (no following open/failed/adopt) logs a loud error.
+- Order finished only on COMPLETE / CANCELLED / REJECTED; intermediate statuses keep the saved id.
+- Cancelled/rejected close with partial fills books the chunk, then requotes remaining **book** qty only.
+- Never takes over a pre-existing/manual broker lot; adopt only own order fills.
+- `live_open_pending` is written to the ledger and restored after restart (including across a calendar-day roll) so a watched open is not forgotten.
+- Unreadable broker status still arms the pending watch so a restart keeps polling the same order id.
+- `net` positions only (never sum `net` + `day`).
 
 ## Ops before first live day
 
-Verify in the Kite developer console (not automated here):
+Verify in the Kite developer console:
 
 1. OCI static IP is allowlisted for orders.
 2. Whether NFO options market orders need `market_protection`.
+
+## Enable checklist
+
+1. Valid Kite access token on the host.
+2. `ATLAS_LITE_UI_EMAIL`, `ATLAS_LITE_UI_PASSWORD`, and `ATLAS_LITE_SESSION_SECRET` (or API token) in host `.env`.
+3. `ATLAS_LITE_AGENT_LIVE_ALLOWED=1` then recreate the container.
+4. Sign in → tick **Live agent** only when you want real orders.
+5. Do not hand-trade the agent’s strike in the same account while live is on.
 
 ## Files
 
@@ -53,14 +61,8 @@ Verify in the Kite developer console (not automated here):
 |-------|------|
 | Flag file | `data/agent_live.json` |
 | Orders | `atlas_lite/kite_orders.py` |
+| UI auth | `atlas_lite/ui_auth.py` |
 | Flag store | `atlas_lite/agent_live.py` |
-| Book wiring | `atlas_lite/paper_agent.py` |
-| API | `POST /api/agent/live?enabled=true\|false` |
-| UI | Agent panel → Live agent checkbox |
-| Env | `ATLAS_LITE_AGENT_LIVE_ALLOWED` (default 1), `ATLAS_LITE_API_TOKEN` |
-
-## Enable checklist
-
-1. Valid Kite access token on the host.
-2. Tick **Live agent** when you want real orders (untick to stay paper).
-3. Set `ATLAS_LITE_AGENT_LIVE_ALLOWED=0` only to lock the checkbox host-wide.
+| Book | `atlas_lite/paper_agent.py` |
+| API | `POST /api/auth/login`, `POST /api/agent/live` |
+| UI | Agent panel → Sign in + Live agent |

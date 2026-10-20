@@ -182,13 +182,13 @@ def _live_bot(tmp_path, monkeypatch, orders: FakeOrders) -> tuple[PaperAgent, Bo
     return bot, quotes, ce, pe
 
 
-def test_live_flag_unlocked_by_default(tmp_path, monkeypatch) -> None:
+def test_live_flag_locked_by_default(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("ATLAS_LITE_AGENT_LIVE_ALLOWED", raising=False)
     flag = AgentLiveFlag(tmp_path / "agent_live.json")
-    assert flag.is_enabled() is False  # file still off
-    assert flag.snapshot()["allowed"] is True
-    snap = flag.set_enabled(True, source="test")
-    assert snap["enabled"] is True
+    assert flag.is_enabled() is False
+    assert flag.snapshot()["allowed"] is False
+    with pytest.raises(ValueError, match="live_not_allowed"):
+        flag.set_enabled(True, source="test")
 
 
 def test_live_flag_enable_and_env_lock(tmp_path, monkeypatch) -> None:
@@ -625,6 +625,7 @@ def test_open_fail_blocks_when_order_unreadable(tmp_path, monkeypatch) -> None:
     )
     assert opened is None
     assert bot.live_opens_blocked is True
+    assert bot.live_pending_open_order_id == "ORD1"
     bot.propose_entry(side="ce", style="long", reason="again", spot=23000.0, now=now)
     again = bot.on_frame(
         now=now,
@@ -636,7 +637,13 @@ def test_open_fail_blocks_when_order_unreadable(tmp_path, monkeypatch) -> None:
         spot=23000.0,
     )
     assert again is None
-    assert bot.last_reject == "live_opens_blocked"
+    assert bot.live_opens_blocked is True
+    assert bot.live_pending_open_order_id == "ORD1"
+    # Poll keeps the specific unread reason; opens stay blocked either way.
+    assert bot.last_reject and (
+        bot.last_reject == "live_opens_blocked"
+        or str(bot.last_reject).startswith("live_open_unknown:")
+    )
 
 
 def test_restore_live_adopt_and_pending_close(tmp_path, monkeypatch) -> None:
@@ -924,6 +931,96 @@ def test_cancelled_partial_close_with_manual_lots(tmp_path, monkeypatch) -> None
     assert sell_qtys[-1] == 35
     # Manual 130 untouched in sizing — never sold 65 again after cancel.
     assert sell_qtys.count(65) == 1
+
+
+def test_restore_live_open_pending_watch(tmp_path) -> None:
+    path = tmp_path / "paper_agent.jsonl"
+    rows = [
+        {
+            "event": "live_submit",
+            "ts": "2026-10-21T10:00:00+05:30",
+            "day": "2026-10-21",
+            "side": "ce",
+            "style": "long",
+            "symbol": "NFO:NIFTY26O1923000CE",
+            "qty": 65,
+            "strategy": "agent_paper",
+        },
+        {
+            "event": "live_submit_failed",
+            "ts": "2026-10-21T10:00:01+05:30",
+            "day": "2026-10-21",
+            "order_id": "ORDPEND",
+            "error": "fill_timeout",
+            "strategy": "agent_paper",
+        },
+        {
+            "event": "live_open_pending",
+            "ts": "2026-10-21T10:00:02+05:30",
+            "day": "2026-10-21",
+            "order_id": "ORDPEND",
+            "side": "ce",
+            "style": "long",
+            "symbol": "NFO:NIFTY26O1923000CE",
+            "ce_symbol": "NFO:NIFTY26O1923000CE",
+            "pe_symbol": "NFO:NIFTY26O1923000PE",
+            "atm": 23000,
+            "qty": 65,
+            "kite_status": "OPEN PENDING",
+            "strategy": "agent_paper",
+        },
+    ]
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    bot = PaperAgent(path=path, lot_size=65)
+    assert bot.position is None
+    assert bot.live_pending_open_order_id == "ORDPEND"
+    assert bot.live_opens_blocked is True
+    assert bot.live_pending_open_meta.get("symbol") == "NFO:NIFTY26O1923000CE"
+
+
+def test_restore_live_open_pending_survives_next_day(tmp_path) -> None:
+    path = tmp_path / "paper_agent.jsonl"
+    rows = [
+        {
+            "event": "live_open_pending",
+            "ts": "2026-10-21T15:20:00+05:30",
+            "day": "2026-10-21",
+            "order_id": "ORDPEND",
+            "side": "ce",
+            "style": "long",
+            "symbol": "NFO:NIFTY26O1923000CE",
+            "ce_symbol": "NFO:NIFTY26O1923000CE",
+            "pe_symbol": "NFO:NIFTY26O1923000PE",
+            "atm": 23000,
+            "qty": 65,
+            "kite_status": "OPEN PENDING",
+            "strategy": "agent_paper",
+        },
+        {
+            "event": "day_pnl",
+            "ts": "2026-10-22T09:15:00+05:30",
+            "day": "2026-10-22",
+            "day_pnl": 0.0,
+            "strategy": "agent_paper",
+        },
+    ]
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    bot = PaperAgent(path=path, lot_size=65)
+    assert bot.live_pending_open_order_id == "ORDPEND"
+    assert bot.live_opens_blocked is True
+
+
+def test_roll_to_day_keeps_pending_open_watch(tmp_path) -> None:
+    bot = PaperAgent(path=tmp_path / "paper_agent.jsonl", lot_size=65)
+    bot.traded_day = "2026-10-21"
+    bot.live_pending_open_order_id = "ORDPEND"
+    bot.live_pending_open_meta = {"symbol": "NFO:X", "want_qty": 65}
+    bot.live_opens_blocked = True
+    bot._roll_to_day("2026-10-22")
+    assert bot.traded_day == "2026-10-22"
+    assert bot.live_pending_open_order_id == "ORDPEND"
+    assert bot.live_opens_blocked is True
+    assert bot.live_pending_open_meta.get("symbol") == "NFO:X"
 
 
 def test_restore_partial_keeps_reduced_charges(tmp_path) -> None:

@@ -2136,6 +2136,30 @@
       <div class="trades-float-tip" id="tradesFloatTip" hidden role="tooltip"></div>
     </section>
   </div>
+  <div class="history-modal" id="loginModal" aria-hidden="true">
+    <div class="history-backdrop" id="loginBackdrop"></div>
+    <section class="history-dialog" id="loginPanel" role="dialog" aria-modal="true" aria-label="Sign in">
+      <div class="history-head">
+        <h2>Sign in</h2>
+        <button type="button" class="history-close" id="loginClose">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+          Close
+        </button>
+      </div>
+      <div class="history-toolbar" style="flex-direction:column;align-items:stretch;gap:10px;">
+        <label class="history-meta" for="loginEmail">Email
+          <input type="email" id="loginEmail" autocomplete="username" placeholder="email" style="width:100%;padding:6px 8px;margin-top:4px;" />
+        </label>
+        <label class="history-meta" for="loginPassword">Password
+          <input type="password" id="loginPassword" autocomplete="current-password" placeholder="password" style="width:100%;padding:6px 8px;margin-top:4px;" />
+        </label>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <button type="button" id="loginSubmitBtn">Sign in</button>
+          <span class="history-meta" id="loginMeta"></span>
+        </div>
+      </div>
+    </section>
+  </div>
   <div class="history-modal" id="agentModal" aria-hidden="true">
     <div class="history-backdrop" id="agentBackdrop"></div>
     <section class="history-dialog" id="agentPanel" role="dialog" aria-modal="true" aria-label="Paper AI agent">
@@ -2149,11 +2173,14 @@
       <div class="history-toolbar">
         <button type="button" id="agentAdviseBtn">Run trade cycle</button>
         <button type="button" id="agentRefreshBtn">Refresh</button>
-        <label class="history-meta" for="agentLiveToggle" style="display:inline-flex;align-items:center;gap:6px;" title="Real Kite orders for agent_paper only">
+        <label class="history-meta" for="agentLiveToggle" style="display:inline-flex;align-items:center;gap:6px;" title="Real Kite orders for agent_paper only — requires sign-in">
           <input type="checkbox" id="agentLiveToggle" />
           Live agent
         </label>
-        <label class="history-meta" for="agentApiToken" style="display:inline-flex;align-items:center;gap:6px;">
+        <button type="button" id="agentLoginBtn">Sign in</button>
+        <button type="button" id="agentLogoutBtn" style="display:none;">Sign out</button>
+        <span class="history-meta" id="agentAuthLine"></span>
+        <label class="history-meta" for="agentApiToken" style="display:inline-flex;align-items:center;gap:6px;" title="Optional — gates / advise">
           API token
           <input type="password" id="agentApiToken" autocomplete="off" placeholder="X-Atlas-Token" style="min-width:10rem;padding:4px 8px;" />
         </label>
@@ -6661,14 +6688,84 @@
       }
     }
 
+    let atlasUiAuth = { authenticated: false, email: null, auth_configured: false };
+
+    function setLoginOpen(open) {
+      const modal = document.getElementById("loginModal");
+      if (!modal) return;
+      modal.classList.toggle("open", !!open);
+      modal.setAttribute("aria-hidden", open ? "false" : "true");
+      if (open) {
+        document.getElementById("loginPassword")?.focus();
+      }
+    }
+
+    function renderAgentAuth() {
+      const line = document.getElementById("agentAuthLine");
+      const loginBtn = document.getElementById("agentLoginBtn");
+      const logoutBtn = document.getElementById("agentLogoutBtn");
+      if (line) {
+        if (!atlasUiAuth.auth_configured) {
+          line.textContent = "Sign-in not configured (set UI email, password, and session secret/API token)";
+        } else if (atlasUiAuth.authenticated) {
+          line.textContent = `Signed in as ${atlasUiAuth.email || "operator"}`;
+        } else {
+          line.textContent = "Not signed in — required for Live agent";
+        }
+      }
+      if (loginBtn) loginBtn.style.display = atlasUiAuth.authenticated ? "none" : "";
+      if (logoutBtn) logoutBtn.style.display = atlasUiAuth.authenticated ? "" : "none";
+    }
+
+    async function refreshUiAuth() {
+      try {
+        const resp = await fetch("/api/auth/session", { credentials: "same-origin" });
+        const data = await resp.json().catch(() => ({}));
+        atlasUiAuth = {
+          authenticated: !!data.authenticated,
+          email: data.email || null,
+          auth_configured: !!data.auth_configured,
+        };
+      } catch (_) {
+        atlasUiAuth = { authenticated: false, email: null, auth_configured: false };
+      }
+      renderAgentAuth();
+      return atlasUiAuth;
+    }
+
+    async function uiLogin(email, password) {
+      const resp = await fetch("/api/auth/login", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || data.ok === false) {
+        throw new Error(data.detail || data.error || `HTTP ${resp.status}`);
+      }
+      await refreshUiAuth();
+      setLoginOpen(false);
+      return data;
+    }
+
+    async function uiLogout() {
+      await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" });
+      await refreshUiAuth();
+    }
+
     async function setAgentLive(enabled) {
       const meta = document.getElementById("agentMeta");
       const url = new URL("/api/agent/live", window.location.origin);
       url.searchParams.set("enabled", enabled ? "true" : "false");
       const resp = await fetch(url.pathname + "?" + url.searchParams.toString(), {
         method: "POST",
+        credentials: "same-origin",
       });
       const data = await resp.json().catch(() => ({}));
+      if (resp.status === 401) {
+        throw new Error("login_required");
+      }
       if (!resp.ok || data.ok === false) {
         throw new Error(data.detail || data.error || `HTTP ${resp.status}`);
       }
@@ -6684,6 +6781,7 @@
       const decisionEl = document.getElementById("agentDecision");
       const posEl = document.getElementById("agentPositionLine");
       try {
+        await refreshUiAuth();
         const [st, macro, paper] = await Promise.all([
           fetch("/api/agent").then((r) => r.json()),
           fetch("/api/agent/macro").then((r) => r.json()),
@@ -6775,12 +6873,53 @@
         }
       }
       try {
+        await refreshUiAuth();
+        if (!atlasUiAuth.authenticated) {
+          toggle.checked = false;
+          setLoginOpen(true);
+          const meta = document.getElementById("agentMeta");
+          if (meta) meta.textContent = "Sign in to change Live agent";
+          return;
+        }
         await setAgentLive(want);
       } catch (err) {
         toggle.checked = !want;
+        const msg = String(err?.message || err);
         const meta = document.getElementById("agentMeta");
+        if (msg === "login_required") {
+          setLoginOpen(true);
+          if (meta) meta.textContent = "Sign in to change Live agent";
+        } else if (meta) {
+          meta.textContent = msg;
+        }
+      }
+    });
+    document.getElementById("agentLoginBtn")?.addEventListener("click", () => setLoginOpen(true));
+    document.getElementById("agentLogoutBtn")?.addEventListener("click", async () => {
+      await uiLogout();
+      const meta = document.getElementById("agentMeta");
+      if (meta) meta.textContent = "Signed out";
+    });
+    document.getElementById("loginClose")?.addEventListener("click", () => setLoginOpen(false));
+    document.getElementById("loginBackdrop")?.addEventListener("click", () => setLoginOpen(false));
+    document.getElementById("loginSubmitBtn")?.addEventListener("click", async () => {
+      const meta = document.getElementById("loginMeta");
+      const email = document.getElementById("loginEmail")?.value || "";
+      const password = document.getElementById("loginPassword")?.value || "";
+      if (meta) meta.textContent = "Signing in…";
+      try {
+        await uiLogin(email, password);
+        const pw = document.getElementById("loginPassword");
+        if (pw) pw.value = "";
+        if (meta) meta.textContent = "";
+        const am = document.getElementById("agentMeta");
+        if (am) am.textContent = "Signed in — you can toggle Live agent";
+      } catch (err) {
         if (meta) meta.textContent = String(err?.message || err);
       }
+    });
+    document.getElementById("loginPassword")?.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") document.getElementById("loginSubmitBtn")?.click();
     });
     document.getElementById("agentAdviseBtn")?.addEventListener("click", async () => {
       const meta = document.getElementById("agentMeta");

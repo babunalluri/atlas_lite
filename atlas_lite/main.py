@@ -14,9 +14,10 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from starlette.background import BackgroundTask
+from pydantic import BaseModel, Field
 
 from atlas_lite.config import STREAM_INTERVAL_MS, load_settings
 from atlas_lite.feed_engine import FeedEngine
@@ -33,6 +34,15 @@ from atlas_lite.recorder import (
     record_enabled,
     safe_recording_path,
     write_day_archive,
+)
+from atlas_lite.ui_auth import (
+    COOKIE_NAME,
+    SESSION_TTL_S,
+    issue_session,
+    session_from_request,
+    ui_auth_configured,
+    ui_email,
+    verify_login,
 )
 
 setup_logging()
@@ -82,6 +92,60 @@ def _agent_write_authorized(
             got = auth[7:].strip()
     if not got or len(got) != len(expected) or not secrets.compare_digest(got, expected):
         raise HTTPException(status_code=401, detail="invalid_or_missing_token")
+
+
+def _ui_session_required(request: Request) -> dict[str, Any]:
+    """Require a valid UI login cookie (Live agent and other operator actions)."""
+    sess = session_from_request(
+        request.headers.get("cookie"),
+        cookie_value=request.cookies.get(COOKIE_NAME),
+    )
+    if sess is None:
+        raise HTTPException(status_code=401, detail="login_required")
+    return sess
+
+
+class LoginBody(BaseModel):
+    email: str = Field(default="")
+    password: str = Field(default="")
+
+
+@app.get("/api/auth/session")
+async def api_auth_session(request: Request) -> dict[str, Any]:
+    sess = session_from_request(
+        request.headers.get("cookie"),
+        cookie_value=request.cookies.get(COOKIE_NAME),
+    )
+    return {
+        "ok": True,
+        "authenticated": sess is not None,
+        "email": (sess or {}).get("email") if sess is not None else None,
+        "auth_configured": ui_auth_configured(),
+    }
+
+
+@app.post("/api/auth/login")
+async def api_auth_login(body: LoginBody, response: Response) -> dict[str, Any]:
+    if not ui_auth_configured():
+        raise HTTPException(status_code=503, detail="ui_auth_not_configured")
+    if not verify_login(body.email, body.password):
+        raise HTTPException(status_code=401, detail="invalid_credentials")
+    token = issue_session(body.email)
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=token,
+        max_age=SESSION_TTL_S,
+        httponly=True,
+        samesite="strict",
+        path="/",
+    )
+    return {"ok": True, "email": ui_email(), "authenticated": True}
+
+
+@app.post("/api/auth/logout")
+async def api_auth_logout(response: Response) -> dict[str, Any]:
+    response.delete_cookie(COOKIE_NAME, path="/")
+    return {"ok": True, "authenticated": False}
 
 
 @app.get("/")
@@ -271,13 +335,11 @@ async def api_agent_gates(
 
 @app.post("/api/agent/live")
 async def api_agent_live(
+    request: Request,
     enabled: bool = Query(..., description="true = real Kite orders for agent_paper"),
 ) -> dict[str, Any]:
-    """Enable or disable live Kite orders for the scorecard agent book.
-
-    No API token — the Live agent checkbox alone toggles this. Ops can still lock
-    the host with ATLAS_LITE_AGENT_LIVE_ALLOWED=0.
-    """
+    """Enable or disable live Kite orders. Requires UI login cookie."""
+    _ui_session_required(request)
     if _engine is None:
         raise HTTPException(status_code=503, detail="engine not started")
     try:

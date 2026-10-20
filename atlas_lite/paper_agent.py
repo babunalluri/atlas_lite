@@ -398,6 +398,7 @@ class PaperAgent:
         last_open: dict[str, Any] | None = None
         last_trail: dict[str, Any] | None = None
         pending_close_id = ""
+        pending_open: dict[str, Any] | None = None
         day = ""
         day_pnl = 0.0
         entries = 0
@@ -429,12 +430,15 @@ class PaperAgent:
                 last_open = None
                 last_trail = None
                 pending_close_id = ""
+                # Keep pending_open across calendar days — a still-working open must be
+                # restored even if the process restarts the next morning.
                 last_exit_at = None
                 eod_written = False
             if kind in open_kinds:
                 last_open = ev
                 last_trail = None
                 pending_close_id = ""
+                pending_open = None
                 entries += 1
             elif kind == "trail":
                 if last_open is not None:
@@ -453,10 +457,22 @@ class PaperAgent:
             elif kind == "live_close_submit":
                 if last_open is not None:
                     pending_close_id = str(ev.get("order_id") or "")
+            elif kind == "live_open_pending":
+                if last_open is None:
+                    pending_open = ev
+            elif kind == "live_open_pending_cleared":
+                # Only an explicit clear drops the watch. live_submit_failed is written
+                # *before* live_open_pending, so it must not wipe the watch on restore.
+                oid = str(ev.get("order_id") or "")
+                if pending_open is not None and (
+                    not oid or oid == str(pending_open.get("order_id") or "")
+                ):
+                    pending_open = None
             elif kind == "close":
                 last_open = None
                 last_trail = None
                 pending_close_id = ""
+                pending_open = None
                 if entries == 0:
                     entries = 1
                 if ev.get("day_pnl") is not None:
@@ -474,6 +490,26 @@ class PaperAgent:
         self.last_exit_at = last_exit_at
         self._warn_orphan_live_submit(lines)
         self._restore_thesis_blocks()
+        if pending_open is not None and last_open is None:
+            oid = str(pending_open.get("order_id") or "").strip()
+            if oid:
+                self.live_pending_open_order_id = oid
+                self.live_pending_open_meta = {
+                    "side": pending_open.get("side") or "ce",
+                    "style": pending_open.get("style") or "long",
+                    "ce_sym": pending_open.get("ce_symbol") or "",
+                    "pe_sym": pending_open.get("pe_symbol") or "",
+                    "atm": int(pending_open.get("atm") or 0),
+                    "symbol": pending_open.get("symbol") or "",
+                    "want_qty": int(pending_open.get("qty") or self.lots * self.lot_size),
+                    "spot": pending_open.get("spot"),
+                    "reason": pending_open.get("reason") or "restored_pending_open",
+                }
+                self.live_opens_blocked = True
+                self._log.error(
+                    "restored live_open_pending order_id=%s — watching until finished",
+                    oid,
+                )
         if last_open:
             entry = float(last_open.get("entry") or 0)
             style = _normalize_style(str(last_open.get("style") or "long")) or "long"
@@ -576,7 +612,13 @@ class PaperAgent:
             kind = ev.get("event")
             if kind == "live_submit":
                 orphan = ev
-            elif kind in ("open", "live_submit_failed", "live_adopt"):
+            elif kind in (
+                "open",
+                "live_submit_failed",
+                "live_adopt",
+                "live_open_pending",
+                "live_open_pending_cleared",
+            ):
                 orphan = None
         if orphan is None:
             return
@@ -728,22 +770,49 @@ class PaperAgent:
         try:
             row = self.order_client.order_status(order_id)
         except KiteOrderError as exc:
-            self.live_opens_blocked = True
+            # Persist the watch so a restart keeps polling instead of opening a second lot.
+            self._arm_pending_open_watch(
+                now=now,
+                order_id=order_id,
+                intent=intent,
+                ce_sym=ce_sym,
+                pe_sym=pe_sym,
+                atm=atm,
+                symbol=symbol,
+                style=style,
+                want_qty=want_qty,
+                spot=spot,
+                kite_status="unread",
+            )
             self.last_reject = f"live_open_unknown:{exc}"
             self._log.error(
                 "agent live open failed and order %s unread — blocking further live opens: %s",
                 order_id,
                 exc,
             )
+            self.pending = None
             return None
         except Exception as exc:  # noqa: BLE001
-            self.live_opens_blocked = True
+            self._arm_pending_open_watch(
+                now=now,
+                order_id=order_id,
+                intent=intent,
+                ce_sym=ce_sym,
+                pe_sym=pe_sym,
+                atm=atm,
+                symbol=symbol,
+                style=style,
+                want_qty=want_qty,
+                spot=spot,
+                kite_status="unread",
+            )
             self.last_reject = f"live_open_unknown:{type(exc).__name__}:{exc}"
             self._log.error(
                 "agent live open failed and order %s unread — blocking further live opens: %s",
                 order_id,
                 exc,
             )
+            self.pending = None
             return None
         status = str(row.get("status") or "").upper()
         filled = int(float(row.get("filled_quantity") or 0))
@@ -751,19 +820,19 @@ class PaperAgent:
             filled = int(float(row.get("quantity") or 0))
         if not kite_order_finished(status):
             # Still working (OPEN PENDING / VALIDATION PENDING / …) — do not grab a manual lot.
-            self.live_opens_blocked = True
-            self.live_pending_open_order_id = order_id
-            self.live_pending_open_meta = {
-                "side": intent.side,
-                "style": style,
-                "ce_sym": ce_sym,
-                "pe_sym": pe_sym,
-                "atm": int(atm),
-                "symbol": symbol,
-                "want_qty": int(want_qty),
-                "spot": spot,
-                "reason": intent.reason,
-            }
+            self._arm_pending_open_watch(
+                now=now,
+                order_id=order_id,
+                intent=intent,
+                ce_sym=ce_sym,
+                pe_sym=pe_sym,
+                atm=atm,
+                symbol=symbol,
+                style=style,
+                want_qty=want_qty,
+                spot=spot,
+                kite_status=status or "unknown",
+            )
             self.last_reject = f"live_open_pending:{order_id}:{status or 'unknown'}"
             self._log.error(
                 "own open order %s still %s — blocking live opens until it finishes",
@@ -774,31 +843,55 @@ class PaperAgent:
             return None
         if filled <= 0:
             # Finished with no fill (cancelled/rejected) — clear watch; allow a fresh open.
-            if self.live_pending_open_order_id == order_id:
-                self.live_pending_open_order_id = ""
-                self.live_pending_open_meta = {}
-                self.live_opens_blocked = False
+            self._clear_pending_open_watch(order_id, reason="order_dead_unfilled")
             return None
         qty = min(filled, abs(int(want_qty)))
         avg = _f(row.get("average_price"))
         if avg is None or avg <= 0:
-            self.live_opens_blocked = True
+            self._arm_pending_open_watch(
+                now=now,
+                order_id=order_id,
+                intent=intent,
+                ce_sym=ce_sym,
+                pe_sym=pe_sym,
+                atm=atm,
+                symbol=symbol,
+                style=style,
+                want_qty=want_qty,
+                spot=spot,
+                kite_status=status or "filled_no_avg",
+            )
             self.last_reject = "live_open_unknown:no_avg_price"
             self._log.error(
                 "own order %s filled qty=%s but no average_price — blocking live opens",
                 order_id,
                 filled,
             )
+            self.pending = None
             return None
         side = str(row.get("transaction_type") or "").upper()
         expect_buy = str(style).lower() != "short"
         if side and ((expect_buy and side != "BUY") or ((not expect_buy) and side != "SELL")):
+            self._arm_pending_open_watch(
+                now=now,
+                order_id=order_id,
+                intent=intent,
+                ce_sym=ce_sym,
+                pe_sym=pe_sym,
+                atm=atm,
+                symbol=symbol,
+                style=style,
+                want_qty=want_qty,
+                spot=spot,
+                kite_status=status or "side_mismatch",
+            )
             self._log.warning(
                 "own order %s side=%s does not match style=%s — not adopting",
                 order_id,
                 side,
                 style,
             )
+            self.pending = None
             return None
         self._log.warning(
             "agent adopting own order %s filled=%s entry=%s (cap want=%s)",
@@ -807,10 +900,7 @@ class PaperAgent:
             avg,
             want_qty,
         )
-        if self.live_pending_open_order_id == order_id:
-            self.live_pending_open_order_id = ""
-            self.live_pending_open_meta = {}
-            self.live_opens_blocked = False
+        self._clear_pending_open_watch(order_id, reason="adopted")
         return self._book_live_open(
             now=now,
             intent=intent,
@@ -825,6 +915,82 @@ class PaperAgent:
             spot=spot,
             reason_suffix="adopt_after_open_fail",
             event_name="live_adopt",
+        )
+
+    def _arm_pending_open_watch(
+        self,
+        *,
+        now: datetime,
+        order_id: str,
+        intent: PendingIntent,
+        ce_sym: str,
+        pe_sym: str,
+        atm: int,
+        symbol: str,
+        style: str,
+        want_qty: int,
+        spot: float | None,
+        kite_status: str,
+    ) -> None:
+        """Remember a still-working open order in memory and on the ledger."""
+        already = self.live_pending_open_order_id == order_id
+        self.live_opens_blocked = True
+        self.live_pending_open_order_id = order_id
+        self.live_pending_open_meta = {
+            "side": intent.side,
+            "style": style,
+            "ce_sym": ce_sym,
+            "pe_sym": pe_sym,
+            "atm": int(atm),
+            "symbol": symbol,
+            "want_qty": int(want_qty),
+            "spot": spot,
+            "reason": intent.reason,
+        }
+        if already:
+            return
+        self._append(
+            {
+                "event": "live_open_pending",
+                "ts": now.isoformat(),
+                "day": now.strftime("%Y-%m-%d"),
+                "order_id": order_id,
+                "side": intent.side,
+                "style": style,
+                "symbol": symbol,
+                "ce_symbol": ce_sym,
+                "pe_symbol": pe_sym,
+                "atm": int(atm),
+                "qty": int(want_qty),
+                "spot": spot,
+                "reason": intent.reason,
+                "kite_status": kite_status,
+                "live": True,
+                "live_orders": True,
+                "gates": "agent",
+            }
+        )
+
+    def _clear_pending_open_watch(self, order_id: str = "", *, reason: str = "") -> None:
+        if not self.live_pending_open_order_id:
+            return
+        if order_id and order_id != self.live_pending_open_order_id:
+            return
+        cleared = self.live_pending_open_order_id
+        self.live_pending_open_order_id = ""
+        self.live_pending_open_meta = {}
+        self.live_opens_blocked = False
+        self._append(
+            {
+                "event": "live_open_pending_cleared",
+                "ts": datetime.now(IST).isoformat(),
+                "day": datetime.now(IST).strftime("%Y-%m-%d"),
+                "order_id": cleared,
+                "reason": reason or "cleared",
+                "live": True,
+                "live_orders": True,
+                "gates": "agent",
+            }
         )
 
     def _poll_pending_open_order(
@@ -1668,6 +1834,10 @@ class PaperAgent:
             adopted = self._poll_pending_open_order(now, spot=spot)
             if adopted is not None:
                 return adopted
+            if self.live_pending_open_order_id:
+                # Still watching an unfinished own open — never place a second lot.
+                self.pending = None
+                return None
         if self.position is not None:
             pos = self.position
             ce_m, pe_m = self._book_quotes(book, pos.ce_symbol, pos.pe_symbol)
@@ -1742,9 +1912,13 @@ class PaperAgent:
         self.eod_written = False
         self.pending = None
         self.last_exit_at = None
-        self.live_opens_blocked = False
-        self.live_pending_open_order_id = ""
-        self.live_pending_open_meta = {}
+        # Keep a still-working open watch across the session roll; only drop the
+        # block when there is nothing left to adopt.
+        if not self.live_pending_open_order_id:
+            self.live_opens_blocked = False
+            self.live_pending_open_meta = {}
+        else:
+            self.live_opens_blocked = True
         self.live_close_fails = 0
         self.live_close_next_at = None
         self._clear_thesis_block()
