@@ -14,8 +14,7 @@ There is **one** book: `agent_paper`. Live is not a second parallel book.
 - A position opened live **always closes live**, even if you turn the checkbox off mid-trade.
 - Turning live **off does not flatten** an open live lot — exits still follow stop/trail/target/time/square-off on the broker.
 - Only `agent_paper`. Other books stay paper.
-- UI toggle requires `X-Atlas-Token` (same as gates / advise).
-- **Enabling** live also requires `ATLAS_LITE_API_TOKEN` to be set on the host (refuses with `api_token_required_for_live` if unset).
+- **Live agent** checkbox alone toggles live (no API token). Gates / advise still use the token if set.
 - Ops kill switch: `ATLAS_LITE_AGENT_LIVE_ALLOWED` defaults to **1** (UI unlocked). Set to `0` on the host to lock the checkbox off.
 
 Exit **triggers** (stop / trail / target / time / square-off) still watch the live LTP mark. The broker fill can slip vs that mark.
@@ -63,5 +62,5 @@ Verify in the Kite developer console (not automated here):
 ## Enable checklist
 
 1. Valid Kite access token on the host.
-2. `ATLAS_LITE_API_TOKEN` set and known to the UI.
-3. Tick **Live agent** when you want real orders (untick to stay paper). Set `ATLAS_LITE_AGENT_LIVE_ALLOWED=0` only to lock the checkbox host-wide.
+2. Tick **Live agent** when you want real orders (untick to stay paper).
+3. Set `ATLAS_LITE_AGENT_LIVE_ALLOWED=0` only to lock the checkbox host-wide.

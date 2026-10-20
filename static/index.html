@@ -6667,12 +6667,8 @@
       url.searchParams.set("enabled", enabled ? "true" : "false");
       const resp = await fetch(url.pathname + "?" + url.searchParams.toString(), {
         method: "POST",
-        headers: atlasApiHeaders(),
       });
       const data = await resp.json().catch(() => ({}));
-      if (resp.status === 401) {
-        throw new Error("401 — set API token in the Agent panel (same as ATLAS_LITE_API_TOKEN)");
-      }
       if (!resp.ok || data.ok === false) {
         throw new Error(data.detail || data.error || `HTTP ${resp.status}`);
       }

@@ -271,15 +271,13 @@ async def api_agent_gates(
 
 @app.post("/api/agent/live")
 async def api_agent_live(
-    request: Request,
     enabled: bool = Query(..., description="true = real Kite orders for agent_paper"),
-    x_atlas_token: Optional[str] = Header(default=None, alias="X-Atlas-Token"),
 ) -> dict[str, Any]:
-    """Enable or disable live Kite orders for the scorecard agent book. Off by default."""
-    _agent_write_authorized(request, x_atlas_token=x_atlas_token)
-    # Enabling live always requires a configured API token (even if unset locally).
-    if enabled and not os.environ.get("ATLAS_LITE_API_TOKEN", "").strip():
-        raise HTTPException(status_code=400, detail="api_token_required_for_live")
+    """Enable or disable live Kite orders for the scorecard agent book.
+
+    No API token — the Live agent checkbox alone toggles this. Ops can still lock
+    the host with ATLAS_LITE_AGENT_LIVE_ALLOWED=0.
+    """
     if _engine is None:
         raise HTTPException(status_code=503, detail="engine not started")
     try:
