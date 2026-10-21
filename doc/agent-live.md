@@ -45,7 +45,7 @@ ATLAS_LITE_SESSION_SECRET=...   # or rely on ATLAS_LITE_API_TOKEN
 Verify in the Kite developer console:
 
 1. OCI static IP is allowlisted for orders.
-2. Whether NFO options market orders need `market_protection`.
+2. Live market orders send `market_protection=-1` (Kite auto protection; required for API MARKET).
 
 ## Enable checklist
 

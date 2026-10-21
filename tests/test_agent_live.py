@@ -207,6 +207,46 @@ def test_nfo_symbol_and_sides() -> None:
     assert transaction_for_close("short") == "BUY"
 
 
+def test_place_market_sends_market_protection(tmp_path, monkeypatch) -> None:
+    """Kite rejects API MARKET without market_protection — we must send -1 (auto)."""
+    from atlas_lite import kite_orders as ko
+
+    cred = tmp_path / "kite_credentials"
+    cred.write_text(
+        '{"api_key":"k","access_token":"t","api_secret":"s"}\n', encoding="utf-8"
+    )
+    client = KiteOrderClient(cred)
+    captured: dict[str, object] = {}
+
+    class Resp:
+        status_code = 200
+
+        def json(self):
+            return {"data": {"order_id": "OID1"}}
+
+    class FakeHttp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def post(self, path, data=None):
+            captured["path"] = path
+            captured["data"] = dict(data or {})
+            return Resp()
+
+    monkeypatch.setattr(client, "_client", lambda: FakeHttp())
+    oid = client.place_market(
+        symbol="NFO:NIFTY26OCT23100CE", transaction_type="BUY", qty=65
+    )
+    assert oid == "OID1"
+    assert captured["path"] == "/orders/regular"
+    assert captured["data"]["order_type"] == "MARKET"
+    assert captured["data"]["market_protection"] == str(ko.DEFAULT_MARKET_PROTECTION)
+    assert captured["data"]["market_protection"] == "-1"
+
+
 def test_net_position_qty_uses_net_only_not_day() -> None:
     client = KiteOrderClient.__new__(KiteOrderClient)
 

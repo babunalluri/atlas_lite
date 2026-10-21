@@ -22,6 +22,9 @@ KITE_BASE = "https://api.kite.trade"
 KITE_VERSION = "3"
 DEFAULT_PRODUCT = "MIS"
 DEFAULT_VARIETY = "regular"
+# Kite Connect requires market_protection on API MARKET / SL-M orders.
+# -1 = exchange/system auto protection (converts to a protected limit band).
+DEFAULT_MARKET_PROTECTION = -1
 FILL_POLL_S = 0.25
 FILL_TIMEOUT_S = 8.0
 ORDER_TAG = "atlas_agent"
@@ -105,6 +108,7 @@ class KiteOrderClient:
         qty: int,
         product: str = DEFAULT_PRODUCT,
         tag: str = ORDER_TAG,
+        market_protection: int = DEFAULT_MARKET_PROTECTION,
     ) -> str:
         exchange, tradingsymbol = split_nfo_symbol(symbol)
         side = str(transaction_type or "").strip().upper()
@@ -121,6 +125,7 @@ class KiteOrderClient:
             "quantity": str(quantity),
             "product": product,
             "validity": "DAY",
+            "market_protection": str(int(market_protection)),
             "tag": (tag or ORDER_TAG)[:20],
         }
         try:
