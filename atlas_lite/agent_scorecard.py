@@ -441,7 +441,9 @@ def build_strategy_scorecard(
         k = f"{str(row.get('style') or 'long').lower()}_{str(row.get('side') or '').lower()}"
         if k in scores:
             blocked_keys.add(k)
-            horizon = str(row.get("horizon") or "day")
+            horizon = str(
+                row.get("horizon") or row.get("severity") or row.get("lock") or "day"
+            )
             add(k, -10.0, f"{horizon} avoid: {row.get('reason')}")
     # Multi-day setup memory: soft score nudges (hard avoids already in avoid_today).
     score_adjust = daily_review.get("score_adjust") or {}

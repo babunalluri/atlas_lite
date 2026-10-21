@@ -1130,14 +1130,39 @@ def test_daily_review_avoids_repeated_stops() -> None:
     from atlas_lite.agent_scorecard import build_strategy_scorecard, entry_permitted
 
     closes = [
-        {"day": "2026-09-30", "side": "pe", "style": "long", "pnl": -640, "reason": "stop"},
-        {"day": "2026-09-30", "side": "pe", "style": "long", "pnl": -644, "reason": "stop"},
-        {"day": "2026-09-30", "side": "ce", "style": "long", "pnl": 67, "reason": "agent_exit"},
+        {
+            "day": "2026-09-30",
+            "ts": "2026-09-30T10:00:00+05:30",
+            "side": "pe",
+            "style": "long",
+            "pnl": -640,
+            "reason": "stop",
+        },
+        {
+            "day": "2026-09-30",
+            "ts": "2026-09-30T10:20:00+05:30",
+            "side": "pe",
+            "style": "long",
+            "pnl": -644,
+            "reason": "stop",
+        },
+        {
+            "day": "2026-09-30",
+            "ts": "2026-09-30T11:00:00+05:30",
+            "side": "ce",
+            "style": "long",
+            "pnl": 67,
+            "reason": "agent_exit",
+        },
     ]
     review = build_daily_review(closes, day="2026-09-30")
     assert review["stops"] == 2
     assert review["stance"] in ("cautious", "defensive")
-    assert any(a["side"] == "pe" and a["style"] == "long" for a in review["avoid_today"])
+    assert "long_pe" in review["day_locked_setups"]
+    pe_avoid = next(a for a in review["avoid_today"] if a["side"] == "pe" and a["style"] == "long")
+    assert pe_avoid["lock"] == "day"
+    assert "consecutive" in pe_avoid["reason"]
+    assert any("DAY-LOCK long pe" in r for r in review["rules"])
     card = build_strategy_scorecard(
         {
             "spot_chg_pct": -0.3,
@@ -1153,6 +1178,83 @@ def test_daily_review_avoids_repeated_stops() -> None:
     assert not (rec.get("action") == "propose_entry" and rec.get("side") == "pe" and rec.get("style") == "long")
     ok, why = entry_permitted(card, side="pe", style="long")
     assert ok is False
+
+
+def test_daily_review_day_lock_stays_raised_after_later_wins() -> None:
+    """2 consecutive same-setup stops day-lock that setup; bar stays raised.
+
+    Later winners on another setup must not unlock the failed side or drop
+    min_entry_score (no shadow-validate → auto-lower path).
+    """
+    from atlas_lite.agent_review import build_daily_review
+    from atlas_lite.agent_scorecard import build_strategy_scorecard, entry_permitted
+
+    closes = [
+        {
+            "day": "2026-10-21",
+            "ts": "2026-10-21T10:16:00+05:30",
+            "side": "pe",
+            "style": "long",
+            "pnl": -720,
+            "reason": "stop",
+        },
+        {
+            "day": "2026-10-21",
+            "ts": "2026-10-21T10:27:00+05:30",
+            "side": "pe",
+            "style": "long",
+            "pnl": -727,
+            "reason": "stop",
+        },
+        # Later flips / winners — must not clear day-lock or lower the bar.
+        {
+            "day": "2026-10-21",
+            "ts": "2026-10-21T11:30:00+05:30",
+            "side": "ce",
+            "style": "long",
+            "pnl": 400,
+            "reason": "trail",
+        },
+        {
+            "day": "2026-10-21",
+            "ts": "2026-10-21T12:10:00+05:30",
+            "side": "ce",
+            "style": "long",
+            "pnl": 350,
+            "reason": "target",
+        },
+    ]
+    review = build_daily_review(closes, day="2026-10-21")
+    assert review["day_locked_setups"] == ["long_pe"]
+    # Worst prefix after the 2 stops is ~-1447; later CE wins must not relax the bar.
+    assert review["worst_prefix_net"] == -1447.0
+    assert review["net_pnl"] == -697.0
+    assert review["stance"] == "cautious"
+    assert review["min_entry_score_hint"] == 5.0
+    assert review["max_entries_today"] == 8
+    assert any(a["side"] == "pe" and a["style"] == "long" for a in review["avoid_today"])
+    assert any("no auto-lower" in r for r in review["rules"])
+
+    card = build_strategy_scorecard(
+        {
+            "spot_chg_open_pct": 0.4,
+            "adx": 28,
+            "adx_regime": "trend",
+            "pdi": 30,
+            "mdi": 15,
+            "combo": {"side": "B", "signal": None},
+        },
+        agent_book={"entries_today": 2, "position": None},
+        daily_review=review,
+    )
+    assert card["min_entry_score"] == 5.0
+    pe = next(c for c in card["candidates"] if c.get("side") == "pe" and c.get("style") == "long")
+    ce = next(c for c in card["candidates"] if c.get("side") == "ce" and c.get("style") == "long")
+    assert pe["blocked"] is True
+    assert ce["blocked"] is False
+    assert entry_permitted(card, side="pe", style="long")[0] is False
+    # Other setup may still clear the raised bar when agreement + score hold.
+    assert entry_permitted(card, side="ce", style="long")[0] is True
 
 
 def test_setup_memory_avoids_weak_multi_day_setup() -> None:
