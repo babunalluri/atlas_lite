@@ -1212,7 +1212,12 @@ class PaperAgent:
     def _refresh_thesis_block(
         self, *, now: datetime | None = None, spot: float | None = None
     ) -> None:
-        """Drop expired/flipped thesis blocks (does not touch unrelated last_reject)."""
+        """Drop expired/flipped thesis blocks (does not touch unrelated last_reject).
+
+        Hard stops keep a fixed clock — no early ``favorable_flip`` release.
+        (2026-10-21: long PE stop @10:16 released @10:20 via flip, then another
+        stop @10:27. Loss/agent_exit blocks may still clear on a real flip.)
+        """
         now = now or datetime.now(IST)
         if not self.thesis_blocks:
             return
@@ -1220,6 +1225,9 @@ class PaperAgent:
             until = block.get("until")
             if not isinstance(until, datetime) or now >= until:
                 self._clear_thesis_block(key)
+                continue
+            # Stop blocks are time-hard; do not chase the same thesis early.
+            if str(block.get("reason") or "") == "stop":
                 continue
             if self._favorable_thesis_flip(block, spot):
                 self._release_thesis_block(key, now=now, reason="favorable_flip")
@@ -1540,7 +1548,7 @@ class PaperAgent:
         lesson = (
             f"stop on {pos.style} {pos.side.upper()} @ {exit_px} (entry {pos.entry}, pnl {pnl}). "
             f"Do not re-enter the same side+style for {self.thesis_cooldown_min}m "
-            f"unless spot flips in favor of that thesis."
+            f"(hard clock after stop — no early flip release)."
         )
         self._append_lesson(
             {

@@ -1973,31 +1973,94 @@ def test_paper_agent_thesis_block_ignores_adverse_spot_move(tmp_path: Path) -> N
     assert adverse["ok"] is False
     assert adverse["rejected"] == "same_thesis_cooldown"
     assert bot.thesis_block_snapshot(now=t, spot=22600.0 * 1.0025) is not None
-    # Spot fell — favorable flip releases the block.
-    ok_flip = bot.propose_entry(
+    # Spot fell — still blocked after a hard stop (no early favorable_flip).
+    still = bot.propose_entry(
         side="pe",
         style="long",
         reason="flip",
         spot=22600.0 * 0.9975,  # -0.25%
         now=t,
     )
+    assert still["ok"] is False
+    assert still["rejected"] == "same_thesis_cooldown"
+    assert bot.thesis_block_snapshot(now=t, spot=22600.0 * 0.9975) is not None
+    lessons = bot.lessons_today(now=t)
+    assert not any(les.get("kind") == "release" and les.get("side") == "pe" for les in lessons)
+    # After the hard 15m clock, same setup is allowed again.
+    after = bot.propose_entry(
+        side="pe",
+        style="long",
+        reason="after_clock",
+        spot=22600.0 * 0.9975,
+        now=now + timedelta(minutes=16),
+    )
+    assert after["ok"] is True
+
+
+def test_paper_agent_stop_block_no_early_flip_release(tmp_path: Path) -> None:
+    """Mirror 2026-10-21: stop @10:16 must not re-enter PE @10:21 via favorable_flip."""
+    bot = PaperAgent(
+        path=tmp_path / "paper_agent.jsonl",
+        lot_size=65,
+        thesis_cooldown_min=15,
+        cooldown_min=1,
+    )
+    stop_at = datetime(2026, 10, 21, 10, 16, 40, tzinfo=IST)
+    _stop_long_pe(bot, now=stop_at, spot=22965.1)
+    # ~4m later spot is lower (favorable for long PE) — old code released here.
+    t = datetime(2026, 10, 21, 10, 21, 0, tzinfo=IST)
+    out = bot.propose_entry(
+        side="pe",
+        style="long",
+        reason="scorecard autopilot long PE score=5.5",
+        spot=22933.35,
+        now=t,
+    )
+    assert out.get("ok") is False
+    assert out.get("rejected") == "same_thesis_cooldown"
+    assert bot.thesis_block_snapshot(now=t, spot=22933.35) is not None
+
+
+def test_paper_agent_loss_block_still_allows_favorable_flip(tmp_path: Path) -> None:
+    """Non-stop loss blocks may still clear early on a real favorable flip."""
+    bot = PaperAgent(
+        path=tmp_path / "paper_agent.jsonl",
+        lot_size=65,
+        thesis_cooldown_min=15,
+        loss_cooldown_min=10,
+        cooldown_min=1,
+    )
+    now = datetime(2026, 9, 29, 11, 0, tzinfo=IST)
+    bot._upsert_thesis_block(
+        side="pe",
+        style="long",
+        until=now + timedelta(minutes=10),
+        spot=22600.0,
+        reason="agent_exit",
+    )
+    t = now + timedelta(minutes=4)
+    ok_flip = bot.propose_entry(
+        side="pe",
+        style="long",
+        reason="flip",
+        spot=22600.0 * 0.9975,
+        now=t,
+    )
     assert ok_flip["ok"] is True
     assert bot.thesis_block_snapshot(now=t, spot=22600.0 * 0.9975) is None
-    lessons = bot.lessons_today(now=t)
-    assert any(les.get("kind") == "release" and les.get("side") == "pe" for les in lessons)
-    # Restart inside original window must not revive the released PE block.
+    # Prior release rows must still prevent revive on restart.
     wall = datetime.now(IST)
     bot._append_lesson(
         {
             "ts": wall.isoformat(),
             "day": wall.strftime("%Y-%m-%d"),
-            "kind": "stop",
+            "kind": "loss",
             "side": "pe",
             "style": "long",
             "pnl": -100.0,
             "spot": 22600.0,
-            "until": (wall + timedelta(minutes=15)).isoformat(),
-            "lesson": "stop",
+            "until": (wall + timedelta(minutes=10)).isoformat(),
+            "lesson": "loss",
         }
     )
     bot._append_lesson(
@@ -2040,7 +2103,18 @@ def test_last_reject_thesis_clears_for_specific_key(tmp_path: Path) -> None:
     assert blocked["rejected"] == "same_thesis_cooldown"
     assert bot.last_reject == "same_thesis_cooldown"
     assert bot.last_reject_thesis_key == "long_pe"
-    # Favorable flip releases PE only; CE block remains — last_reject for PE must clear.
+    # Stop blocks are time-hard; swap PE to a loss block to exercise per-key clear.
+    bot._clear_thesis_block(bot._thesis_key("pe", "long"))
+    bot._upsert_thesis_block(
+        side="pe",
+        style="long",
+        until=now + timedelta(minutes=10),
+        spot=22600.0,
+        reason="agent_exit",
+    )
+    bot.last_reject = "same_thesis_cooldown"
+    bot.last_reject_thesis_key = "long_pe"
+    # Favorable flip releases PE loss-block only; CE block remains — last_reject for PE must clear.
     bot._scrub_stale_last_reject(now=now + timedelta(minutes=2), spot=22600.0 * 0.9975)
     assert bot._thesis_key("pe", "long") not in bot.thesis_blocks
     assert bot._thesis_key("ce", "long") in bot.thesis_blocks
