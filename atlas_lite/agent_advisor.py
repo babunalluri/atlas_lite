@@ -488,6 +488,8 @@ class AgentAdvisor:
         }
         daily_review["score_adjust"] = setup_memory.get("score_adjust") or {}
         scorecard_ctx = {
+            "as_of": as_of,
+            "clock": clock,
             "spot": ctx.get("spot"),
             "atm": ctx.get("atm"),
             "fut": ctx.get("fut"),

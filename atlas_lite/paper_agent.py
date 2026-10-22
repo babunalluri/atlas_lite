@@ -63,6 +63,8 @@ TRAIL_LEDGER_STEP_MIN = 0.5
 COOLDOWN_MIN = 3
 # After a hard stop, block the same side+style so the LLM cannot immediately re-enter.
 THESIS_COOLDOWN_MIN = 15
+# After ANY close (win or loss), block same side+style — kills chase after a quick trail.
+SETUP_REENTRY_COOLDOWN_MIN = 15
 # After any losing close (agent_exit etc.), shorter same-thesis block.
 LOSS_COOLDOWN_MIN = 10
 # After ANY short close (win or loss), do not re-short the same side for this long.
@@ -137,6 +139,13 @@ def agent_cooldown_min() -> int:
 def agent_thesis_cooldown_min() -> int:
     """Minutes to block same side+style after a stop (env ATLAS_LITE_AGENT_THESIS_COOLDOWN_MIN)."""
     return max(0, _env_int("ATLAS_LITE_AGENT_THESIS_COOLDOWN_MIN", THESIS_COOLDOWN_MIN))
+
+
+def agent_setup_reentry_cooldown_min() -> int:
+    """Minutes to block same side+style after any close (env ATLAS_LITE_AGENT_SETUP_REENTRY_COOLDOWN_MIN)."""
+    return max(
+        0, _env_int("ATLAS_LITE_AGENT_SETUP_REENTRY_COOLDOWN_MIN", SETUP_REENTRY_COOLDOWN_MIN)
+    )
 
 
 def agent_loss_cooldown_min() -> int:
@@ -341,6 +350,7 @@ class PaperAgent:
     trail_ledger_step_min: float = TRAIL_LEDGER_STEP_MIN
     cooldown_min: int = field(default_factory=agent_cooldown_min)
     thesis_cooldown_min: int = field(default_factory=agent_thesis_cooldown_min)
+    setup_reentry_cooldown_min: int = field(default_factory=agent_setup_reentry_cooldown_min)
     loss_cooldown_min: int = field(default_factory=agent_loss_cooldown_min)
     short_reentry_cooldown_min: int = field(default_factory=agent_short_reentry_cooldown_min)
     short_spike_pct: float = SHORT_SPIKE_PCT
@@ -1226,8 +1236,8 @@ class PaperAgent:
             if not isinstance(until, datetime) or now >= until:
                 self._clear_thesis_block(key)
                 continue
-            # Stop blocks are time-hard; do not chase the same thesis early.
-            if str(block.get("reason") or "") == "stop":
+            # Stop / same-setup re-entry blocks are time-hard — no early flip chase.
+            if str(block.get("reason") or "") in ("stop", "setup_cooldown"):
                 continue
             if self._favorable_thesis_flip(block, spot):
                 self._release_thesis_block(key, now=now, reason="favorable_flip")
@@ -1268,7 +1278,7 @@ class PaperAgent:
                     released_at[key] = ts
             for ev in lesson_rows:
                 kind = str(ev.get("kind") or "")
-                if kind not in ("stop", "loss", "short_reentry"):
+                if kind not in ("stop", "loss", "short_reentry", "setup_cooldown"):
                     continue
                 closed_at = _parse_ts(str(ev.get("ts") or ""))
                 until = _parse_ts(str(ev.get("until") or ""))
@@ -1277,6 +1287,8 @@ class PaperAgent:
                         continue
                     if kind == "stop":
                         mins = int(self.thesis_cooldown_min)
+                    elif kind == "setup_cooldown":
+                        mins = int(self.setup_reentry_cooldown_min)
                     elif kind == "short_reentry":
                         mins = int(self.short_reentry_cooldown_min)
                     else:
@@ -1527,6 +1539,50 @@ class PaperAgent:
                 fh.write(json.dumps(row, default=str) + "\n")
         except OSError as exc:
             self._log.warning("agent lesson write failed: %s", exc)
+
+    def _record_setup_reentry_cooldown(
+        self,
+        *,
+        now: datetime,
+        pos: AgentPosition,
+        exit_px: float | None,
+        pnl: float | None,
+        spot: float | None,
+        close_reason: str,
+    ) -> None:
+        """Hard same-setup block after any close — stops chase after a quick trail/target."""
+        mins = int(self.setup_reentry_cooldown_min)
+        if mins <= 0:
+            return
+        until = now + timedelta(minutes=mins)
+        self._upsert_thesis_block(
+            side=pos.side,
+            style=pos.style,
+            until=until,
+            spot=spot,
+            reason="setup_cooldown",
+        )
+        lesson = (
+            f"closed {pos.style} {pos.side.upper()} ({close_reason}) @ {exit_px} "
+            f"(entry {pos.entry}, pnl {pnl}). Same side+style blocked {mins}m "
+            f"(no chase — hard clock)."
+        )
+        self._append_lesson(
+            {
+                "ts": now.isoformat(),
+                "day": now.strftime("%Y-%m-%d"),
+                "kind": "setup_cooldown",
+                "side": pos.side,
+                "style": pos.style,
+                "entry": pos.entry,
+                "exit": exit_px,
+                "pnl": pnl,
+                "spot": spot,
+                "until": until.isoformat(),
+                "reason": str(close_reason or "close")[:40],
+                "lesson": lesson,
+            }
+        )
 
     def _record_stop_lesson(
         self,
@@ -2822,20 +2878,30 @@ class PaperAgent:
                 close_order_id or "-",
             )
             event = dict(event_body)
-        if not rolling and pnl is not None and pnl < 0:
-            if reason == "stop":
-                self._record_stop_lesson(
-                    now=now, pos=pos, exit_px=exit_px, pnl=pnl, spot=spot
-                )
-            else:
-                self._record_loss_cooldown(
-                    now=now,
-                    pos=pos,
-                    exit_px=exit_px,
-                    pnl=pnl,
-                    spot=spot,
-                    reason=reason,
-                )
+        if not rolling:
+            # Always block same setup after a close (win or loss) — no chase.
+            self._record_setup_reentry_cooldown(
+                now=now,
+                pos=pos,
+                exit_px=exit_px,
+                pnl=pnl,
+                spot=spot,
+                close_reason=str(reason or "close"),
+            )
+            if pnl is not None and pnl < 0:
+                if reason == "stop":
+                    self._record_stop_lesson(
+                        now=now, pos=pos, exit_px=exit_px, pnl=pnl, spot=spot
+                    )
+                else:
+                    self._record_loss_cooldown(
+                        now=now,
+                        pos=pos,
+                        exit_px=exit_px,
+                        pnl=pnl,
+                        spot=spot,
+                        reason=reason,
+                    )
         if rolling:
             self._roll_to_day(book_day)
             # Leftover flatten consumes today's entry slot (same as other paper books).

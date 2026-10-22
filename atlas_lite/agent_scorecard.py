@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from atlas_lite.paper_impulse_fade import MIN_IMPULSE
 
+IST = ZoneInfo("Asia/Kolkata")
 
 Candidate = dict[str, Any]
 
 # Default bar for propose_entry recommendation (raised under cautious/defensive stance).
 MIN_ENTRY_SCORE = 3.0
+# Morning session: higher bar until late-exit profile kicks in (10:30).
+MORNING_MIN_ENTRY_SCORE = 4.0
+MORNING_SCORE_UNTIL = (10, 30)
+# Hard veto long premium when spot vs open clearly fights the side.
+SPOT_AGAINST_LONG_PCT = 0.10
 
 
 def _num(value: Any) -> float | None:
@@ -141,6 +149,28 @@ def entry_permitted(scorecard: dict[str, Any], *, side: str, style: str) -> tupl
     return False, "not_in_scorecard"
 
 
+def _context_ist(context: dict[str, Any]) -> datetime | None:
+    """Best-effort IST clock from context (as_of / clock.ist)."""
+    clock = context.get("clock") if isinstance(context.get("clock"), dict) else {}
+    raw = str(clock.get("ist") or context.get("as_of") or "").strip()
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=IST)
+    return dt.astimezone(IST)
+
+
+def _morning_score_window(now: datetime | None) -> bool:
+    if now is None:
+        return False
+    hh, mm = MORNING_SCORE_UNTIL
+    return (now.hour, now.minute) < (hh, mm)
+
+
 def build_strategy_scorecard(
     context: dict[str, Any],
     *,
@@ -158,6 +188,9 @@ def build_strategy_scorecard(
     daily_review = daily_review or {}
     min_entry_score = float(daily_review.get("min_entry_score_hint") or MIN_ENTRY_SCORE)
     min_entry_score = max(MIN_ENTRY_SCORE, min_entry_score)
+    now_ist = _context_ist(context)
+    if _morning_score_window(now_ist):
+        min_entry_score = max(min_entry_score, MORNING_MIN_ENTRY_SCORE)
     max_entries_today = daily_review.get("max_entries_today")
     try:
         entries_today = int(agent_book.get("entries_today") or 0)
@@ -445,6 +478,22 @@ def build_strategy_scorecard(
                 row.get("horizon") or row.get("severity") or row.get("lock") or "day"
             )
             add(k, -10.0, f"{horizon} avoid: {row.get('reason')}")
+    # Hard veto: do not long premium against clear spot-vs-open direction.
+    if spot_dir is not None:
+        if spot_dir <= -float(SPOT_AGAINST_LONG_PCT):
+            blocked_keys.add("long_ce")
+            add(
+                "long_ce",
+                -10.0,
+                f"spot_chg_open_pct={spot_dir} against long CE — hard veto",
+            )
+        if spot_dir >= float(SPOT_AGAINST_LONG_PCT):
+            blocked_keys.add("long_pe")
+            add(
+                "long_pe",
+                -10.0,
+                f"spot_chg_open_pct={spot_dir} against long PE — hard veto",
+            )
     # Multi-day setup memory: soft score nudges (hard avoids already in avoid_today).
     score_adjust = daily_review.get("score_adjust") or {}
     if isinstance(score_adjust, dict):

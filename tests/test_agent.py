@@ -959,10 +959,13 @@ def test_strategy_scorecard_rejects_ce_into_intraday_selloff() -> None:
     ) != "ce"
     ok, _ = entry_permitted(card, side="ce", style="long")
     assert ok is False
+    ce = next(c for c in card["candidates"] if c.get("side") == "ce" and c.get("style") == "long")
+    assert ce["blocked"] is True
 
     # Same selloff but combo regime S still available as market tape → prefer PE / wait.
     card2 = build_strategy_scorecard(
         {
+            "as_of": "2026-10-22T11:00:00+05:30",  # after morning bar
             "spot_chg_pct": 0.30,
             "spot_chg_open_pct": -0.25,
             "adx": 28,
@@ -974,6 +977,36 @@ def test_strategy_scorecard_rejects_ce_into_intraday_selloff() -> None:
     )
     rec2 = card2["recommended"]
     assert not (rec2.get("action") == "propose_entry" and rec2.get("side") == "ce")
+    assert entry_permitted(card2, side="pe", style="long")[0] is True
+
+
+def test_strategy_scorecard_morning_min_score_floor() -> None:
+    from atlas_lite.agent_scorecard import build_strategy_scorecard
+
+    morning = build_strategy_scorecard(
+        {
+            "as_of": "2026-10-22T09:50:00+05:30",
+            "spot_chg_open_pct": 0.4,
+            "adx": 28,
+            "adx_regime": "trend",
+            "pdi": 30,
+            "mdi": 15,
+            "combo": {"side": "B", "signal": None},
+        }
+    )
+    assert morning["min_entry_score"] == 4.0
+    late = build_strategy_scorecard(
+        {
+            "as_of": "2026-10-22T11:00:00+05:30",
+            "spot_chg_open_pct": 0.4,
+            "adx": 28,
+            "adx_regime": "trend",
+            "pdi": 30,
+            "mdi": 15,
+            "combo": {"side": "B", "signal": None},
+        }
+    )
+    assert late["min_entry_score"] == 3.0
 
 
 def test_strategy_scorecard_missing_open_is_not_day_chg_direction() -> None:
@@ -1546,6 +1579,75 @@ def test_paper_agent_trailing_stop_long(tmp_path: Path) -> None:
     assert closed is not None
     assert closed["reason"] == "trail"
     assert closed["style"] == "long"
+    # No chase: same setup blocked for setup_reentry_cooldown after a trail win.
+    again = bot.propose_entry(
+        side="ce",
+        style="long",
+        reason="chase",
+        spot=22600.0,
+        now=now + timedelta(minutes=5),
+    )
+    assert again.get("ok") is False
+    assert again.get("rejected") == "same_thesis_cooldown"
+
+
+def test_paper_agent_no_chase_after_trail_win(tmp_path: Path) -> None:
+    """Mirror 2026-10-22: trail win then same-setup re-entry a few minutes later."""
+    class _Book:
+        def __init__(self) -> None:
+            self.px = 100.0
+
+        def get(self, symbol: str):
+            return {"last_price": self.px}
+
+    bot = PaperAgent(
+        path=tmp_path / "paper_agent.jsonl",
+        lot_size=65,
+        cooldown_min=1,
+        setup_reentry_cooldown_min=15,
+    )
+    now = datetime(2026, 10, 22, 9, 46, tzinfo=IST)
+    book = _Book()
+    bot.propose_entry(side="ce", style="long", reason="win", spot=22650.0, now=now)
+    bot.on_frame(
+        now=now + timedelta(seconds=5),
+        feed={},
+        book=book,
+        ce_symbol="NFO:XCE",
+        pe_symbol="NFO:XPE",
+        atm=22650,
+        allow_new_entries=True,
+        spot=22650.0,
+    )
+    book.px = 105.0
+    bot.on_frame(
+        now=now + timedelta(minutes=1),
+        feed={},
+        book=book,
+        ce_symbol="NFO:XCE",
+        pe_symbol="NFO:XPE",
+        atm=22650,
+        allow_new_entries=True,
+        spot=22650.0,
+    )
+    book.px = bot.position.stop - 0.5  # type: ignore[union-attr]
+    closed = bot.on_frame(
+        now=now + timedelta(minutes=2),
+        feed={},
+        book=book,
+        ce_symbol="NFO:XCE",
+        pe_symbol="NFO:XPE",
+        atm=22650,
+        allow_new_entries=True,
+        spot=22650.0,
+    )
+    assert closed is not None and closed["reason"] == "trail"
+    # ~3.5m later (today's chase timing) — must stay blocked; PE still allowed.
+    t = now + timedelta(minutes=6)
+    blocked = bot.propose_entry(side="ce", style="long", reason="chase", spot=22650.0, now=t)
+    assert blocked.get("rejected") == "same_thesis_cooldown"
+    other = bot.propose_entry(side="pe", style="long", reason="flip", spot=22650.0, now=t)
+    assert other.get("ok") is True
 
 
 def test_paper_agent_trail_survives_restore(tmp_path: Path) -> None:
