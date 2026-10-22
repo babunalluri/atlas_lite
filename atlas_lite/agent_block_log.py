@@ -280,7 +280,7 @@ class AgentBlockLog:
         if track_paper and not opt_sym:
             row["paper_status"] = "skipped_no_symbol"
         if can_track:
-            t_pct, s_pct, arm, tr_pct, tr_pts = agent_exit_profile(now)
+            t_pct, s_pct, arm, tr_pct, tr_pts = agent_exit_profile(now, style_n)
             target, stop = initial_target_stop(
                 float(entry_px),
                 style_n,  # type: ignore[arg-type]
@@ -366,19 +366,14 @@ class AgentBlockLog:
                 hit_target = px >= sh.target
                 hit_stop = px <= sh.stop
             else:
-                if px < sh.best_px:
-                    sh.best_px = px
-                if (not sh.trail_armed) and px <= sh.entry_px * (1.0 - sh.trail_arm_pct):
-                    sh.trail_armed = True
-                if sh.trail_armed:
-                    gap = trail_gap_px(
-                        sh.entry_px, trail_pct=sh.trail_pct, trail_pts=sh.trail_pts
-                    )
-                    sh.stop = min(sh.stop, round(sh.best_px + gap, 2))
-                hit_target = px <= sh.target
+                # Short paper shadows: stop or square-off only (no trail/target/time).
+                hit_target = False
                 hit_stop = px >= sh.stop
 
-            hold_due = now >= sh.entry_ts + timedelta(minutes=int(HOLD_MINUTES))
+            hold_due = (
+                sh.style == "long"
+                and now >= sh.entry_ts + timedelta(minutes=int(HOLD_MINUTES))
+            )
             square = _hm_ge(now, SQUARE_OFF)
             reason: str | None = None
             if hit_target:

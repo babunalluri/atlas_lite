@@ -10,6 +10,8 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from atlas_lite.agent_advisor import AgentAdvisor, SYSTEM_PROMPT
 from atlas_lite.agent_gates import AgentGateStore, next_session_end
 from atlas_lite.config import read_llm_credentials
@@ -17,6 +19,18 @@ from atlas_lite.macro_sentiment import _day_pct, _quote_field, clear_macro_cache
 from atlas_lite.paper_agent import PaperAgent
 
 IST = ZoneInfo("Asia/Kolkata")
+
+
+@pytest.fixture(autouse=True)
+def _agent_unit_test_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unit tests use legacy long exits; production compose enables scalper v2."""
+    monkeypatch.setenv("ATLAS_LITE_AGENT_ALLOW_LONG", "1")
+    monkeypatch.setenv("ATLAS_LITE_AGENT_ALLOW_SHORT", "1")
+    monkeypatch.setenv("ATLAS_LITE_AGENT_SCALPER_V2", "0")
+    monkeypatch.setenv("ATLAS_LITE_AGENT_MAX_TRADES_DAY", "0")
+    monkeypatch.setenv("ATLAS_LITE_AGENT_ENTRY_UNTIL", "15:00")
+    monkeypatch.delenv("ATLAS_LITE_AGENT_TREND_SHORT_PTS", raising=False)
+    monkeypatch.delenv("ATLAS_LITE_AGENT_TREND_LONG_PTS", raising=False)
 
 
 def test_read_llm_credentials_from_env(monkeypatch, tmp_path: Path) -> None:
@@ -737,11 +751,11 @@ def test_agent_daily_loss_stop_default_is_2000(monkeypatch) -> None:
     from atlas_lite.paper_agent import agent_daily_loss_stop, agent_max_entries_per_day
 
     assert agent_daily_loss_stop() == -2000.0
-    assert agent_max_entries_per_day() == 0  # unlimited by default
+    assert agent_max_entries_per_day() == 0  # unlimited unless env set
     monkeypatch.setenv("ATLAS_LITE_AGENT_DAILY_LOSS_STOP", "2000")
-    monkeypatch.setenv("ATLAS_LITE_AGENT_MAX_TRADES_DAY", "8")
+    monkeypatch.setenv("ATLAS_LITE_AGENT_MAX_TRADES_DAY", "1")
     assert agent_daily_loss_stop() == -2000.0
-    assert agent_max_entries_per_day() == 8
+    assert agent_max_entries_per_day() == 1
     monkeypatch.setenv("ATLAS_LITE_AGENT_DAILY_LOSS_STOP", "5000")
     assert agent_daily_loss_stop() == -5000.0
 
@@ -2504,7 +2518,9 @@ def test_paper_agent_fee_floor_blocks_micro_exit(tmp_path: Path) -> None:
     assert closed["pnl"] is not None and closed["pnl"] >= 140.0
 
 
-def test_paper_agent_short_target(tmp_path: Path) -> None:
+def test_paper_agent_short_stop_holds_to_square_off(tmp_path: Path) -> None:
+    """Short profile: 20% stop, no target/time exit — only stop or 15:14."""
+
     class _Book:
         def __init__(self) -> None:
             self.px = 100.0
@@ -2515,7 +2531,7 @@ def test_paper_agent_short_target(tmp_path: Path) -> None:
     bot = PaperAgent(path=tmp_path / "paper_agent.jsonl", lot_size=65)
     now = datetime(2026, 9, 29, 11, 0, tzinfo=IST)
     book = _Book()
-    bot.propose_entry(side="pe", style="short", reason="rich puts", spot=22600.0, now=now)
+    bot.propose_entry(side="pe", style="short", reason="trend_short", spot=22600.0, now=now)
     opened = bot.on_frame(
         now=now + timedelta(seconds=5),
         feed={},
@@ -2528,11 +2544,27 @@ def test_paper_agent_short_target(tmp_path: Path) -> None:
     )
     assert opened and opened["style"] == "short"
     assert bot.position is not None
-    assert bot.position.target < bot.position.entry
-    assert bot.position.stop > bot.position.entry
-    book.px = bot.position.target
+    assert bot.position.stop == pytest.approx(120.0)  # +20%
+    # Favorable move must not take-profit / time-exit.
+    book.px = 80.0
+    assert (
+        bot.on_frame(
+            now=now + timedelta(minutes=25),
+            feed={},
+            book=book,
+            ce_symbol="NFO:XCE",
+            pe_symbol="NFO:XPE",
+            atm=22600,
+            allow_new_entries=True,
+            spot=22600.0,
+        )
+        is None
+    )
+    assert bot.position is not None
+    # Hard stop.
+    book.px = 120.0
     closed = bot.on_frame(
-        now=now + timedelta(minutes=1),
+        now=now + timedelta(minutes=26),
         feed={},
         book=book,
         ce_symbol="NFO:XCE",
@@ -2542,8 +2574,235 @@ def test_paper_agent_short_target(tmp_path: Path) -> None:
         spot=22600.0,
     )
     assert closed is not None
-    assert closed["reason"] == "target"
-    assert closed["pnl_gross"] is not None and closed["pnl_gross"] > 0
+    assert closed["reason"] == "stop"
+
+
+def test_strategy_scorecard_trend_short_and_longs_off(monkeypatch) -> None:
+    monkeypatch.setenv("ATLAS_LITE_AGENT_ALLOW_LONG", "0")
+    monkeypatch.setenv("ATLAS_LITE_AGENT_ALLOW_SHORT", "1")
+    monkeypatch.setenv("ATLAS_LITE_AGENT_TREND_SHORT_PTS", "100")
+    from atlas_lite.agent_scorecard import build_strategy_scorecard, entry_permitted
+
+    # Down ~120 pts vs open after 10:30 → short CE.
+    card = build_strategy_scorecard(
+        {
+            "as_of": "2026-10-22T11:00:00+05:30",
+            "spot": 22500.0,
+            "spot_chg_open_pct": -0.55,  # ~124 pts
+            "adx": 28,
+            "adx_regime": "trend",
+            "pdi": 14,
+            "mdi": 28,
+            "combo": {"side": "S", "signal": None},
+        }
+    )
+    assert card.get("longs_enabled") is False
+    assert card.get("shorts_enabled") is True
+    rec = card["recommended"]
+    assert rec.get("action") == "propose_entry"
+    assert rec.get("style") == "short" and rec.get("side") == "ce"
+    assert rec.get("setup") == "trend_short"
+    assert entry_permitted(card, side="ce", style="short")[0] is True
+    assert entry_permitted(card, side="ce", style="long")[0] is False
+
+    # Before 10:30 — no trend short; longs still blocked.
+    morning = build_strategy_scorecard(
+        {
+            "as_of": "2026-10-22T10:00:00+05:30",
+            "spot": 22500.0,
+            "spot_chg_open_pct": -0.55,
+            "adx": 28,
+            "adx_regime": "trend",
+            "pdi": 14,
+            "mdi": 28,
+            "combo": {"side": "S", "signal": None},
+        }
+    )
+    assert morning.get("trend_short") is None
+    assert morning["recommended"].get("action") != "propose_entry"
+
+    # After 14:30 — window closed.
+    late = build_strategy_scorecard(
+        {
+            "as_of": "2026-10-22T14:45:00+05:30",
+            "spot": 22500.0,
+            "spot_chg_open_pct": -0.55,
+            "adx": 28,
+            "adx_regime": "trend",
+            "pdi": 14,
+            "mdi": 28,
+            "combo": {"side": "S", "signal": None},
+        }
+    )
+    assert late.get("trend_short") is None
+    assert late["recommended"].get("action") != "propose_entry"
+
+
+def test_strategy_scorecard_trend_long_scalper_v2(monkeypatch) -> None:
+    monkeypatch.setenv("ATLAS_LITE_AGENT_ALLOW_LONG", "1")
+    monkeypatch.setenv("ATLAS_LITE_AGENT_ALLOW_SHORT", "0")
+    monkeypatch.setenv("ATLAS_LITE_AGENT_TREND_LONG_PTS", "100")
+    from atlas_lite.agent_scorecard import build_strategy_scorecard, entry_permitted
+
+    # Down ~120 pts after 09:30 → buy PE (with the trend).
+    card = build_strategy_scorecard(
+        {
+            "as_of": "2026-10-22T09:35:00+05:30",
+            "spot": 22500.0,
+            "spot_chg_open_pct": -0.55,
+            "adx": 28,
+            "adx_regime": "trend",
+            "pdi": 14,
+            "mdi": 28,
+            "combo": {"side": "S", "signal": None},
+        }
+    )
+    assert card.get("longs_enabled") is True
+    assert card.get("shorts_enabled") is False
+    rec = card["recommended"]
+    assert rec.get("action") == "propose_entry"
+    assert rec.get("style") == "long" and rec.get("side") == "pe"
+    assert rec.get("setup") == "trend_long"
+    assert entry_permitted(card, side="pe", style="long")[0] is True
+    assert entry_permitted(card, side="ce", style="short")[0] is False
+
+    # Up move → buy CE.
+    up = build_strategy_scorecard(
+        {
+            "as_of": "2026-10-22T11:00:00+05:30",
+            "spot": 22700.0,
+            "spot_chg_open_pct": 0.50,  # ~113 pts
+            "adx": 28,
+            "adx_regime": "trend",
+            "pdi": 28,
+            "mdi": 14,
+            "combo": {"side": "B", "signal": None},
+        }
+    )
+    assert up["recommended"].get("side") == "ce"
+    assert up["recommended"].get("style") == "long"
+
+    # After 12:00 — window closed.
+    late = build_strategy_scorecard(
+        {
+            "as_of": "2026-10-22T12:30:00+05:30",
+            "spot": 22500.0,
+            "spot_chg_open_pct": -0.55,
+            "adx": 28,
+            "adx_regime": "trend",
+            "pdi": 14,
+            "mdi": 28,
+            "combo": {"side": "S", "signal": None},
+        }
+    )
+    assert late.get("trend_long") is None
+    assert late["recommended"].get("action") != "propose_entry"
+
+
+def test_paper_agent_scalper_v2_20_10_30(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("ATLAS_LITE_AGENT_SCALPER_V2", "1")
+    monkeypatch.setenv("ATLAS_LITE_AGENT_ALLOW_SHORT", "0")
+
+    class _Book:
+        def __init__(self) -> None:
+            self.px = 100.0
+
+        def get(self, symbol: str):
+            return {"last_price": self.px}
+
+    bot = PaperAgent(path=tmp_path / "paper_agent.jsonl", lot_size=65)
+    now = datetime(2026, 10, 22, 10, 30, tzinfo=IST)
+    book = _Book()
+    assert bot.propose_entry(
+        side="pe", style="short", reason="no", spot=22600.0, now=now
+    ).get("rejected") == "shorts_disabled"
+    bot.propose_entry(side="pe", style="long", reason="trend_long", spot=22600.0, now=now)
+    opened = bot.on_frame(
+        now=now + timedelta(seconds=5),
+        feed={},
+        book=book,
+        ce_symbol="NFO:XCE",
+        pe_symbol="NFO:XPE",
+        atm=22600,
+        allow_new_entries=True,
+        spot=22600.0,
+    )
+    assert opened and opened["style"] == "long"
+    assert bot.position is not None
+    assert bot.position.target == pytest.approx(120.0)
+    assert bot.position.stop == pytest.approx(90.0)
+    assert bot.propose_exit(reason="llm", mark=110.0, now=now + timedelta(minutes=2)).get(
+        "rejected"
+    ) == "long_no_agent_exit"
+    # +19% must not target; trail must not arm.
+    book.px = 119.0
+    assert (
+        bot.on_frame(
+            now=now + timedelta(minutes=10),
+            feed={},
+            book=book,
+            ce_symbol="NFO:XCE",
+            pe_symbol="NFO:XPE",
+            atm=22600,
+            allow_new_entries=True,
+            spot=22600.0,
+        )
+        is None
+    )
+    book.px = 120.0
+    hit = bot.on_frame(
+        now=now + timedelta(minutes=11),
+        feed={},
+        book=book,
+        ce_symbol="NFO:XCE",
+        pe_symbol="NFO:XPE",
+        atm=22600,
+        allow_new_entries=True,
+        spot=22600.0,
+    )
+    assert hit is not None and hit["reason"] == "target"
+
+
+def test_paper_agent_short_rejects_agent_exit(tmp_path: Path) -> None:
+    from atlas_lite.kite_orders import transaction_for_close
+
+    assert transaction_for_close("short") == "BUY"
+    bot = PaperAgent(path=tmp_path / "paper_agent.jsonl", lot_size=65)
+    now = datetime(2026, 10, 22, 11, 0, tzinfo=IST)
+
+    class _Book:
+        def get(self, symbol: str):
+            return {"last_price": 100.0}
+
+    bot.propose_entry(side="ce", style="short", reason="trend", spot=22600.0, now=now)
+    bot.on_frame(
+        now=now + timedelta(seconds=5),
+        feed={},
+        book=_Book(),
+        ce_symbol="NFO:XCE",
+        pe_symbol="NFO:XPE",
+        atm=22600,
+        allow_new_entries=True,
+        spot=22600.0,
+    )
+    assert bot.position is not None
+    out = bot.propose_exit(reason="take_140", mark=98.0, now=now + timedelta(minutes=5))
+    assert out.get("ok") is False
+    assert out.get("rejected") == "short_no_agent_exit"
+    # Deep red MTM must not day-cap flatten a short either.
+    bot.day_pnl = -1500.0
+    still = bot.on_frame(
+        now=now + timedelta(minutes=10),
+        feed={},
+        book=_Book(),  # mark 100 → open net ~ flat/small
+        ce_symbol="NFO:XCE",
+        pe_symbol="NFO:XPE",
+        atm=22600,
+        allow_new_entries=True,
+        spot=22600.0,
+    )
+    assert still is None
+    assert bot.position is not None
 
 
 def test_agent_advisor_tool_dispatch_without_llm(tmp_path: Path) -> None:

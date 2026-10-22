@@ -21,6 +21,16 @@ from atlas_lite.paper_agent import PaperAgent
 IST = ZoneInfo("Asia/Kolkata")
 
 
+@pytest.fixture(autouse=True)
+def _live_agent_style_gates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Live path unit tests exercise long+short; production compose gates styles."""
+    monkeypatch.setenv("ATLAS_LITE_AGENT_ALLOW_LONG", "1")
+    monkeypatch.setenv("ATLAS_LITE_AGENT_ALLOW_SHORT", "1")
+    monkeypatch.setenv("ATLAS_LITE_AGENT_SCALPER_V2", "0")
+    monkeypatch.setenv("ATLAS_LITE_AGENT_MAX_TRADES_DAY", "0")
+    monkeypatch.setenv("ATLAS_LITE_AGENT_ENTRY_UNTIL", "15:00")
+
+
 class Book:
     def __init__(self) -> None:
         self.quotes: dict[str, dict] = {}
@@ -383,7 +393,66 @@ def test_live_open_failure_does_not_book_position(tmp_path, monkeypatch) -> None
     )
     assert opened is None
     assert bot.position is None
-    assert bot.last_reject and "live_open_failed" in bot.last_reject
+    # Margin/RMS reject must block further live opens for the day (no 2-min retry spam).
+    assert bot.live_opens_blocked is True
+    assert bot.last_reject and "live_opens_blocked" in bot.last_reject
+    assert orders.calls == []
+    again = bot.propose_entry(side="ce", style="long", reason="retry", spot=23000.0, now=now)
+    assert again.get("ok") is False
+    assert again.get("rejected") == "live_opens_blocked"
+    bot.on_frame(
+        now=now,
+        feed={"ce": 80.0, "pe": 70.0},
+        book=quotes,
+        ce_symbol=ce,
+        pe_symbol=pe,
+        atm=23000,
+        spot=23000.0,
+    )
+    assert orders.calls == []
+    assert bot.position is None
+
+
+def test_restore_hard_open_reject_keeps_opens_blocked(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("ATLAS_LITE_AGENT_LIVE_ALLOWED", "1")
+    path = tmp_path / "paper_agent.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "event": "live_submit_failed",
+                "ts": "2026-10-21T11:00:00+05:30",
+                "day": "2026-10-21",
+                "side": "ce",
+                "style": "short",
+                "symbol": "NFO:NIFTY26OCT23000CE",
+                "qty": 65,
+                "error": "rejected:margin",
+                "block_opens": True,
+                "live": True,
+                "live_orders": True,
+                "strategy": "agent_paper",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    flag = AgentLiveFlag(tmp_path / "live.json")
+    flag.set_enabled(True)
+    bot = PaperAgent(
+        path=path,
+        lot_size=65,
+        order_client=FakeOrders(),
+        live_flag=flag,
+    )
+    assert bot.live_opens_blocked is True
+    out = bot.propose_entry(
+        side="ce",
+        style="short",
+        reason="after_restart",
+        spot=23000.0,
+        now=_stamp("2026-10-21", "11:30"),
+    )
+    assert out.get("rejected") == "live_opens_blocked"
 
 
 def test_open_timeout_but_filled_adopts_own_order(tmp_path, monkeypatch) -> None:

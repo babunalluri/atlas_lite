@@ -22,6 +22,16 @@ MORNING_SCORE_UNTIL = (10, 30)
 # Hard veto long premium when spot vs open clearly fights the side.
 # Env ATLAS_LITE_AGENT_SPOT_AGAINST_PCT (default 0.20 — was 0.10).
 SPOT_AGAINST_LONG_PCT = 0.20
+# Trend-long scalper v2 (₹20k): buy with the move, morning window.
+TREND_LONG_PTS = 100.0
+TREND_LONG_AFTER = (9, 30)  # skip first 15m noise; catch opening drive
+TREND_LONG_UNTIL = (12, 0)
+TREND_LONG_SCORE = 5.0
+# Naked short book (needs ~₹1.5L) — kept for capital upgrade; off by default.
+TREND_SHORT_PTS = 100.0
+TREND_SHORT_AFTER = (10, 30)
+TREND_SHORT_UNTIL = (14, 30)
+TREND_SHORT_SCORE = 5.0
 
 
 def _env_float(name: str, default: float) -> float:
@@ -61,6 +71,147 @@ def morning_score_until() -> tuple[int, int]:
 def spot_against_long_pct() -> float:
     """Spot-vs-open hard veto threshold (%). Env ATLAS_LITE_AGENT_SPOT_AGAINST_PCT."""
     return max(0.0, _env_float("ATLAS_LITE_AGENT_SPOT_AGAINST_PCT", SPOT_AGAINST_LONG_PCT))
+
+
+def agent_longs_enabled() -> bool:
+    """Long CE/PE entries (env ATLAS_LITE_AGENT_ALLOW_LONG). Compose enables for scalper v2."""
+    raw = str(os.environ.get("ATLAS_LITE_AGENT_ALLOW_LONG", "0") or "0").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def agent_shorts_enabled() -> bool:
+    """Naked short entries (env ATLAS_LITE_AGENT_ALLOW_SHORT). Default off — needs ~₹1.5L."""
+    raw = str(os.environ.get("ATLAS_LITE_AGENT_ALLOW_SHORT", "0") or "0").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def trend_long_pts() -> float:
+    """NIFTY points vs open to arm buy-with-the-move. Env ATLAS_LITE_AGENT_TREND_LONG_PTS."""
+    return max(0.0, _env_float("ATLAS_LITE_AGENT_TREND_LONG_PTS", TREND_LONG_PTS))
+
+
+def trend_long_after() -> tuple[int, int]:
+    return _env_hhmm("ATLAS_LITE_AGENT_TREND_LONG_AFTER", TREND_LONG_AFTER)
+
+
+def trend_long_until() -> tuple[int, int]:
+    return _env_hhmm("ATLAS_LITE_AGENT_TREND_LONG_UNTIL", TREND_LONG_UNTIL)
+
+
+def trend_short_pts() -> float:
+    """NIFTY points vs open to arm sell-the-move. Env ATLAS_LITE_AGENT_TREND_SHORT_PTS."""
+    return max(0.0, _env_float("ATLAS_LITE_AGENT_TREND_SHORT_PTS", TREND_SHORT_PTS))
+
+
+def trend_short_after() -> tuple[int, int]:
+    return _env_hhmm("ATLAS_LITE_AGENT_TREND_SHORT_AFTER", TREND_SHORT_AFTER)
+
+
+def trend_short_until() -> tuple[int, int]:
+    return _env_hhmm("ATLAS_LITE_AGENT_TREND_SHORT_UNTIL", TREND_SHORT_UNTIL)
+
+
+def _spot_pts_vs_open(context: dict[str, Any]) -> tuple[float | None, float | None]:
+    spot = _num(context.get("spot"))
+    if spot is None:
+        raw_spot = context.get("spot")
+        if isinstance(raw_spot, dict):
+            spot = _num(raw_spot.get("value"))
+    spot_dir = _num(context.get("spot_chg_open_pct"))
+    if spot is None or spot <= 0 or spot_dir is None:
+        return None, None
+    pts = float(spot) * float(spot_dir) / 100.0
+    return float(spot), pts
+
+
+def trend_long_signal(
+    context: dict[str, Any],
+) -> dict[str, Any] | None:
+    """09:30–12:00, |spot−open| ≥ 100 pts → buy CE (up) / buy PE (down). Never against trend."""
+    if not agent_longs_enabled():
+        return None
+    now = _context_ist(context)
+    if now is None:
+        return None
+    after = trend_long_after()
+    until = trend_long_until()
+    hm = (now.hour, now.minute)
+    if hm < after or hm > until:
+        return None
+    thr = float(trend_long_pts())
+    if thr <= 0:
+        return None
+    _spot, pts = _spot_pts_vs_open(context)
+    if pts is None:
+        return None
+    if pts >= thr:
+        return {
+            "side": "ce",
+            "style": "long",
+            "score": float(TREND_LONG_SCORE),
+            "spot_pts_open": round(pts, 1),
+            "setup": "trend_long",
+            "reasons": [
+                f"trend_long: spot {pts:.0f} pts vs open (≥+{thr:.0f}) — buy CE",
+            ],
+        }
+    if pts <= -thr:
+        return {
+            "side": "pe",
+            "style": "long",
+            "score": float(TREND_LONG_SCORE),
+            "spot_pts_open": round(pts, 1),
+            "setup": "trend_long",
+            "reasons": [
+                f"trend_long: spot {pts:.0f} pts vs open (≤−{thr:.0f}) — buy PE",
+            ],
+        }
+    return None
+
+
+def trend_short_signal(
+    context: dict[str, Any],
+) -> dict[str, Any] | None:
+    """10:30–14:30, |spot−open| ≥ 100 pts → short CE (down) / short PE (up). Off unless ALLOW_SHORT."""
+    if not agent_shorts_enabled():
+        return None
+    now = _context_ist(context)
+    if now is None:
+        return None
+    after = trend_short_after()
+    until = trend_short_until()
+    hm = (now.hour, now.minute)
+    if hm < after or hm > until:
+        return None
+    thr = float(trend_short_pts())
+    if thr <= 0:
+        return None
+    _spot, pts = _spot_pts_vs_open(context)
+    if pts is None:
+        return None
+    if pts <= -thr:
+        return {
+            "side": "ce",
+            "style": "short",
+            "score": float(TREND_SHORT_SCORE),
+            "spot_pts_open": round(pts, 1),
+            "setup": "trend_short",
+            "reasons": [
+                f"trend_short: spot {pts:.0f} pts vs open (≤−{thr:.0f}) — sell CE",
+            ],
+        }
+    if pts >= thr:
+        return {
+            "side": "pe",
+            "style": "short",
+            "score": float(TREND_SHORT_SCORE),
+            "spot_pts_open": round(pts, 1),
+            "setup": "trend_short",
+            "reasons": [
+                f"trend_short: spot {pts:.0f} pts vs open (≥+{thr:.0f}) — sell PE",
+            ],
+        }
+    return None
 
 
 def _num(value: Any) -> float | None:
@@ -538,6 +689,30 @@ def build_strategy_scorecard(
                 -10.0,
                 f"spot_chg_open_pct={spot_dir} against long PE — hard veto",
             )
+    # Scalper v2: longs on by default. Naked shorts only when ALLOW_SHORT.
+    longs_on = agent_longs_enabled()
+    shorts_on = agent_shorts_enabled()
+    if not longs_on:
+        for key in ("long_ce", "long_pe"):
+            if key not in blocked_keys:
+                blocked_keys.add(key)
+                add(key, -10.0, "longs disabled")
+    if not shorts_on:
+        for key in ("short_ce", "short_pe"):
+            if key not in blocked_keys:
+                blocked_keys.add(key)
+                add(key, -10.0, "shorts disabled — scalper v2 long book")
+    # Prefer trend-long (buy with move); trend-short kept for capital upgrade.
+    trend_long = trend_long_signal(context)
+    trend_short = trend_short_signal(context)
+    trend = trend_long or trend_short
+    if trend is not None:
+        t_key = f"{trend['style']}_{trend['side']}"
+        add(
+            t_key,
+            3.0,
+            (trend.get("reasons") or [str(trend.get("setup") or "trend")])[0],
+        )
     # Multi-day setup memory: soft score nudges (hard avoids already in avoid_today).
     score_adjust = daily_review.get("score_adjust") or {}
     if isinstance(score_adjust, dict):
@@ -665,6 +840,75 @@ def build_strategy_scorecard(
     else:
         chosen = top_entry
 
+    # Prefer the trend trigger when armed (overrides weaker scorecard picks).
+    if (
+        trend is not None
+        and not agent_pos
+        and not at_entry_cap
+        and str(trend.get("side") or "") in ("ce", "pe")
+    ):
+        t_side = str(trend["side"])
+        t_style = str(trend.get("style") or "long")
+        t_setup = str(trend.get("setup") or ("trend_long" if t_style == "long" else "trend_short"))
+        t_key = f"{t_style}_{t_side}"
+        if t_key not in blocked_keys:
+            cand = next(
+                (
+                    r
+                    for r in ranked
+                    if r.get("side") == t_side and r.get("style") == t_style
+                ),
+                None,
+            )
+            reasons = list(trend.get("reasons") or [])
+            if cand is not None:
+                reasons = reasons + list(cand.get("reasons") or [])[:4]
+            setup_score = (
+                float(TREND_LONG_SCORE) if t_setup == "trend_long" else float(TREND_SHORT_SCORE)
+            )
+            chosen = {
+                "action": "propose_entry",
+                "side": t_side,
+                "style": t_style,
+                "score": max(
+                    setup_score,
+                    float((cand or {}).get("score") or 0.0),
+                ),
+                "reasons": reasons[:8],
+                "blocked": False,
+                "agreement": True,
+                "setup": t_setup,
+            }
+
+    # Scalper / short books: only the trend setup may enter — no other scorecard picks.
+    if not agent_pos:
+        allowed_setup = None
+        wait_msg = ""
+        if longs_on and not shorts_on:
+            allowed_setup = "trend_long"
+            wait_msg = (
+                "awaiting trend_long (≥100pt vs open, 09:30–12:00) — "
+                "scorecard entries disabled"
+            )
+        elif shorts_on and not longs_on:
+            allowed_setup = "trend_short"
+            wait_msg = (
+                "awaiting trend_short (≥100pt vs open, 10:30–14:30) — "
+                "scorecard entries disabled"
+            )
+        if (
+            allowed_setup
+            and chosen.get("action") == "propose_entry"
+            and chosen.get("setup") != allowed_setup
+        ):
+            chosen = {
+                "action": "wait",
+                "side": None,
+                "style": None,
+                "score": float(wait_row["score"]) if wait_row else 0.0,
+                "reasons": [wait_msg],
+            }
+
     regime = "unknown"
     if trending:
         regime = "trend"
@@ -681,6 +925,10 @@ def build_strategy_scorecard(
         "entries_today": entries_today,
         "morning_min_entry_score": morn_floor if morn_floor > 0 else None,
         "spot_against_long_pct": veto_pct if veto_pct > 0 else None,
+        "longs_enabled": longs_on,
+        "shorts_enabled": shorts_on,
+        "trend_long": trend_long,
+        "trend_short": trend_short,
         "inputs": {
             "spot_chg_pct": spot_chg_day,
             "spot_chg_open_pct": spot_dir,

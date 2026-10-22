@@ -614,6 +614,12 @@ class AgentAdvisor:
             "prefer_setups": setup_memory.get("prefer_setups"),
         }
         daily_review["score_adjust"] = setup_memory.get("score_adjust") or {}
+        # Scalper v2: hard day cap from env (default 3). Ignore looser stance caps.
+        from atlas_lite.paper_agent import agent_max_entries_per_day
+
+        day_cap = int(agent_max_entries_per_day())
+        if day_cap > 0:
+            daily_review["max_entries_today"] = day_cap
         scorecard_ctx = {
             "as_of": as_of,
             "clock": clock,

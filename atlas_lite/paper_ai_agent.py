@@ -44,6 +44,7 @@ from atlas_lite.paper_agent import (
     LOTS,
     SQUARE_OFF,
     agent_exit_profile,
+    agent_hold_until,
     initial_target_stop,
     trail_gap_px,
 )
@@ -398,12 +399,14 @@ class PaperAiAgent:
         if entry is None or entry <= 0:
             self.last_reject = "no_quote"
             return None
-        target_pct, stop_pct, arm_pct, trail_pct, trail_pts = agent_exit_profile(now)
+        target_pct, stop_pct, arm_pct, trail_pct, trail_pts = agent_exit_profile(
+            now, style
+        )
         target, stop = initial_target_stop(entry, style, target_pct=target_pct, stop_pct=stop_pct)  # type: ignore[arg-type]
         qty = int(self.lots) * int(self.lot_size)
         open_side = "sell" if style == "short" else "buy"
         charges_open = float(kite_nfo_charges([(entry, qty, open_side)])["total"])
-        hold_until = (now + timedelta(minutes=int(self.hold_minutes))).isoformat()
+        hold_until = agent_hold_until(now, style).isoformat()
         pos = AiPosition(
             day=now.strftime("%Y-%m-%d"),
             atm=int(atm),
@@ -480,7 +483,9 @@ class PaperAiAgent:
         if entry is None or entry <= 0:
             self.last_reject = "no_quote"
             return None
-        target_pct, stop_pct, arm_pct, trail_pct, trail_pts = agent_exit_profile(now)
+        target_pct, stop_pct, arm_pct, trail_pct, trail_pts = agent_exit_profile(
+            now, style
+        )
         target, stop = initial_target_stop(entry, style, target_pct=target_pct, stop_pct=stop_pct)  # type: ignore[arg-type]
         qty = int(self.lots) * int(self.lot_size)
         open_side = "sell" if style == "short" else "buy"
@@ -498,7 +503,7 @@ class PaperAiAgent:
             entry=round(entry, 2),
             target=target,
             stop=stop,
-            hold_until=(now + timedelta(minutes=int(self.hold_minutes))).isoformat(),
+            hold_until=agent_hold_until(now, style).isoformat(),
             opened_at=now.isoformat(),
             charges_open=round(charges_open, 2),
             reason=f"shadow {style} {side}",

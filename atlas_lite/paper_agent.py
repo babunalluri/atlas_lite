@@ -35,11 +35,12 @@ STRATEGY = "agent_paper"
 CAPITAL = 200_000.0
 LOTS = 1
 DEFAULT_LOT_SIZE = 65
-# 0 = unlimited agent paper opens per IST day.
+# 0 = unlimited. Production scalper v2 sets ATLAS_LITE_AGENT_MAX_TRADES_DAY=3.
 MAX_ENTRIES_PER_DAY = 0
-# Skip open auction chop; still trade the morning trend once tape settles.
+# Code default 09:45 (AI paper book / unit tests). Production scalper v2 sets
+# ATLAS_LITE_AGENT_ENTRY_AFTER=09:30 in compose.
 ENTRY_AFTER = (9, 45)
-# Scalp profile: allow entries later; still flat by SQUARE_OFF.
+# Default allows afternoon; production scalper v2 sets ENTRY_UNTIL=12:00 in compose.
 ENTRY_UNTIL = (15, 0)
 SQUARE_OFF = (15, 14)
 HOLD_MINUTES = 20
@@ -56,10 +57,19 @@ LATE_STOP_PCT = 0.10
 LATE_TRAIL_ARM_PCT = 0.02
 LATE_TRAIL_PCT = 0.02
 LATE_TRAIL_PTS = 1.0
+# Scalper v2 (₹20k long book): +20% target / −10% stop / 30m time — no trail.
+SCALPER_TARGET_PCT = 0.20
+SCALPER_STOP_PCT = 0.10
+SCALPER_HOLD_MINUTES = 30
+SCALPER_TRAIL_ARM_PCT = 9.0  # never arms
+# Short premium: 20% hard stop, no take-profit/trail, hold to square-off (capital upgrade path).
+SHORT_STOP_PCT = 0.20
+SHORT_TARGET_PCT = 0.99  # target near zero — effectively disabled
+SHORT_TRAIL_ARM_PCT = 9.0  # never arms
 # Persist trail ledger only when stop moves by this much (frac of gap, min pts).
 TRAIL_LEDGER_STEP_FRAC = 0.5
 TRAIL_LEDGER_STEP_MIN = 0.5
-# Longer gap between fills — cuts LLM flip churn after scratches/stops.
+# Production scalper sets ATLAS_LITE_AGENT_COOLDOWN_MIN=5 (wait after close).
 COOLDOWN_MIN = 3
 # After a hard stop, block the same side+style so the LLM cannot immediately re-enter.
 THESIS_COOLDOWN_MIN = 15
@@ -78,7 +88,7 @@ SHORT_SPIKE_PCT = 0.05  # 5%
 SHORT_SPIKE_LOOKBACK_MIN = 30
 INTENT_MAX_AGE_S = 120
 MAX_SPOT_DRIFT_PCT = 0.15  # reject if spot moved >0.15% since advise
-# Tight confidence cap until the loosened rules prove themselves on paper/live.
+# Blocks new entries only. Open shorts are NOT MTM-flattened (would cut the edge).
 DAILY_LOSS_STOP = -2000.0
 # LLM agent_exit when estimated net ≥ this (winner) — else trail/target/stop/time.
 MIN_AGENT_EXIT_NET = 140.0
@@ -181,6 +191,12 @@ def agent_entry_until() -> tuple[int, int]:
     return _env_hhmm("ATLAS_LITE_AGENT_ENTRY_UNTIL", ENTRY_UNTIL)
 
 
+def agent_scalper_v2_enabled() -> bool:
+    """Long book uses +20%/−10%/30m, no trail/agent exit (env ATLAS_LITE_AGENT_SCALPER_V2)."""
+    raw = str(os.environ.get("ATLAS_LITE_AGENT_SCALPER_V2", "0") or "0").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
 def agent_min_exit_net() -> float:
     """Min estimated net ₹ before LLM take-profit exit is accepted (env ATLAS_LITE_AGENT_MIN_EXIT_NET)."""
     return max(0.0, _env_float("ATLAS_LITE_AGENT_MIN_EXIT_NET", MIN_AGENT_EXIT_NET))
@@ -210,13 +226,33 @@ def in_agent_entry_window(now: datetime) -> bool:
     return hm_ge(now, after) and hm_le(now, until) and not hm_ge(now, SQUARE_OFF)
 
 
-def agent_exit_profile(now: datetime) -> tuple[float, float, float, float, float]:
+def agent_exit_profile(
+    now: datetime, style: str = "long"
+) -> tuple[float, float, float, float, float]:
     """Target, stop, trail-arm, trail distance, trail minimum for an entry at ``now``.
 
-    Before 10:30: +10% / −6%, trail arms at +4% and follows by 3% (min 1.5).
-    From 10:30: +15% / −10%, trail arms at +2% and follows by 2% (min 1).
-    Hold stays 20 minutes either way. The profile is fixed at the fill.
+    Scalper v2 longs — +20% / −10%, trail never arms; hold 30m (see agent_hold_until).
+    Legacy longs — before 10:30: +10%/−6% trail; from 10:30: +15%/−10% trail.
+    Shorts — 20% stop, no meaningful target/trail; hold to square-off.
+    Profile is fixed at the fill.
     """
+    style_n = str(style or "long").strip().lower() or "long"
+    if style_n == "short":
+        return (
+            float(SHORT_TARGET_PCT),
+            float(SHORT_STOP_PCT),
+            float(SHORT_TRAIL_ARM_PCT),
+            float(TRAIL_PCT),
+            float(TRAIL_PTS),
+        )
+    if agent_scalper_v2_enabled():
+        return (
+            float(SCALPER_TARGET_PCT),
+            float(SCALPER_STOP_PCT),
+            float(SCALPER_TRAIL_ARM_PCT),
+            float(TRAIL_PCT),
+            float(TRAIL_PTS),
+        )
     if hm_ge(now, LATE_EXIT_AFTER):
         return (
             LATE_TARGET_PCT,
@@ -226,6 +262,17 @@ def agent_exit_profile(now: datetime) -> tuple[float, float, float, float, float
             LATE_TRAIL_PTS,
         )
     return (TARGET_PCT, STOP_PCT, TRAIL_ARM_PCT, TRAIL_PCT, TRAIL_PTS)
+
+
+def agent_hold_until(now: datetime, style: str = "long") -> datetime:
+    """Longs: entry + hold minutes. Shorts: session square-off."""
+    style_n = str(style or "long").strip().lower() or "long"
+    if style_n == "short":
+        return now.replace(
+            hour=SQUARE_OFF[0], minute=SQUARE_OFF[1], second=0, microsecond=0
+        )
+    hold = SCALPER_HOLD_MINUTES if agent_scalper_v2_enabled() else HOLD_MINUTES
+    return now + timedelta(minutes=int(hold))
 
 
 def _f(value: Any) -> float | None:
@@ -424,6 +471,7 @@ class PaperAgent:
         day_pnl = 0.0
         entries = 0
         eod_written = False
+        opens_blocked = False
         last_exit_at: datetime | None = None
         last_any: dict[str, Any] | None = None
         try:
@@ -448,6 +496,7 @@ class PaperAgent:
                 day = d
                 day_pnl = 0.0
                 entries = 0
+                opens_blocked = False
                 last_open = None
                 last_trail = None
                 pending_close_id = ""
@@ -460,6 +509,7 @@ class PaperAgent:
                 last_trail = None
                 pending_close_id = ""
                 pending_open = None
+                opens_blocked = False
                 entries += 1
             elif kind == "trail":
                 if last_open is not None:
@@ -489,6 +539,13 @@ class PaperAgent:
                     not oid or oid == str(pending_open.get("order_id") or "")
                 ):
                     pending_open = None
+            elif kind == "live_submit_failed":
+                # Hard reject (margin/RMS) — restore day block so restart cannot spam.
+                if last_open is None and (
+                    ev.get("block_opens")
+                    or self._is_hard_live_open_reject(str(ev.get("error") or ""))
+                ):
+                    opens_blocked = True
             elif kind == "close":
                 last_open = None
                 last_trail = None
@@ -511,6 +568,8 @@ class PaperAgent:
         self.last_exit_at = last_exit_at
         self._warn_orphan_live_submit(lines)
         self._restore_thesis_blocks()
+        if opens_blocked and last_open is None:
+            self.live_opens_blocked = True
         if pending_open is not None and last_open is None:
             oid = str(pending_open.get("order_id") or "").strip()
             if oid:
@@ -537,7 +596,7 @@ class PaperAgent:
             opened_at = str(last_open.get("ts") or "")
             opened_dt = _parse_ts(opened_at)
             target_pct, stop_pct, arm_pct, trail_pct, trail_pts = agent_exit_profile(
-                opened_dt or datetime.now(IST)
+                opened_dt or datetime.now(IST), style
             )
             target, stop = initial_target_stop(
                 entry, style, target_pct=target_pct, stop_pct=stop_pct
@@ -552,6 +611,9 @@ class PaperAgent:
                     stop_px = float(last_trail["stop"])
                 trail_armed = bool(last_trail.get("trail_armed", trail_armed))
             realised_at = last_open.get("realised_at_open")
+            hold_raw = str(last_open.get("hold_until") or "").strip()
+            if not hold_raw and opened_dt is not None:
+                hold_raw = agent_hold_until(opened_dt, style).isoformat()
             self.position = AgentPosition(
                 day=str(last_open["day"]),
                 atm=int(last_open["atm"]),
@@ -565,7 +627,7 @@ class PaperAgent:
                 entry=entry,
                 target=float(last_open.get("target") or target),
                 stop=stop_px,
-                hold_until=str(last_open.get("hold_until") or ""),
+                hold_until=hold_raw,
                 opened_at=opened_at,
                 charges_open=float(last_open.get("charges") or 0.0),
                 reason=str(last_open.get("reason") or ""),
@@ -693,11 +755,13 @@ class PaperAgent:
         reason_suffix: str = "",
         event_name: str = "open",
     ) -> dict[str, Any]:
-        target_pct, stop_pct, arm_pct, trail_pct, trail_pts = agent_exit_profile(now)
+        target_pct, stop_pct, arm_pct, trail_pct, trail_pts = agent_exit_profile(
+            now, style
+        )
         target, stop = initial_target_stop(
             entry, style, target_pct=target_pct, stop_pct=stop_pct
         )
-        hold_until = (now + timedelta(minutes=int(self.hold_minutes))).isoformat()
+        hold_until = agent_hold_until(now, style).isoformat()
         charges_open = float(kite_nfo_charges(_open_legs(style, entry, qty))["total"])
         reason = intent.reason
         if reason_suffix:
@@ -1047,6 +1111,37 @@ class PaperAgent:
             order_id=oid,
         )
 
+    @staticmethod
+    def _is_hard_live_open_reject(err: str) -> bool:
+        """Broker refused the open (margin/RMS/reject) — do not retry all day.
+
+        Transient transport / ambiguous fill_timeout are handled elsewhere
+        (pending-order watch). A hard reject must not re-fire every advise cycle.
+        """
+        e = str(err or "").strip().lower()
+        if not e:
+            return False
+        if e.startswith("transport:"):
+            return False
+        # Ambiguous timeout without a terminal reject/cancel — keep watching.
+        if e.startswith("fill_timeout:") and "reject" not in e and "cancel" not in e:
+            return False
+        return any(
+            key in e
+            for key in (
+                "reject",
+                "margin",
+                "insufficient",
+                "order_rejected",
+                "order_cancelled",
+                "order_canceled",
+                "fill_timeout_rejected",
+                "fill_timeout_cancelled",
+                "fill_timeout_canceled",
+                "rms",
+            )
+        )
+
     def _live_open_failure(
         self,
         *,
@@ -1063,6 +1158,10 @@ class PaperAgent:
     ) -> dict[str, Any] | None:
         err = str(exc)
         order_id = getattr(exc, "order_id", "") or ""
+        # No order_id ⇒ place never accepted (typical margin/RMS reject).
+        hard_reject = (not order_id) or self._is_hard_live_open_reject(err)
+        if hard_reject and str(err).lower().startswith("transport:"):
+            hard_reject = False
         self.last_reject = f"live_open_failed:{exc}"
         self._log.warning("agent live open failed: %s", exc)
         self._append(
@@ -1076,6 +1175,7 @@ class PaperAgent:
                 "qty": qty,
                 "error": err,
                 "order_id": order_id or None,
+                "block_opens": bool(hard_reject),
                 "live": True,
                 "live_orders": True,
                 "gates": "agent",
@@ -1084,6 +1184,12 @@ class PaperAgent:
         if not order_id:
             # place_market rejected before an id existed — nothing to adopt.
             self.pending = None
+            if hard_reject:
+                self.live_opens_blocked = True
+                self.last_reject = f"live_opens_blocked:{exc}"
+                self._log.error(
+                    "live opens blocked for day after hard open reject: %s", exc
+                )
             return None
         adopted = self._try_adopt_own_order(
             now=now,
@@ -1100,6 +1206,12 @@ class PaperAgent:
         if adopted is not None:
             return adopted
         self.pending = None
+        if hard_reject:
+            self.live_opens_blocked = True
+            self.last_reject = f"live_opens_blocked:{exc}"
+            self._log.error(
+                "live opens blocked for day after hard open reject: %s", exc
+            )
         return None
 
     def _book_quotes(
@@ -1128,7 +1240,14 @@ class PaperAgent:
         Allowed when estimated net ≥ min_exit_net (take profit past fees) OR
         net ≤ −max_cut_net (cut a real loser / broken thesis before hard stop).
         Blocked in between (e.g. −199 … +139) so micro scratches cannot churn.
+
+        Scalper v2 longs / shorts: never allow agent/LLM early exit — only
+        fixed target/stop/time (or short 20% / 15:14).
         """
+        if pos.style == "short":
+            return False, "short_no_agent_exit"
+        if pos.style == "long" and agent_scalper_v2_enabled():
+            return False, "long_no_agent_exit"
         if mark is None or mark <= 0:
             return False, "missing_mark"
         _gross, _charges, net = self._mark_net_pnl(pos, mark)
@@ -1705,6 +1824,15 @@ class PaperAgent:
         if style_n is None:
             self.last_reject = "invalid_style"
             return {"ok": False, "rejected": "invalid_style"}
+        # Style gates mirror scorecard ALLOW_LONG / ALLOW_SHORT (scalper v2 = long only).
+        from atlas_lite.agent_scorecard import agent_longs_enabled, agent_shorts_enabled
+
+        if style_n == "long" and not agent_longs_enabled():
+            self.last_reject = "longs_disabled"
+            return {"ok": False, "rejected": "longs_disabled"}
+        if style_n == "short" and not agent_shorts_enabled():
+            self.last_reject = "shorts_disabled"
+            return {"ok": False, "rejected": "shorts_disabled"}
         if self.position is not None:
             self.last_reject = "already_open"
             return {"ok": False, "rejected": "already_open"}
@@ -1714,6 +1842,9 @@ class PaperAgent:
         if int(self.max_entries_per_day) > 0 and self.entries_today >= int(self.max_entries_per_day):
             self.last_reject = "max_trades_day"
             return {"ok": False, "rejected": "max_trades_day"}
+        if self.live_orders_enabled and self.live_opens_blocked:
+            self.last_reject = "live_opens_blocked"
+            return {"ok": False, "rejected": "live_opens_blocked"}
         if not in_agent_entry_window(now):
             self.last_reject = "outside_session"
             return {"ok": False, "rejected": "outside_session"}
@@ -1918,9 +2049,13 @@ class PaperAgent:
             ce_m, pe_m = self._book_quotes(book, pos.ce_symbol, pos.pe_symbol)
             mark = ce_m if pos.side == "ce" else pe_m
             self._scrub_stale_last_reject(now=now, spot=spot, mark=mark)
-            # Flatten open book when closed day_pnl + MTM net hits the daily cap
-            # (entry gate alone would otherwise let the open trade push past −₹2k).
-            if mark is not None and float(mark) > 0:
+            # Longs only: MTM day-cap flatten. Shorts must ride 20% stop / 15:14 —
+            # early flatten would cut the winners that pay for stop-outs.
+            if (
+                pos.style != "short"
+                and mark is not None
+                and float(mark) > 0
+            ):
                 _g, _c, open_net = self._mark_net_pnl(pos, float(mark))
                 if float(self.day_pnl) + float(open_net) <= float(self.daily_loss_stop):
                     self.pending = None
@@ -2222,11 +2357,13 @@ class PaperAgent:
                 order_id=order_id,
                 spot=spot,
             )
-        target_pct, stop_pct, arm_pct, trail_pct, trail_pts = agent_exit_profile(now)
+        target_pct, stop_pct, arm_pct, trail_pct, trail_pts = agent_exit_profile(
+            now, style
+        )
         target, stop = initial_target_stop(
             entry, style, target_pct=target_pct, stop_pct=stop_pct
         )
-        hold_until = (now + timedelta(minutes=int(self.hold_minutes))).isoformat()
+        hold_until = agent_hold_until(now, style).isoformat()
         charges_open = float(kite_nfo_charges(_open_legs(style, entry, qty))["total"])
         pos = AgentPosition(
             day=now.strftime("%Y-%m-%d"),
@@ -2378,21 +2515,28 @@ class PaperAgent:
             if session_due:
                 return self._close(now, book, "square_off", marked=False, spot=spot)
             return None
-        self._update_trail(pos, px, now=now)
         if session_due:
             return self._close(now, book, "square_off", exit_px=px, spot=spot)
         if pos.style == "short":
-            if px <= pos.target:
-                return self._close(now, book, "target", exit_px=px, spot=spot)
+            # No take-profit / trail — 20% stop or 15:14 square-off only.
             if px >= pos.stop:
-                reason = "trail" if pos.trail_armed else "stop"
-                return self._close(now, book, reason, exit_px=px, spot=spot)
-        else:
+                return self._close(now, book, "stop", exit_px=px, spot=spot)
+            return None
+        if agent_scalper_v2_enabled():
+            # Scalper v2: +20% / −10% / 30m — no trail.
             if px >= pos.target:
                 return self._close(now, book, "target", exit_px=px, spot=spot)
             if px <= pos.stop:
-                reason = "trail" if pos.trail_armed else "stop"
-                return self._close(now, book, reason, exit_px=px, spot=spot)
+                return self._close(now, book, "stop", exit_px=px, spot=spot)
+            if self._hold_due(now, pos):
+                return self._close(now, book, "time", exit_px=px, spot=spot)
+            return None
+        self._update_trail(pos, px, now=now)
+        if px >= pos.target:
+            return self._close(now, book, "target", exit_px=px, spot=spot)
+        if px <= pos.stop:
+            reason = "trail" if pos.trail_armed else "stop"
+            return self._close(now, book, reason, exit_px=px, spot=spot)
         if self._hold_due(now, pos):
             return self._close(now, book, "time", exit_px=px, spot=spot)
         return None

@@ -286,14 +286,20 @@ def simulate_action(
         return None
     start = _hm_to_min(str(entry["hm"]))
     opened = _dt(str(entry["date"]), str(entry["hm"]))
-    target_pct, stop_pct, arm_pct, trail_pct, trail_pts = agent_exit_profile(opened)
+    target_pct, stop_pct, arm_pct, trail_pct, trail_pts = agent_exit_profile(
+        opened, style
+    )
     target, stop = initial_target_stop(
         entry_px, style, target_pct=target_pct, stop_pct=stop_pct  # type: ignore[arg-type]
     )
     gap = trail_gap_px(entry_px, trail_pct=trail_pct, trail_pts=trail_pts)
     best = entry_px
     armed = False
-    hold_end = min(start + int(HOLD_MINUTES), _hm_to_min(f"{SQUARE_OFF[0]:02d}:{SQUARE_OFF[1]:02d}"))
+    square_min = _hm_to_min(f"{SQUARE_OFF[0]:02d}:{SQUARE_OFF[1]:02d}")
+    if style == "short":
+        hold_end = square_min
+    else:
+        hold_end = min(start + int(HOLD_MINUTES), square_min)
     entry_strike = _row_strike(entry)
     exit_px: float | None = None
     exit_hm: str | None = None
@@ -318,12 +324,8 @@ def simulate_action(
         last_px = px
         last_hm = hm
         if style == "short":
-            best = min(best, px)
-            if not armed and px <= entry_px * (1.0 - arm_pct):
-                armed = True
-            if armed:
-                stop = min(stop, round(best + gap, 2))
-            if px <= target or px >= stop or minute >= hold_end:
+            # Match agent_paper short profile: stop or square-off only.
+            if px >= stop or minute >= hold_end:
                 exit_px = px
                 exit_hm = hm
                 break
