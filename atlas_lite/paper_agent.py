@@ -63,8 +63,11 @@ TRAIL_LEDGER_STEP_MIN = 0.5
 COOLDOWN_MIN = 3
 # After a hard stop, block the same side+style so the LLM cannot immediately re-enter.
 THESIS_COOLDOWN_MIN = 15
-# After ANY close (win or loss), block same side+style — kills chase after a quick trail.
-SETUP_REENTRY_COOLDOWN_MIN = 15
+# After a winning close, block same side+style briefly (no chase). Losses use stop/loss clocks.
+# Env: ATLAS_LITE_AGENT_WIN_REENTRY_COOLDOWN_MIN (preferred) or
+# ATLAS_LITE_AGENT_SETUP_REENTRY_COOLDOWN_MIN (alias). Default 5m (was 15 on every close).
+WIN_REENTRY_COOLDOWN_MIN = 5
+SETUP_REENTRY_COOLDOWN_MIN = WIN_REENTRY_COOLDOWN_MIN
 # After any losing close (agent_exit etc.), shorter same-thesis block.
 LOSS_COOLDOWN_MIN = 10
 # After ANY short close (win or loss), do not re-short the same side for this long.
@@ -75,7 +78,8 @@ SHORT_SPIKE_PCT = 0.05  # 5%
 SHORT_SPIKE_LOOKBACK_MIN = 30
 INTENT_MAX_AGE_S = 120
 MAX_SPOT_DRIFT_PCT = 0.15  # reject if spot moved >0.15% since advise
-DAILY_LOSS_STOP = -5000.0
+# Tight confidence cap until the loosened rules prove themselves on paper/live.
+DAILY_LOSS_STOP = -2000.0
 # LLM agent_exit when estimated net ≥ this (winner) — else trail/target/stop/time.
 MIN_AGENT_EXIT_NET = 140.0
 # …or when estimated net ≤ −this (thesis broken / cut loser before hard stop).
@@ -142,9 +146,16 @@ def agent_thesis_cooldown_min() -> int:
 
 
 def agent_setup_reentry_cooldown_min() -> int:
-    """Minutes to block same side+style after any close (env ATLAS_LITE_AGENT_SETUP_REENTRY_COOLDOWN_MIN)."""
+    """Minutes to block same side+style after a winning close.
+
+    Prefers ``ATLAS_LITE_AGENT_WIN_REENTRY_COOLDOWN_MIN``; falls back to
+    ``ATLAS_LITE_AGENT_SETUP_REENTRY_COOLDOWN_MIN``; default 5.
+    """
+    win_raw = str(os.environ.get("ATLAS_LITE_AGENT_WIN_REENTRY_COOLDOWN_MIN", "") or "").strip()
+    if win_raw:
+        return max(0, _env_int("ATLAS_LITE_AGENT_WIN_REENTRY_COOLDOWN_MIN", WIN_REENTRY_COOLDOWN_MIN))
     return max(
-        0, _env_int("ATLAS_LITE_AGENT_SETUP_REENTRY_COOLDOWN_MIN", SETUP_REENTRY_COOLDOWN_MIN)
+        0, _env_int("ATLAS_LITE_AGENT_SETUP_REENTRY_COOLDOWN_MIN", WIN_REENTRY_COOLDOWN_MIN)
     )
 
 
@@ -1550,7 +1561,7 @@ class PaperAgent:
         spot: float | None,
         close_reason: str,
     ) -> None:
-        """Hard same-setup block after any close — stops chase after a quick trail/target."""
+        """Hard same-setup block after a winning close — stops chase after a quick trail/target."""
         mins = int(self.setup_reentry_cooldown_min)
         if mins <= 0:
             return
@@ -1563,9 +1574,9 @@ class PaperAgent:
             reason="setup_cooldown",
         )
         lesson = (
-            f"closed {pos.style} {pos.side.upper()} ({close_reason}) @ {exit_px} "
+            f"won {pos.style} {pos.side.upper()} ({close_reason}) @ {exit_px} "
             f"(entry {pos.entry}, pnl {pnl}). Same side+style blocked {mins}m "
-            f"(no chase — hard clock)."
+            f"(no chase after win — hard clock)."
         )
         self._append_lesson(
             {
@@ -1907,6 +1918,16 @@ class PaperAgent:
             ce_m, pe_m = self._book_quotes(book, pos.ce_symbol, pos.pe_symbol)
             mark = ce_m if pos.side == "ce" else pe_m
             self._scrub_stale_last_reject(now=now, spot=spot, mark=mark)
+            # Flatten open book when closed day_pnl + MTM net hits the daily cap
+            # (entry gate alone would otherwise let the open trade push past −₹2k).
+            if mark is not None and float(mark) > 0:
+                _g, _c, open_net = self._mark_net_pnl(pos, float(mark))
+                if float(self.day_pnl) + float(open_net) <= float(self.daily_loss_stop):
+                    self.pending = None
+                    self.last_reject = "daily_loss_stop"
+                    return self._close(
+                        now, book, "daily_loss_stop", exit_px=float(mark), spot=spot
+                    )
             if self.pending and self.pending.want_exit:
                 ok, rejected = self._agent_exit_allowed(pos, mark)
                 if not ok:
@@ -2879,16 +2900,17 @@ class PaperAgent:
             )
             event = dict(event_body)
         if not rolling:
-            # Always block same setup after a close (win or loss) — no chase.
-            self._record_setup_reentry_cooldown(
-                now=now,
-                pos=pos,
-                exit_px=exit_px,
-                pnl=pnl,
-                spot=spot,
-                close_reason=str(reason or "close"),
-            )
-            if pnl is not None and pnl < 0:
+            # Win → short same-setup block. Loss → stop (15m) or loss (10m) clocks only.
+            if pnl is not None and pnl >= 0:
+                self._record_setup_reentry_cooldown(
+                    now=now,
+                    pos=pos,
+                    exit_px=exit_px,
+                    pnl=pnl,
+                    spot=spot,
+                    close_reason=str(reason or "close"),
+                )
+            elif pnl is not None and pnl < 0:
                 if reason == "stop":
                     self._record_stop_lesson(
                         now=now, pos=pos, exit_px=exit_px, pnl=pnl, spot=spot

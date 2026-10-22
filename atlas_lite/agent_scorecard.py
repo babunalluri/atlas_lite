@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -14,11 +15,52 @@ Candidate = dict[str, Any]
 
 # Default bar for propose_entry recommendation (raised under cautious/defensive stance).
 MIN_ENTRY_SCORE = 3.0
-# Morning session: higher bar until late-exit profile kicks in (10:30).
-MORNING_MIN_ENTRY_SCORE = 4.0
+# Morning floor (env ATLAS_LITE_AGENT_MORNING_MIN_SCORE). Default = base bar (no extra tighten).
+# Set 4.0 to restore the prior morning raise; 0 disables the morning floor.
+MORNING_MIN_ENTRY_SCORE = 3.0
 MORNING_SCORE_UNTIL = (10, 30)
 # Hard veto long premium when spot vs open clearly fights the side.
-SPOT_AGAINST_LONG_PCT = 0.10
+# Env ATLAS_LITE_AGENT_SPOT_AGAINST_PCT (default 0.20 — was 0.10).
+SPOT_AGAINST_LONG_PCT = 0.20
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = str(os.environ.get(name, "") or "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _env_hhmm(name: str, default: tuple[int, int]) -> tuple[int, int]:
+    raw = str(os.environ.get(name, "") or "").strip()
+    if not raw or ":" not in raw:
+        return default
+    try:
+        h_s, m_s = raw.split(":", 1)
+        hour, minute = int(h_s), int(m_s)
+    except ValueError:
+        return default
+    if hour > 23 or minute > 59:
+        return default
+    return hour, minute
+
+
+def morning_min_entry_score() -> float:
+    """Morning min score floor; ≤0 disables. Env ATLAS_LITE_AGENT_MORNING_MIN_SCORE."""
+    return _env_float("ATLAS_LITE_AGENT_MORNING_MIN_SCORE", MORNING_MIN_ENTRY_SCORE)
+
+
+def morning_score_until() -> tuple[int, int]:
+    """Morning window end (HH:MM IST). Env ATLAS_LITE_AGENT_MORNING_SCORE_UNTIL."""
+    return _env_hhmm("ATLAS_LITE_AGENT_MORNING_SCORE_UNTIL", MORNING_SCORE_UNTIL)
+
+
+def spot_against_long_pct() -> float:
+    """Spot-vs-open hard veto threshold (%). Env ATLAS_LITE_AGENT_SPOT_AGAINST_PCT."""
+    return max(0.0, _env_float("ATLAS_LITE_AGENT_SPOT_AGAINST_PCT", SPOT_AGAINST_LONG_PCT))
 
 
 def _num(value: Any) -> float | None:
@@ -167,7 +209,7 @@ def _context_ist(context: dict[str, Any]) -> datetime | None:
 def _morning_score_window(now: datetime | None) -> bool:
     if now is None:
         return False
-    hh, mm = MORNING_SCORE_UNTIL
+    hh, mm = morning_score_until()
     return (now.hour, now.minute) < (hh, mm)
 
 
@@ -189,8 +231,9 @@ def build_strategy_scorecard(
     min_entry_score = float(daily_review.get("min_entry_score_hint") or MIN_ENTRY_SCORE)
     min_entry_score = max(MIN_ENTRY_SCORE, min_entry_score)
     now_ist = _context_ist(context)
-    if _morning_score_window(now_ist):
-        min_entry_score = max(min_entry_score, MORNING_MIN_ENTRY_SCORE)
+    morn_floor = float(morning_min_entry_score())
+    if morn_floor > 0 and _morning_score_window(now_ist):
+        min_entry_score = max(min_entry_score, morn_floor)
     max_entries_today = daily_review.get("max_entries_today")
     try:
         entries_today = int(agent_book.get("entries_today") or 0)
@@ -479,15 +522,16 @@ def build_strategy_scorecard(
             )
             add(k, -10.0, f"{horizon} avoid: {row.get('reason')}")
     # Hard veto: do not long premium against clear spot-vs-open direction.
-    if spot_dir is not None:
-        if spot_dir <= -float(SPOT_AGAINST_LONG_PCT):
+    veto_pct = float(spot_against_long_pct())
+    if spot_dir is not None and veto_pct > 0:
+        if spot_dir <= -veto_pct:
             blocked_keys.add("long_ce")
             add(
                 "long_ce",
                 -10.0,
                 f"spot_chg_open_pct={spot_dir} against long CE — hard veto",
             )
-        if spot_dir >= float(SPOT_AGAINST_LONG_PCT):
+        if spot_dir >= veto_pct:
             blocked_keys.add("long_pe")
             add(
                 "long_pe",
@@ -635,6 +679,8 @@ def build_strategy_scorecard(
         "min_entry_score": min_entry_score,
         "max_entries_today": max_entries_today,
         "entries_today": entries_today,
+        "morning_min_entry_score": morn_floor if morn_floor > 0 else None,
+        "spot_against_long_pct": veto_pct if veto_pct > 0 else None,
         "inputs": {
             "spot_chg_pct": spot_chg_day,
             "spot_chg_open_pct": spot_dir,

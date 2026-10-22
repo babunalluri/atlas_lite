@@ -617,6 +617,7 @@ class FeedEngine:
                 propose_exit=self._agent_propose_exit,
                 tape_ready=self._agent_tape_ready,
                 credentials=read_llm_credentials(),
+                get_book=lambda: self.book,
             )
 
         self._tasks = [
@@ -2703,6 +2704,12 @@ class FeedEngine:
                         order_busy = False
                 else:
                     _run_agent_frame()
+                # Blocked-signal paper shadows: tick every frame on bound symbols.
+                if self._agent is not None:
+                    try:
+                        self._agent.tick_block_shadows(now=now)
+                    except Exception as exc:  # noqa: BLE001
+                        self._log.warning("agent block shadow tick failed: %s", exc)
                 await asyncio.sleep(interval)
             except asyncio.CancelledError:
                 raise
@@ -3016,6 +3023,8 @@ class FeedEngine:
             "max_pain": max_pain,
             "ce": ce,
             "pe": pe,
+            "ce_symbol": feed.get("ce_symbol"),
+            "pe_symbol": feed.get("pe_symbol"),
             "ce_pe_skew": skew_raw,
             "ce_pe_skew_rich": skew_rich,
             "combo": {

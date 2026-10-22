@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from atlas_lite.agent_block_log import AgentBlockLog
 from atlas_lite.agent_gates import AgentGateStore, KNOWN_BOOKS, normalize_book
 from atlas_lite.agent_memory import build_setup_memory
 from atlas_lite.agent_review import build_daily_review
@@ -345,6 +346,7 @@ class AgentAdvisor:
         propose_exit: Callable[..., dict[str, Any]],
         tape_ready: Callable[[], bool],
         credentials: LlmCredentials | None = None,
+        get_book: Callable[[], Any] | None = None,
     ) -> None:
         self.data_dir = Path(data_dir)
         self.gates = gates
@@ -354,8 +356,10 @@ class AgentAdvisor:
         self._propose_entry = propose_entry
         self._propose_exit = propose_exit
         self._tape_ready = tape_ready
+        self._get_book = get_book
         self.credentials = credentials if credentials is not None else read_llm_credentials()
         self.decisions_path = self.data_dir / "agent_decisions.jsonl"
+        self.block_log = AgentBlockLog(self.data_dir / "agent_blocked_entries.jsonl")
         self.last_decision: dict[str, Any] | None = None
         self.last_expert_choice: dict[str, Any] | None = None
         self.last_error: str | None = None
@@ -365,6 +369,129 @@ class AgentAdvisor:
         self._last_llm_mono = 0.0
         self._last_regime: str | None = None
         self._decision_writes = 0
+        self._blocked_log_keys: set[str] = set()
+
+    @staticmethod
+    def _field_num(field: Any) -> float | None:
+        if field is None or field == "":
+            return None
+        if isinstance(field, dict):
+            field = field.get("value")
+        try:
+            return float(field)
+        except (TypeError, ValueError):
+            return None
+
+    def _lot_size(self) -> int:
+        try:
+            paper = self._get_paper() if callable(self._get_paper) else {}
+            agent = (paper or {}).get("agent") if isinstance(paper, dict) else {}
+            if isinstance(agent, dict) and agent.get("lot_size"):
+                return max(1, int(agent.get("lot_size") or 65))
+        except (TypeError, ValueError):
+            pass
+        return 65
+
+    def tick_block_shadows(self, *, now: datetime | None = None) -> list[dict[str, Any]]:
+        """Advance paper what-if shadows on the bound option symbols (frame tick)."""
+        book = self._get_book() if callable(self._get_book) else None
+        if book is None:
+            return []
+        return self.block_log.on_book(now or datetime.now(IST), book, lot_size=self._lot_size())
+
+    def _tick_block_shadows(self, context: dict[str, Any]) -> None:
+        """Advise-cycle backup tick (prefers book; falls back to context CE/PE)."""
+        closed = self.tick_block_shadows()
+        if closed or (callable(self._get_book) and self._get_book() is not None):
+            return
+        # No book wired (tests): mark via context premiums + symbols if present.
+        ce_sym = str(context.get("ce_symbol") or "") or "ce"
+        pe_sym = str(context.get("pe_symbol") or "") or "pe"
+        marks: dict[str, float] = {}
+        ce_px = self._field_num(context.get("ce"))
+        pe_px = self._field_num(context.get("pe"))
+        if ce_px is not None:
+            marks[ce_sym] = ce_px
+        if pe_px is not None:
+            marks[pe_sym] = pe_px
+        if marks:
+            self.block_log.on_marks(
+                datetime.now(IST),
+                marks=marks,
+                ce_px=ce_px,
+                pe_px=pe_px,
+                lot_size=self._lot_size(),
+            )
+
+    def _log_blocked_entry(
+        self,
+        *,
+        context: dict[str, Any],
+        scorecard: dict[str, Any],
+        rule: str,
+        side: str,
+        style: str,
+        detail: str | None = None,
+        reasons: list[str] | None = None,
+    ) -> None:
+        side_n = str(side or "").strip().lower()
+        entry_px = (
+            self._field_num(context.get("pe"))
+            if side_n == "pe"
+            else self._field_num(context.get("ce"))
+        )
+        ce_sym = str(context.get("ce_symbol") or "").strip() or None
+        pe_sym = str(context.get("pe_symbol") or "").strip() or None
+        opt_sym = pe_sym if side_n == "pe" else ce_sym
+        rec = scorecard.get("recommended") if isinstance(scorecard.get("recommended"), dict) else {}
+        row_reasons = list(reasons or [])
+        if not row_reasons and isinstance(rec, dict):
+            row_reasons = list(rec.get("reasons") or [])[:6]
+        score = rec.get("score") if str(rec.get("side") or "") == side_n else None
+        if score is None:
+            for cand in scorecard.get("candidates") or []:
+                if not isinstance(cand, dict):
+                    continue
+                if str(cand.get("side")) == side_n and str(cand.get("style") or "long") == str(
+                    style or "long"
+                ).lower():
+                    score = cand.get("score")
+                    if not row_reasons:
+                        row_reasons = list(cand.get("reasons") or [])[:6]
+                    break
+        inputs = scorecard.get("inputs") if isinstance(scorecard.get("inputs"), dict) else {}
+        spot_open = self._field_num(context.get("spot_chg_open_pct"))
+        if spot_open is None:
+            spot_open = self._field_num(inputs.get("spot_chg_open_pct"))
+        try:
+            score_f = float(score) if score is not None else None
+        except (TypeError, ValueError):
+            score_f = None
+        day = datetime.now(IST).strftime("%Y-%m-%d")
+        dedupe = f"{day}|{rule}|{str(style or 'long')}|{side_n}"
+        # One paper shadow per day per setup+rule (avoid 2-min advise spam).
+        if dedupe in self._blocked_log_keys:
+            return
+        self._blocked_log_keys.add(dedupe)
+        self.block_log.log_blocked(
+            now=datetime.now(IST),
+            rule=rule,
+            side=side_n,
+            style=str(style or "long"),
+            score=score_f,
+            min_entry_score=self._field_num(scorecard.get("min_entry_score")),
+            spot=self._field_num(context.get("spot")),
+            spot_chg_open_pct=spot_open,
+            atm=int(self._field_num(context.get("atm")) or 0) or None,
+            entry_px=entry_px,
+            option_symbol=opt_sym,
+            ce_symbol=ce_sym,
+            pe_symbol=pe_sym,
+            lot_size=self._lot_size(),
+            reasons=row_reasons,
+            detail=detail,
+            track_paper=True,
+        )
 
     def status(self) -> dict[str, Any]:
         creds = self.credentials
@@ -529,6 +656,8 @@ class AgentAdvisor:
             "max_pain": _field(ctx.get("max_pain"), as_of=as_of),
             "ce": _field(ctx.get("ce"), as_of=as_of, stale=ctx.get("ce") is None),
             "pe": _field(ctx.get("pe"), as_of=as_of, stale=ctx.get("pe") is None),
+            "ce_symbol": ctx.get("ce_symbol"),
+            "pe_symbol": ctx.get("pe_symbol"),
             "ce_pe_skew": _field(ctx.get("ce_pe_skew"), as_of=as_of),
             "combo": ctx.get("combo"),
             "impulse": ctx.get("impulse"),
@@ -599,9 +728,18 @@ class AgentAdvisor:
             style = str(args.get("style") or "long").lower()
             reason = str(args.get("reason") or "")[:300]
             ctx = self.build_context_pack()
+            self._tick_block_shadows(ctx)
             scorecard = ctx.get("scorecard") if isinstance(ctx.get("scorecard"), dict) else {}
             ok_score, score_why = entry_permitted(scorecard, side=side, style=style)
             if not ok_score:
+                self._log_blocked_entry(
+                    context=ctx,
+                    scorecard=scorecard,
+                    rule=str(score_why or "scorecard_reject"),
+                    side=side,
+                    style=style,
+                    detail=f"llm propose_entry rejected: {score_why}",
+                )
                 return {
                     "ok": False,
                     "rejected": score_why,
@@ -612,7 +750,18 @@ class AgentAdvisor:
                     "daily_review_stance": (ctx.get("daily_review") or {}).get("stance"),
                 }
             spot = (ctx.get("spot") or {}).get("value")
-            return self._propose_entry(side=side, style=style, reason=reason, spot=spot)
+            out = self._propose_entry(side=side, style=style, reason=reason, spot=spot)
+            if isinstance(out, dict) and not out.get("ok"):
+                rej = str(out.get("rejected") or out.get("error") or "propose_failed")
+                self._log_blocked_entry(
+                    context=ctx,
+                    scorecard=scorecard,
+                    rule=rej[:80],
+                    side=side,
+                    style=style,
+                    detail=f"llm propose_entry failed: {rej}",
+                )
+            return out
         if name == "propose_exit":
             reason = str(args.get("reason") or "")[:300]
             return self._propose_exit(reason=reason)
@@ -691,6 +840,7 @@ class AgentAdvisor:
     def _advise_scorecard(self, *, dry_run: bool = False) -> dict[str, Any]:
         """Zero-LLM cycle: follow scorecard.recommended; exits stay in paper_agent code."""
         context = self.build_context_pack()
+        self._tick_block_shadows(context)
         paper = self._get_paper() if callable(self._get_paper) else {}
         agent_book = (paper or {}).get("agent") if isinstance(paper, dict) else {}
         if not isinstance(agent_book, dict):
@@ -725,11 +875,31 @@ class AgentAdvisor:
             if not tape_ok:
                 why = "scorecard entry blocked: required_tape_ok=false"
                 rejected = [f"propose_entry_{side}_{style}"]
+                if not dry_run:
+                    self._log_blocked_entry(
+                        context=context,
+                        scorecard=scorecard,
+                        rule="tape_not_ok",
+                        side=side,
+                        style=style,
+                        detail=why,
+                        reasons=list(rec.get("reasons") or []),
+                    )
             else:
                 ok_score, score_why = entry_permitted(scorecard, side=side, style=style)
                 if not ok_score:
                     why = f"scorecard entry rejected: {score_why}"
                     rejected = [f"propose_entry_{side}_{style}"]
+                    if not dry_run:
+                        self._log_blocked_entry(
+                            context=context,
+                            scorecard=scorecard,
+                            rule=str(score_why or "scorecard_reject"),
+                            side=side,
+                            style=style,
+                            detail=why,
+                            reasons=list(rec.get("reasons") or []),
+                        )
                 else:
                     reason = (
                         f"scorecard autopilot {style} {side.upper()} "
@@ -759,11 +929,46 @@ class AgentAdvisor:
                         why = reason
                         rejected = ["wait", "propose_exit"]
                     else:
-                        why = f"propose_entry failed: {entry_out.get('rejected') or entry_out.get('error')}"
+                        rej = str(entry_out.get("rejected") or entry_out.get("error") or "propose_failed")
+                        why = f"propose_entry failed: {rej}"
                         rejected = [f"propose_entry_{side}_{style}"]
+                        if not dry_run:
+                            self._log_blocked_entry(
+                                context=context,
+                                scorecard=scorecard,
+                                rule=rej[:80],
+                                side=side,
+                                style=style,
+                                detail=why,
+                                reasons=list(rec.get("reasons") or []),
+                            )
         else:
             why = f"scorecard recommended {rec.get('action') or 'wait'}"
             rejected = ["propose_entry_ce_long", "propose_entry_pe_long", "propose_entry_ce_short", "propose_entry_pe_short"]
+            # Paper-track the best hard-blocked candidate (spot veto / thesis) if it had agreement.
+            if not dry_run and not (isinstance(pos, dict) and pos):
+                best_blocked: dict[str, Any] | None = None
+                for cand in scorecard.get("candidates") or []:
+                    if not isinstance(cand, dict) or cand.get("action") == "wait":
+                        continue
+                    if not cand.get("blocked") or not cand.get("agreement"):
+                        continue
+                    try:
+                        sc = float(cand.get("score") or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if best_blocked is None or sc > float(best_blocked.get("score") or -1e9):
+                        best_blocked = cand
+                if best_blocked is not None:
+                    self._log_blocked_entry(
+                        context=context,
+                        scorecard=scorecard,
+                        rule="scorecard_blocked_candidate",
+                        side=str(best_blocked.get("side") or ""),
+                        style=str(best_blocked.get("style") or "long"),
+                        detail="recommended wait; tracking best blocked candidate",
+                        reasons=list(best_blocked.get("reasons") or []),
+                    )
 
         expert = {
             "ok": True,

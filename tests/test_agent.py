@@ -731,17 +731,19 @@ def test_paper_agent_opens_on_fresh_intent(tmp_path: Path) -> None:
     assert bot.position is not None
 
 
-def test_agent_daily_loss_stop_default_is_5000(monkeypatch) -> None:
+def test_agent_daily_loss_stop_default_is_2000(monkeypatch) -> None:
     monkeypatch.delenv("ATLAS_LITE_AGENT_DAILY_LOSS_STOP", raising=False)
     monkeypatch.delenv("ATLAS_LITE_AGENT_MAX_TRADES_DAY", raising=False)
     from atlas_lite.paper_agent import agent_daily_loss_stop, agent_max_entries_per_day
 
-    assert agent_daily_loss_stop() == -5000.0
+    assert agent_daily_loss_stop() == -2000.0
     assert agent_max_entries_per_day() == 0  # unlimited by default
-    monkeypatch.setenv("ATLAS_LITE_AGENT_DAILY_LOSS_STOP", "5000")
+    monkeypatch.setenv("ATLAS_LITE_AGENT_DAILY_LOSS_STOP", "2000")
     monkeypatch.setenv("ATLAS_LITE_AGENT_MAX_TRADES_DAY", "8")
-    assert agent_daily_loss_stop() == -5000.0
+    assert agent_daily_loss_stop() == -2000.0
     assert agent_max_entries_per_day() == 8
+    monkeypatch.setenv("ATLAS_LITE_AGENT_DAILY_LOSS_STOP", "5000")
+    assert agent_daily_loss_stop() == -5000.0
 
 
 def test_agent_scalp_timing_defaults(monkeypatch) -> None:
@@ -980,9 +982,24 @@ def test_strategy_scorecard_rejects_ce_into_intraday_selloff() -> None:
     assert entry_permitted(card2, side="pe", style="long")[0] is True
 
 
-def test_strategy_scorecard_morning_min_score_floor() -> None:
+def test_strategy_scorecard_morning_min_score_floor(monkeypatch) -> None:
     from atlas_lite.agent_scorecard import build_strategy_scorecard
 
+    # Default week: morning floor == base bar (no extra tighten).
+    morning_default = build_strategy_scorecard(
+        {
+            "as_of": "2026-10-22T09:50:00+05:30",
+            "spot_chg_open_pct": 0.4,
+            "adx": 28,
+            "adx_regime": "trend",
+            "pdi": 30,
+            "mdi": 15,
+            "combo": {"side": "B", "signal": None},
+        }
+    )
+    assert morning_default["min_entry_score"] == 3.0
+
+    monkeypatch.setenv("ATLAS_LITE_AGENT_MORNING_MIN_SCORE", "4")
     morning = build_strategy_scorecard(
         {
             "as_of": "2026-10-22T09:50:00+05:30",
@@ -1007,6 +1024,27 @@ def test_strategy_scorecard_morning_min_score_floor() -> None:
         }
     )
     assert late["min_entry_score"] == 3.0
+
+
+def test_strategy_scorecard_mild_open_dip_not_vetoed() -> None:
+    """Default spot veto is 0.20% — mild dips are score-penalized, not hard-blocked."""
+    from atlas_lite.agent_scorecard import build_strategy_scorecard
+
+    card = build_strategy_scorecard(
+        {
+            "as_of": "2026-10-22T11:00:00+05:30",
+            "spot_chg_open_pct": -0.15,
+            "adx": 28,
+            "adx_regime": "trend",
+            "pdi": 30,
+            "mdi": 15,
+            "combo": {"side": "B", "signal": None},
+        }
+    )
+    assert card.get("spot_against_long_pct") == 0.20
+    ce = next(c for c in card["candidates"] if c.get("side") == "ce" and c.get("style") == "long")
+    assert ce["blocked"] is False
+    assert "hard veto" not in " ".join(ce.get("reasons") or [])
 
 
 def test_strategy_scorecard_missing_open_is_not_day_chg_direction() -> None:
@@ -1579,20 +1617,20 @@ def test_paper_agent_trailing_stop_long(tmp_path: Path) -> None:
     assert closed is not None
     assert closed["reason"] == "trail"
     assert closed["style"] == "long"
-    # No chase: same setup blocked for setup_reentry_cooldown after a trail win.
+    # No chase: same setup blocked for win reentry cooldown (~5m) after a trail win.
     again = bot.propose_entry(
         side="ce",
         style="long",
         reason="chase",
         spot=22600.0,
-        now=now + timedelta(minutes=5),
+        now=now + timedelta(minutes=5),  # 3m after close @ +2
     )
     assert again.get("ok") is False
     assert again.get("rejected") == "same_thesis_cooldown"
 
 
 def test_paper_agent_no_chase_after_trail_win(tmp_path: Path) -> None:
-    """Mirror 2026-10-22: trail win then same-setup re-entry a few minutes later."""
+    """Trail win → same-setup blocked ~5m; other side still allowed."""
     class _Book:
         def __init__(self) -> None:
             self.px = 100.0
@@ -1604,7 +1642,7 @@ def test_paper_agent_no_chase_after_trail_win(tmp_path: Path) -> None:
         path=tmp_path / "paper_agent.jsonl",
         lot_size=65,
         cooldown_min=1,
-        setup_reentry_cooldown_min=15,
+        setup_reentry_cooldown_min=5,
     )
     now = datetime(2026, 10, 22, 9, 46, tzinfo=IST)
     book = _Book()
@@ -1642,12 +1680,21 @@ def test_paper_agent_no_chase_after_trail_win(tmp_path: Path) -> None:
         spot=22650.0,
     )
     assert closed is not None and closed["reason"] == "trail"
-    # ~3.5m later (today's chase timing) — must stay blocked; PE still allowed.
-    t = now + timedelta(minutes=6)
+    # 3m after close — still blocked; PE allowed.
+    t = now + timedelta(minutes=5)
     blocked = bot.propose_entry(side="ce", style="long", reason="chase", spot=22650.0, now=t)
     assert blocked.get("rejected") == "same_thesis_cooldown"
     other = bot.propose_entry(side="pe", style="long", reason="flip", spot=22650.0, now=t)
     assert other.get("ok") is True
+    # After 5m win block — same setup allowed again.
+    later = bot.propose_entry(
+        side="ce",
+        style="long",
+        reason="reenter",
+        spot=22650.0,
+        now=now + timedelta(minutes=8),
+    )
+    assert later.get("ok") is True
 
 
 def test_paper_agent_trail_survives_restore(tmp_path: Path) -> None:
@@ -2304,6 +2351,61 @@ def test_paper_agent_scrubs_stale_outside_session_and_daily_loss(tmp_path: Path)
     assert recovered["last_reject"] is None
 
 
+def test_paper_agent_daily_loss_flattens_open_mtm(tmp_path: Path) -> None:
+    """Closed day_pnl + open MTM net at the cap must flatten, not wait for stop."""
+
+    class _Book:
+        def __init__(self) -> None:
+            self.px = 100.0
+
+        def get(self, symbol: str):
+            return {"last_price": self.px}
+
+    bot = PaperAgent(
+        path=tmp_path / "paper_agent.jsonl",
+        lot_size=65,
+        daily_loss_stop=-2000.0,
+        cooldown_min=0,
+    )
+    bot.day_pnl = -1500.0
+    now = datetime(2026, 10, 22, 11, 0, tzinfo=IST)
+    book = _Book()
+    bot.propose_entry(side="ce", style="long", reason="mtm", spot=22600.0, now=now)
+    opened = bot.on_frame(
+        now=now + timedelta(seconds=5),
+        feed={},
+        book=book,
+        ce_symbol="NFO:XCE",
+        pe_symbol="NFO:XPE",
+        atm=22600,
+        allow_new_entries=True,
+        spot=22600.0,
+    )
+    assert opened and opened["event"] == "open"
+    assert bot.position is not None
+    # ~−10 pts → open net ≈ −₹650+charges; with −1500 closed → under −2000.
+    book.px = 90.0
+    closed = bot.on_frame(
+        now=now + timedelta(minutes=1),
+        feed={},
+        book=book,
+        ce_symbol="NFO:XCE",
+        pe_symbol="NFO:XPE",
+        atm=22600,
+        allow_new_entries=True,
+        spot=22600.0,
+    )
+    assert closed is not None
+    assert closed["reason"] == "daily_loss_stop"
+    assert bot.position is None
+    assert bot.day_pnl <= -2000.0
+    # No new entries while under the cap.
+    again = bot.propose_entry(
+        side="pe", style="long", reason="blocked", spot=22600.0, now=now + timedelta(minutes=2)
+    )
+    assert again.get("rejected") == "daily_loss_stop"
+
+
 def test_paper_agent_fee_floor_blocks_micro_exit(tmp_path: Path) -> None:
     class _Book:
         def __init__(self) -> None:
@@ -2595,3 +2697,65 @@ def test_late_exit_profile_is_fixed_at_the_fill(tmp_path: Path) -> None:
     assert morning.position is not None
     assert morning.position.trail_arm_pct == 0.04
     assert morning.position.trail_pct == 0.03
+
+
+def test_agent_block_log_paper_shadow(tmp_path: Path) -> None:
+    from atlas_lite.agent_block_log import AgentBlockLog
+
+    log = AgentBlockLog(tmp_path / "agent_blocked_entries.jsonl")
+    now = datetime(2026, 10, 22, 10, 0, tzinfo=IST)  # morning exit profile (+10%)
+    sym = "NFO:NIFTY22600CE"
+    row = log.log_blocked(
+        now=now,
+        rule="same_thesis_cooldown",
+        side="ce",
+        style="long",
+        score=4.0,
+        entry_px=100.0,
+        option_symbol=sym,
+        ce_symbol=sym,
+        pe_symbol="NFO:NIFTY22600PE",
+        spot=22600.0,
+        atm=22600,
+        reasons=["unit test"],
+    )
+    assert row["paper_status"] == "open"
+    assert row["option_symbol"] == sym
+    # ATM rolls: different strike CE must not move this shadow.
+    closed = log.on_marks(
+        now + timedelta(minutes=1),
+        marks={sym: 111.0, "NFO:NIFTY22700CE": 50.0},
+        lot_size=65,
+    )
+    assert len(closed) == 1
+    assert closed[0]["paper_exit_reason"] == "target"
+    assert closed[0]["option_symbol"] == sym
+    assert closed[0]["paper_pnl"] is not None
+    assert closed[0]["charges"] is not None
+    lines = (tmp_path / "agent_blocked_entries.jsonl").read_text().strip().splitlines()
+    assert len(lines) == 2
+
+
+def test_agent_block_log_persists_shadows(tmp_path: Path) -> None:
+    from atlas_lite.agent_block_log import AgentBlockLog
+
+    path = tmp_path / "agent_blocked_entries.jsonl"
+    now = datetime(2026, 10, 22, 10, 0, tzinfo=IST)
+    sym = "NFO:NIFTY22600CE"
+    first = AgentBlockLog(path)
+    first.log_blocked(
+        now=now,
+        rule="spot_veto",
+        side="ce",
+        style="long",
+        entry_px=100.0,
+        option_symbol=sym,
+        ce_symbol=sym,
+        atm=22600,
+    )
+    assert first.open_count() == 1
+    restored = AgentBlockLog(path)
+    assert restored.open_count() == 1
+    closed = restored.on_marks(now + timedelta(minutes=1), marks={sym: 111.0})
+    assert len(closed) == 1
+    assert AgentBlockLog(path).open_count() == 0
