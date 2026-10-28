@@ -31,14 +31,14 @@ pip install -r requirements.txt
 **Chicken-and-egg:** you need SSH into OCI once. Pick one:
 
 1. **OCI Console** → Compute instance → **Cloud Shell / Console connection** (or add this laptop’s `ssh-ed25519.pub` to `opc` authorized_keys for one login), **or**
-2. If you already have the OCI key on a USB/AirDrop once, put it at `~/MyWork/atlas/keys/atlas-oci.key.key` and skip to the `scp` below.
+2. If you already have the OCI key on a USB/AirDrop once, put it at `~/MyWork/OCI/atlas-oci.key.key` and skip to the `scp` below.
 
 Download the pack (from new laptop, after you can SSH as `opc`):
 
 ```bash
-mkdir -p ~/MyWork/atlas/keys /tmp/atlas-migrate
+mkdir -p ~/MyWork/OCI /tmp/atlas-migrate
 # If you already have the key:
-scp -i ~/MyWork/atlas/keys/atlas-oci.key.key -o IdentitiesOnly=yes \
+scp -i ~/MyWork/OCI/atlas-oci.key.key -o IdentitiesOnly=yes \
   opc@137.23.61.107:~/atlas-quant-migrate.tgz /tmp/atlas-quant-migrate.tgz
 
 # Or, from OCI console as opc, then scp/download that file to the new Mac.
@@ -50,11 +50,11 @@ scp -i ~/MyWork/atlas/keys/atlas-oci.key.key -o IdentitiesOnly=yes \
 tar -xzf /tmp/atlas-quant-migrate.tgz -C /tmp
 PACK=/tmp/atlas-quant-migrate
 
-mkdir -p ~/MyWork/atlas/keys
-cp -p "$PACK/keys/atlas-oci.key.key" ~/MyWork/atlas/keys/
+mkdir -p ~/MyWork/OCI
+cp -p "$PACK/keys/atlas-oci.key.key" ~/MyWork/OCI/
 cp -p "$PACK/secrets/kite_credentials" ~/MyWork/atlas_lite/
 cp -p "$PACK/secrets/llm_credentials" ~/MyWork/atlas_lite/ 2>/dev/null || true
-chmod 600 ~/MyWork/atlas/keys/atlas-oci.key.key \
+chmod 600 ~/MyWork/OCI/atlas-oci.key.key \
          ~/MyWork/atlas_lite/kite_credentials
 chmod 600 ~/MyWork/atlas_lite/llm_credentials 2>/dev/null || true
 
@@ -75,7 +75,7 @@ rsync -a "$PACK/cursor-project/" \
 ### D. Wipe the pack from OCI (do immediately)
 
 ```bash
-ssh -i ~/MyWork/atlas/keys/atlas-oci.key.key -o IdentitiesOnly=yes \
+ssh -i ~/MyWork/OCI/atlas-oci.key.key -o IdentitiesOnly=yes \
   opc@137.23.61.107 'rm -f ~/atlas-quant-migrate.tgz && ls ~/atlas-quant-migrate.tgz 2>&1 || echo pack_removed'
 rm -rf /tmp/atlas-quant-migrate /tmp/atlas-quant-migrate.tgz
 ```
@@ -84,9 +84,9 @@ rm -rf /tmp/atlas-quant-migrate /tmp/atlas-quant-migrate.tgz
 
 ```bash
 cd ~/MyWork/atlas_lite
-test -f kite_credentials && test -f ~/MyWork/atlas/keys/atlas-oci.key.key && echo secrets_ok
+test -f kite_credentials && test -f ~/MyWork/OCI/atlas-oci.key.key && echo secrets_ok
 
-ssh -i ~/MyWork/atlas/keys/atlas-oci.key.key -o IdentitiesOnly=yes \
+ssh -i ~/MyWork/OCI/atlas-oci.key.key -o IdentitiesOnly=yes \
   opc@137.23.61.107 \
   'cd ~/atlas_lite && docker compose ps && curl -fsS http://127.0.0.1:3000/health'
 
@@ -104,7 +104,7 @@ Open `~/MyWork/atlas_lite` in Cursor. Confirm Live in UI before trading.
 |--------------|--------------------|
 | `secrets/kite_credentials` | `~/MyWork/atlas_lite/kite_credentials` |
 | `secrets/llm_credentials` | `~/MyWork/atlas_lite/llm_credentials` |
-| `keys/atlas-oci.key.key` | `~/MyWork/atlas/keys/atlas-oci.key.key` |
+| `keys/atlas-oci.key.key` | `~/MyWork/OCI/atlas-oci.key.key` |
 | `cursor-project/` | `~/.cursor/projects/...atlas-lite/` |
 | `repo-local/data/` | `~/MyWork/atlas_lite/data/` |
 | `docs/` | already also in Git under `doc/` |
@@ -119,7 +119,7 @@ Quant-only wipe (not whole laptop):
 
 ```bash
 rm -rf ~/MyWork/atlas_lite
-rm -rf ~/MyWork/atlas/keys
+rm -rf ~/MyWork/OCI
 rm -rf ~/.cursor/projects/Users-babunalluri-MyWork-atlas-lite
 rm -f /tmp/atlas-quant-migrate.tgz
 ```

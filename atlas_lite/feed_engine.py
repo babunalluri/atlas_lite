@@ -279,6 +279,11 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
         "cooldown / daily loss stop",
         "+10% target / −6% stop / trail after +4% · hold ≤20m · agent_exit · flat 15:14",
     ),
+    "ai_agent": (
+        "model paper book · opens only when promoted+approved · else shadow fills · "
+        "1 lot · max 8/day · daily loss stop",
+        "target / stop / trail / time · shadow_open/close until approval · flat 15:14",
+    ),
 }
 
 
@@ -3139,6 +3144,13 @@ class FeedEngine:
             book, mode, until=until, reason=reason, source=source  # type: ignore[arg-type]
         )
 
+    def approve_ai_agent(self) -> dict[str, Any]:
+        """Accept the current promoted AI-agent fit for real paper opens."""
+        book = self._paper_ai_agent
+        if book is None:
+            return {"ok": False, "error": "ai_agent_disabled"}
+        return book.approve()
+
     def set_agent_live(self, enabled: bool, *, source: str = "ui") -> dict[str, Any]:
         """Enable or disable real Kite orders for agent_paper. Off by default."""
         if self._agent_live is None:
@@ -3305,6 +3317,9 @@ class FeedEngine:
                 "live_orders": False,
                 "book": AI_AGENT_STRATEGY,
                 "name": "AI agent",
+                "promoted": False,
+                "approved": False,
+                "can_open": False,
             }
         else:
             nifty_nb = self.notebooks.get("nifty")
@@ -3330,8 +3345,10 @@ class FeedEngine:
                 return value
         return None
 
-    _PAPER_OPEN_EVENTS = frozenset({"open", "reentry", "live_adopt"})
-    _PAPER_CLOSE_EVENTS = frozenset({"close", "close_vertical", "close_set", "live_partial_close"})
+    _PAPER_OPEN_EVENTS = frozenset({"open", "reentry", "live_adopt", "shadow_open"})
+    _PAPER_CLOSE_EVENTS = frozenset(
+        {"close", "close_vertical", "close_set", "live_partial_close", "shadow_close"}
+    )
 
     def list_paper_trades(
         self,

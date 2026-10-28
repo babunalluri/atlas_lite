@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-KEY="${ATLAS_OCI_KEY:-/Users/babunalluri/MyWork/atlas/keys/atlas-oci.key.key}"
+KEY="${ATLAS_OCI_KEY:-/Users/babunalluri/MyWork/OCI/atlas-oci.key.key}"
 HOST="${ATLAS_OCI_HOST:-opc@137.23.61.107}"
 REMOTE_DIR="${ATLAS_LITE_OCI_DIR:-~/atlas_lite}"
 STOP_ATLAS="${STOP_ATLAS:-1}"

@@ -173,7 +173,7 @@ def _sync_credentials_to_oci(path: Path) -> None:
         return
     key = os.environ.get(
         "ATLAS_OCI_KEY",
-        str(Path.home() / "MyWork/atlas/keys/atlas-oci.key.key"),
+        str(Path.home() / "MyWork/OCI/atlas-oci.key.key"),
     )
     host = os.environ.get("ATLAS_OCI_HOST", "opc@137.23.61.107")
     remote = os.environ.get("ATLAS_LITE_OCI_DIR", "~/atlas_lite/kite_credentials")

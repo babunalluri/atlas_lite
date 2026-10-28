@@ -2365,6 +2365,11 @@
       </div>
       <div class="history-detail" id="agentLiveLine">Live: off (paper only)</div>
       <div class="history-detail" id="agentPositionLine">Agent book: —</div>
+      <div class="history-detail" id="aiAgentLine">AI agent book: —</div>
+      <div class="history-toolbar" style="margin-top:0;">
+        <button type="button" id="aiAgentApproveBtn" title="Accept promoted model for real paper opens (not shadow)">Approve AI agent</button>
+        <span class="history-meta" id="aiAgentMeta">Promoted fit still needs approval before paper opens</span>
+      </div>
       <div class="history-detail" id="agentMacroLine">Macro: —</div>
       <div class="history-detail" id="agentDecision">Last cycle: —</div>
       <div class="history-table-wrap">
@@ -6836,6 +6841,59 @@
       }).join("");
     }
 
+    function renderAiAgentBook(ai) {
+      const line = document.getElementById("aiAgentLine");
+      const meta = document.getElementById("aiAgentMeta");
+      const btn = document.getElementById("aiAgentApproveBtn");
+      if (!line) return;
+      const promoted = !!ai.promoted;
+      const approved = !!ai.approved;
+      const canOpen = !!ai.can_open;
+      const shadow = !!ai.shadow;
+      const pos = ai.position;
+      let state = "off";
+      if (!ai.enabled) state = "disabled";
+      else if (canOpen) state = "paper ready";
+      else if (promoted && !approved) state = "promoted · needs approval (shadow only)";
+      else if (!promoted) state = "not promoted (shadow only)";
+      let posText = "FLAT";
+      if (pos) {
+        posText = `OPEN ${String(pos.style || "").toUpperCase()} ${String(pos.side || "").toUpperCase()} @ ${pos.entry}`;
+      } else if (shadow) {
+        posText = "SHADOW open";
+      }
+      line.textContent =
+        `AI agent · ${state} · ${posText} · entries ${ai.entries_today ?? 0} · day PnL ${ai.day_pnl ?? 0}` +
+        (ai.last_reject ? ` · ${ai.last_reject}` : "") +
+        (ai.test_net != null ? ` · test_net ${ai.test_net}` : "");
+      if (meta) {
+        if (canOpen) meta.textContent = "Approved · real paper opens enabled";
+        else if (promoted) meta.textContent = "Promoted fit — Approve to enable paper opens (shadow until then)";
+        else meta.textContent = "Model not promoted — shadow fills only";
+      }
+      if (btn) {
+        btn.disabled = !promoted || approved;
+        btn.textContent = approved ? "AI agent approved" : "Approve AI agent";
+      }
+    }
+
+    async function approveAiAgent() {
+      const meta = document.getElementById("aiAgentMeta");
+      const resp = await fetch("/api/paper/ai_agent/approve", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: atlasApiHeaders(),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || data.ok === false) {
+        if (meta) meta.textContent = `Approve failed: ${data.detail || data.error || resp.status}`;
+        throw new Error(data.detail || data.error || `HTTP ${resp.status}`);
+      }
+      if (meta) meta.textContent = "Approved · paper opens enabled from next session cycle";
+      await loadAgentPanel();
+      return data;
+    }
+
     function renderAgentLive(st, paper) {
       const liveEl = document.getElementById("agentLiveLine");
       const toggle = document.getElementById("agentLiveToggle");
@@ -7004,6 +7062,7 @@
             posEl.textContent = `Agent book FLAT · entries today ${ag.entries_today ?? 0} · day PnL ${ag.day_pnl ?? 0}`;
           }
         }
+        renderAiAgentBook(paper.ai_agent || {});
         if (macroEl) {
           macroEl.textContent =
             `Macro as_of ${macro.fetched_at || "—"} · crude ${fmtMacroPct(macro.crude)} · gold ${fmtMacroPct(macro.gold)} · USDINR ${fmtMacroPct(macro.usdinr)} · ES ${fmtMacroPct(macro.es_futures)} · headlines ${((macro.headlines || []).length)}`;
@@ -7050,6 +7109,19 @@
     document.getElementById("agentClose")?.addEventListener("click", () => { setAgentOpen(false); });
     document.getElementById("agentBackdrop")?.addEventListener("click", () => { setAgentOpen(false); });
     document.getElementById("agentRefreshBtn")?.addEventListener("click", () => { loadAgentPanel(); });
+    document.getElementById("aiAgentApproveBtn")?.addEventListener("click", async () => {
+      const meta = document.getElementById("aiAgentMeta");
+      const ok = window.confirm(
+        "Approve the promoted AI agent model?\n\nThis enables real paper opens (not only shadow) for the current fit. A later refit will need approval again.",
+      );
+      if (!ok) return;
+      try {
+        if (meta) meta.textContent = "Approving…";
+        await approveAiAgent();
+      } catch (err) {
+        if (meta) meta.textContent = String(err?.message || err);
+      }
+    });
     document.getElementById("agentLiveToggle")?.addEventListener("change", async (ev) => {
       const toggle = ev.target;
       const want = !!toggle?.checked;

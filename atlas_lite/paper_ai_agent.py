@@ -193,6 +193,38 @@ class PaperAiAgent:
     def can_open(self) -> bool:
         return self.promoted and self.approved
 
+    def approve(self, *, trained_at: str | None = None) -> dict[str, Any]:
+        """Accept the current fit so paper opens (not only shadow) can run.
+
+        Writes ``ai_agent_approved.txt`` with this model's ``trained_at``. A later
+        refit clears approval until someone accepts the new stamp.
+        """
+        stamp = str(trained_at or (self.model or {}).get("trained_at") or "").strip()
+        if not stamp:
+            return {"ok": False, "error": "no_trained_at", "approved": False, "promoted": self.promoted}
+        if not self.promoted:
+            return {
+                "ok": False,
+                "error": "not_promoted",
+                "approved": False,
+                "promoted": False,
+                "trained_at": stamp,
+            }
+        path = self._approval_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(stamp + "\n", encoding="utf-8")
+        except OSError as exc:
+            return {"ok": False, "error": str(exc), "approved": False, "promoted": self.promoted}
+        return {
+            "ok": True,
+            "approved": self.approved,
+            "promoted": self.promoted,
+            "can_open": self.can_open,
+            "trained_at": stamp,
+            "path": str(path),
+        }
+
     def _weights(self) -> dict[str, list[float]] | None:
         if not self.model:
             return None
@@ -915,7 +947,9 @@ class PaperAiAgent:
             "enabled": True,
             "promoted": self.promoted,
             "approved": self.approved,
+            "can_open": self.can_open,
             "shadow": self.shadow is not None,
+            "trained_at": report.get("trained_at"),
             "max_entries_per_day": self.max_entries_per_day,
             "model_reason": report.get("reason"),
             "test_net": report.get("test_net"),

@@ -286,6 +286,21 @@ async def api_paper_trades(
     return await asyncio.to_thread(_engine.list_paper_trades, limit=limit, day=day, book=book)
 
 
+@app.post("/api/paper/ai_agent/approve")
+async def api_paper_ai_agent_approve(
+    request: Request,
+    x_atlas_token: Optional[str] = Header(default=None, alias="X-Atlas-Token"),
+) -> dict[str, Any]:
+    """Accept the current promoted AI-agent model so paper opens (not only shadow) run."""
+    _agent_write_authorized(request, x_atlas_token=x_atlas_token)
+    if _engine is None:
+        raise HTTPException(status_code=503, detail="engine not started")
+    out = await asyncio.to_thread(_engine.approve_ai_agent)
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or "approve_failed")
+    return out
+
+
 @app.get("/api/agent")
 async def api_agent_status() -> dict[str, Any]:
     """Agent status, gates, last decision, and live-orders flag."""

@@ -643,3 +643,50 @@ def test_book_day_marks_estimated_pnl(tmp_path: Path) -> None:
     assert row["pnl_total"] == 2900.0
     assert row["pnl_estimated"] is True
     assert out["open_count"] == 0
+
+
+def test_list_paper_trades_includes_ai_agent_shadow_fills(tmp_path: Path) -> None:
+    (tmp_path / "paper_ai_agent.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "ts": "2026-10-28T09:46:00+05:30",
+                        "day": "2026-10-28",
+                        "event": "shadow_open",
+                        "strategy": "ai_agent",
+                        "side": "ce",
+                        "style": "short",
+                        "symbol": "NFO:NIFTY26N0322600CE",
+                        "entry": 218.0,
+                        "qty": 65,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "ts": "2026-10-28T12:45:00+05:30",
+                        "day": "2026-10-28",
+                        "event": "shadow_close",
+                        "strategy": "ai_agent",
+                        "side": "ce",
+                        "style": "short",
+                        "symbol": "NFO:NIFTY26N0322600CE",
+                        "entry": 218.0,
+                        "exit": 262.3,
+                        "pnl": -2962.82,
+                        "reason": "stop",
+                        "qty": 65,
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    out = _engine(tmp_path).list_paper_trades(limit=20)
+    assert "ai_agent" in out["books"]
+    assert out["closed_count"] == 1
+    assert out["trades"][0]["event"] == "shadow_close"
+    assert out["trades"][0]["pnl"] == -2962.82
+    legend = FeedEngine._paper_book_legend("ai_agent")
+    assert "promoted" in legend.lower() or "Entry:" in legend
