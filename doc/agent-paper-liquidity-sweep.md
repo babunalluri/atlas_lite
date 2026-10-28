@@ -1,6 +1,6 @@
 # Agent paper — liquidity-sweep handling
 
-Status: planned. **Not implemented.** No code in this repo was changed for this note.
+Status: planned. **Not implemented.** See also [factor-paper-book.md](factor-paper-book.md) (2026-10-24), which plans a sweep *setup* in a separate book. No code in this repo was changed for this note.
 Do not deploy, commit, or wire this until it is built and explicitly asked for.
 
 Paper book only: **`agent_paper`** (`atlas_lite/paper_agent.py` and the scorecard path that opens it).
@@ -8,7 +8,7 @@ Do not apply these gates to the AI agent, iron fly, short straddle, short IC, th
 
 ## Why
 
-Large algos often show up as a fast premium sweep: a fill that is already late, then a stop a few seconds later. On 2026-10-19 the scorecard book stopped a long put in about 20 seconds (−₹501) and trailed a short call in seconds. The open sweep before 09:45 is already outside the entry clock. The remaining problem is entering while the option is still running, or right after a shock bar.
+Large algos often show up as a fast premium sweep: a fill that is already late, then a stop a few seconds later. On 2026-10-19 the scorecard book stopped a long put in about 20 seconds (−₹501) and trailed a short call in seconds. The open sweep before 09:30 is already outside the entry clock. The remaining problem is entering while the option is still running, or right after a shock bar.
 
 ## In scope (two gates only)
 
@@ -35,20 +35,20 @@ Proposed rule (exact numbers to confirm before coding):
 - Measure the last **1–3 minutes** of spot range and/or ATM CE+PE (or the side under consideration).
 - If that move is above a tape-backed threshold (to be set from recordings, not from one day alone), set `shock_until` = now + **N minutes** (suggested start: **3 minutes**).
 - While `now < shock_until`, reject new entries. Suggested reason: `shock_cooldown`.
-- Do not change stops, targets, trails, or the 09:45–15:00 entry window for this gate.
+- Do not change stops, targets, trails, or the 09:30–12:00 entry window for this gate.
 
 ## Out of scope (do not do as part of this work)
 
 - Do not add ICT order blocks, equal levels, PDH/PDL, premium/discount, PO3, OTE, or a fixed 15-point ICT stop.
 - Do not widen the stop or trail off one bad day.
 - Do not raise size above 1 lot / qty 65.
-- Do not change `CAPITAL` (₹2L), `DAILY_LOSS_STOP` (−₹5,000), or the daily review stance rules (`agent_review.py`).
+- Do not change capital (₹20k margin), `DAILY_LOSS_STOP` (−₹2,000), or the daily review stance rules (`agent_review.py`).
 - Do not change AI agent entry rules beyond what is already deployed (closed-minute score + rising short skip).
 - Do not retune fly, straddle, short IC, theta, or ICT off this document.
 
 ## What already helps (leave alone)
 
-- Entry clock starts at **09:45** (open sweep mostly skipped).
+- Entry clock starts at **09:30** (open sweep mostly skipped).
 - Scorecard needs **agreement** plus min score.
 - After a stop, that setup is on the **day avoid** list.
 - One position at a time; cooldown after exit.
