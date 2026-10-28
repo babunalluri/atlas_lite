@@ -685,8 +685,13 @@ def test_list_paper_trades_includes_ai_agent_shadow_fills(tmp_path: Path) -> Non
     )
     out = _engine(tmp_path).list_paper_trades(limit=20)
     assert "ai_agent" in out["books"]
-    assert out["closed_count"] == 1
+    # Shadow fills are visible but do not inflate paper PnL / closed counts.
+    assert out["closed_count"] == 0
+    assert out["pnl_total"] is None
+    assert out["shadow_closed_count"] == 1
+    assert out["shadow_pnl_total"] == -2962.82
     assert out["trades"][0]["event"] == "shadow_close"
+    assert out["trades"][0]["shadow"] is True
     assert out["trades"][0]["pnl"] == -2962.82
     legend = FeedEngine._paper_book_legend("ai_agent")
     assert "promoted" in legend.lower() or "Entry:" in legend

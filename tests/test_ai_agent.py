@@ -660,3 +660,102 @@ def test_a_missing_quote_is_retried_on_the_same_bar(tmp_path) -> None:
     opened = paper.on_frame(now=_stamp("2026-10-19", "11:35").replace(second=1), **frame)
     assert opened is not None and opened["event"] == "shadow_open"
     assert opened["entry"] == 80.0
+
+
+def test_approve_writes_stamp_for_promoted_model(tmp_path) -> None:
+    model_path = tmp_path / "ai_agent_model.json"
+    weights = {name: [0.0] * len(FEATURE_NAMES) for name in ("long_ce", "long_pe", "short_ce", "short_pe")}
+    save_model(
+        model_path,
+        {
+            "promoted": True,
+            "reason": "test",
+            "feature_names": list(FEATURE_NAMES),
+            "weights": weights,
+        },
+    )
+    trained_at = json.loads(model_path.read_text(encoding="utf-8"))["trained_at"]
+    paper = PaperAiAgent(path=tmp_path / "paper_ai_agent.jsonl", model_path=model_path, lot_size=65)
+    assert paper.approved is False
+    assert paper.can_open is False
+    out = paper.approve()
+    assert out["ok"] is True
+    assert out["approved"] is True
+    assert out["can_open"] is True
+    assert paper.approved is True
+    assert paper.can_open is True
+    stamp = (tmp_path / APPROVAL_NAME).read_text(encoding="utf-8").strip()
+    assert stamp == trained_at
+
+
+def test_approve_rejects_when_not_promoted(tmp_path) -> None:
+    model_path = tmp_path / "ai_agent_model.json"
+    weights = {name: [0.0] * len(FEATURE_NAMES) for name in ("long_ce", "long_pe", "short_ce", "short_pe")}
+    save_model(
+        model_path,
+        {
+            "promoted": False,
+            "reason": "test",
+            "feature_names": list(FEATURE_NAMES),
+            "weights": weights,
+            "trained_at": "2026-10-28T10:16:03+00:00",
+        },
+    )
+    paper = PaperAiAgent(path=tmp_path / "paper_ai_agent.jsonl", model_path=model_path, lot_size=65)
+    out = paper.approve()
+    assert out["ok"] is False
+    assert out["error"] == "not_promoted"
+    assert paper.approved is False
+    assert not (tmp_path / APPROVAL_NAME).exists()
+
+
+def test_approve_rejects_missing_trained_at(tmp_path) -> None:
+    model_path = tmp_path / "ai_agent_model.json"
+    weights = {name: [0.0] * len(FEATURE_NAMES) for name in ("long_ce", "long_pe", "short_ce", "short_pe")}
+    # Bypass save_model so trained_at is absent.
+    model_path.write_text(
+        json.dumps(
+            {
+                "promoted": True,
+                "reason": "test",
+                "feature_names": list(FEATURE_NAMES),
+                "weights": weights,
+            }
+        ),
+        encoding="utf-8",
+    )
+    paper = PaperAiAgent(path=tmp_path / "paper_ai_agent.jsonl", model_path=model_path, lot_size=65)
+    out = paper.approve()
+    assert out["ok"] is False
+    assert out["error"] == "no_trained_at"
+
+
+def test_approve_ai_agent_engine_disabled(tmp_path) -> None:
+    from unittest.mock import MagicMock
+
+    from atlas_lite.feed_engine import FeedEngine
+    from atlas_lite.kite_rest import KiteRest
+
+    eng = FeedEngine(rest=MagicMock(spec=KiteRest), data_dir=tmp_path)
+    eng._paper_ai_agent = None
+    out = eng.approve_ai_agent()
+    assert out["ok"] is False
+    assert out["error"] == "ai_agent_disabled"
+
+
+def test_approve_api_returns_400_when_disabled(tmp_path, monkeypatch) -> None:
+    from unittest.mock import MagicMock
+
+    from fastapi.testclient import TestClient
+
+    import atlas_lite.main as main
+    from atlas_lite.feed_engine import FeedEngine
+    from atlas_lite.kite_rest import KiteRest
+
+    eng = FeedEngine(rest=MagicMock(spec=KiteRest), data_dir=tmp_path)
+    eng._paper_ai_agent = None
+    monkeypatch.setattr(main, "_engine", eng)
+    client = TestClient(main.app)
+    resp = client.post("/api/paper/ai_agent/approve")
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "ai_agent_disabled"

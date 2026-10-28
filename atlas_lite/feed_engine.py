@@ -3345,10 +3345,13 @@ class FeedEngine:
                 return value
         return None
 
-    _PAPER_OPEN_EVENTS = frozenset({"open", "reentry", "live_adopt", "shadow_open"})
-    _PAPER_CLOSE_EVENTS = frozenset(
-        {"close", "close_vertical", "close_set", "live_partial_close", "shadow_close"}
-    )
+    _PAPER_OPEN_EVENTS = frozenset({"open", "reentry", "live_adopt"})
+    _PAPER_CLOSE_EVENTS = frozenset({"close", "close_vertical", "close_set", "live_partial_close"})
+    # Shadow fills are listed for UI visibility but excluded from paper PnL / counts.
+    _PAPER_SHADOW_OPEN_EVENTS = frozenset({"shadow_open"})
+    _PAPER_SHADOW_CLOSE_EVENTS = frozenset({"shadow_close"})
+    _PAPER_PAIR_OPEN_EVENTS = _PAPER_OPEN_EVENTS | _PAPER_SHADOW_OPEN_EVENTS
+    _PAPER_PAIR_CLOSE_EVENTS = _PAPER_CLOSE_EVENTS | _PAPER_SHADOW_CLOSE_EVENTS
 
     def list_paper_trades(
         self,
@@ -3359,7 +3362,12 @@ class FeedEngine:
     ) -> dict[str, Any]:
         """Paper fills across books — paired open/close, consolidated PnL by book×day."""
         # close_set / reentry: short IC (and similar) book PnL per side, not on flatten close.
-        want = self._PAPER_OPEN_EVENTS | self._PAPER_CLOSE_EVENTS
+        want = (
+            self._PAPER_OPEN_EVENTS
+            | self._PAPER_CLOSE_EVENTS
+            | self._PAPER_SHADOW_OPEN_EVENTS
+            | self._PAPER_SHADOW_CLOSE_EVENTS
+        )
         day_key = (day or "").strip() or None
         book_key = (book or "").strip() or None
         rows: list[dict[str, Any]] = []
@@ -3432,6 +3440,10 @@ class FeedEngine:
                             or event.get("ce_short_symbol")
                             or event.get("pe_short_symbol")
                         )
+                kind = str(event.get("event") or "")
+                shadow = kind in (
+                    self._PAPER_SHADOW_OPEN_EVENTS | self._PAPER_SHADOW_CLOSE_EVENTS
+                )
                 rows.append(
                     {
                         "ts": event.get("ts"),
@@ -3460,21 +3472,41 @@ class FeedEngine:
                         "opened_at": event.get("opened_at"),
                         "info": self._paper_trade_info(event),
                         "book_file": path.name,
+                        "shadow": shadow,
                     }
                 )
         self._backfill_open_opened_at(rows)
         paired = self._pair_paper_trade_rows(rows)
-        by_book_day = self._paper_trades_by_book_day(paired)
+        paper_rows = [r for r in paired if not r.get("shadow")]
+        shadow_rows = [r for r in paired if r.get("shadow")]
+        by_book_day = self._paper_trades_by_book_day(paper_rows)
         known_pnls = [
             float(r["pnl_total"]) for r in by_book_day if r.get("pnl_total") is not None
         ]
         pnl_total = round(sum(known_pnls), 2) if known_pnls else None
+        shadow_pnls = []
+        for r in shadow_rows:
+            if r.get("event") not in self._PAPER_SHADOW_CLOSE_EVENTS:
+                continue
+            if r.get("pnl") is None:
+                continue
+            try:
+                shadow_pnls.append(float(r["pnl"]))
+            except (TypeError, ValueError):
+                pass
+        shadow_pnl_total = round(sum(shadow_pnls), 2) if shadow_pnls else None
         paired.sort(key=lambda row: str(row.get("ts") or ""), reverse=True)
         capped = max(1, min(int(limit), 1000))
         days = sorted(all_days, reverse=True)
         books = sorted(all_books)
-        open_n = sum(1 for r in paired if r.get("event") in self._PAPER_OPEN_EVENTS)
-        closed_n = sum(1 for r in paired if r.get("event") in self._PAPER_CLOSE_EVENTS)
+        open_n = sum(1 for r in paper_rows if r.get("event") in self._PAPER_OPEN_EVENTS)
+        closed_n = sum(1 for r in paper_rows if r.get("event") in self._PAPER_CLOSE_EVENTS)
+        shadow_open_n = sum(
+            1 for r in shadow_rows if r.get("event") in self._PAPER_SHADOW_OPEN_EVENTS
+        )
+        shadow_closed_n = sum(
+            1 for r in shadow_rows if r.get("event") in self._PAPER_SHADOW_CLOSE_EVENTS
+        )
         return {
             "ok": True,
             "mode": "paper",
@@ -3485,6 +3517,9 @@ class FeedEngine:
             "open_count": open_n,
             "closed_count": closed_n,
             "pnl_total": pnl_total,
+            "shadow_open_count": shadow_open_n,
+            "shadow_closed_count": shadow_closed_n,
+            "shadow_pnl_total": shadow_pnl_total,
             "by_book_day": by_book_day,
             "days": days,
             "books": books,
@@ -3503,7 +3538,7 @@ class FeedEngine:
         life_refs: set[tuple[str, str]] = set()
         for row in rows:
             kind = str(row.get("event") or "")
-            if kind in cls._PAPER_OPEN_EVENTS:
+            if kind in cls._PAPER_PAIR_OPEN_EVENTS:
                 continue
             oa = str(row.get("opened_at") or "").strip()
             if not oa:
@@ -3512,7 +3547,7 @@ class FeedEngine:
             life_refs.add((book, oa))
         for row in rows:
             kind = str(row.get("event") or "")
-            if kind not in cls._PAPER_OPEN_EVENTS:
+            if kind not in cls._PAPER_PAIR_OPEN_EVENTS:
                 continue
             if str(row.get("opened_at") or "").strip():
                 continue
@@ -3601,10 +3636,10 @@ class FeedEngine:
         for row in chrono:
             kind = str(row.get("event") or "")
             key = cls._paper_trade_match_key(row)
-            if kind in cls._PAPER_OPEN_EVENTS:
+            if kind in cls._PAPER_PAIR_OPEN_EVENTS:
                 stacks.setdefault(key, []).append(row)
                 continue
-            if kind in cls._PAPER_CLOSE_EVENTS:
+            if kind in cls._PAPER_PAIR_CLOSE_EVENTS:
                 stack = stacks.get(key) or []
                 opened = stack.pop() if stack else None
                 out.append(cls._merge_paper_open_into_close(row, opened))
@@ -3839,18 +3874,20 @@ class FeedEngine:
             sections.append(legend)
 
         kind = str(event.get("event") or "")
-        if kind in cls._PAPER_OPEN_EVENTS:
+        if kind in cls._PAPER_PAIR_OPEN_EVENTS:
             metrics = cls._paper_entry_metrics(event)
             if metrics:
                 sections.append(f"At entry: {metrics}")
 
         parts: list[str] = []
-        if kind in cls._PAPER_OPEN_EVENTS:
+        if kind in cls._PAPER_PAIR_OPEN_EVENTS:
             gates = event.get("gates")
             if gates:
                 parts.append(f"entry={gates}")
             elif kind == "reentry":
                 parts.append("entry=reentry")
+            elif kind == "shadow_open":
+                parts.append("entry=shadow")
             target = event.get("target")
             stop = event.get("stop") if event.get("stop") is not None else event.get("stop_loss")
             if target is not None:

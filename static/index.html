@@ -6889,7 +6889,7 @@
         if (meta) meta.textContent = `Approve failed: ${data.detail || data.error || resp.status}`;
         throw new Error(data.detail || data.error || `HTTP ${resp.status}`);
       }
-      if (meta) meta.textContent = "Approved · paper opens enabled from next session cycle";
+      if (meta) meta.textContent = "Approved · real paper opens enabled immediately";
       await loadAgentPanel();
       return data;
     }
