@@ -37,6 +37,12 @@ from atlas_lite.paper_ai_agent import (
     PaperAiAgent,
     paper_ai_agent_enabled,
 )
+from atlas_lite.paper_scalper_v3 import (
+    LEDGER_NAME as SCALPER_V3_LEDGER,
+    STRATEGY as SCALPER_V3_STRATEGY,
+    PaperScalperV3,
+    paper_scalper_v3_enabled,
+)
 from atlas_lite.paper_weekly_sell import (
     BOOKS as WEEKLY_SELL_BOOKS,
     PaperWeeklySell,
@@ -295,6 +301,10 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
         "1 lot · max 8/day · daily loss stop",
         "target / stop / trail / time · shadow_open/close until approval · flat 15:14",
     ),
+    "scalper_v3": (
+        "13:00 on non-expiry trading days · sell ATM CE+PE · 1 lot · one trade a day",
+        "take profit at 30% of credit / stop at −30% · else flat 15:14",
+    ),
     "weekly_strangle": (
         "15:25, 3 sessions before Tuesday expiry · sell put/call at ±1.5 SD (ATM IV) · no wings · 1 lot",
         "stop at 15:25 daily if cost ≥ 3× credit · else hold to expiry, close 15:29",
@@ -364,6 +374,7 @@ class FeedEngine:
     _paper_ai_agent: PaperAiAgent | None = field(default=None, repr=False)
     _paper_factor: PaperFactor | None = field(default=None, repr=False)
     _paper_weekly: dict[str, PaperWeeklySell] = field(default_factory=dict, repr=False)
+    _paper_v3: PaperScalperV3 | None = field(default=None, repr=False)
     _ai_learn_running: bool = field(default=False, repr=False)
     _agent_gates: AgentGateStore | None = field(default=None, repr=False)
     _agent_live: AgentLiveFlag | None = field(default=None, repr=False)
@@ -630,6 +641,9 @@ class FeedEngine:
                 self._paper_ai_agent.lots,
                 self._paper_ai_agent.lots * lot,
             )
+        if paper_scalper_v3_enabled():
+            self._paper_v3 = PaperScalperV3(path=self.data_dir / SCALPER_V3_LEDGER, lot_size=self._nifty_option_lot())
+            self._log.info("scalper_v3 paper book qty %d (13:00 straddle sale, no live orders)", self._paper_v3.qty)
         if paper_weekly_sell_enabled():
             lot = self._nifty_option_lot()
             for name, cfg in WEEKLY_SELL_BOOKS.items():
@@ -697,6 +711,8 @@ class FeedEngine:
             self._tasks.append(asyncio.create_task(self._paper_factor_loop()))
         if self._paper_weekly:
             self._tasks.append(asyncio.create_task(self._paper_weekly_loop()))
+        if self._paper_v3 is not None:
+            self._tasks.append(asyncio.create_task(self._paper_v3_loop()))
         if self._agent is not None:
             self._tasks.append(asyncio.create_task(self._agent_loop()))
 
@@ -2832,6 +2848,34 @@ class FeedEngine:
             return self._paper.lot_size
         return AI_AGENT_LOT
 
+    async def _paper_v3_loop(self) -> None:
+        """Scalper v3: daily 13:00 ATM straddle sale. Paper only, flat by 15:14."""
+        if self._paper_v3 is None:
+            return
+        interval = max(1.0, STREAM_INTERVAL_MS / 1000.0)
+        while True:
+            try:
+                now = datetime.now(IST)
+                if now.weekday() >= 5 and self._paper_v3.position is None:
+                    await asyncio.sleep(30.0)
+                    continue
+                nb = self.notebooks.get("nifty")
+                expiry = atm = ce = pe = None
+                if nb and nb.enabled and nb.universe:
+                    expiry = nb.universe.expiry
+                    if nb.atm:
+                        atm, ce, pe = int(nb.atm.strike), nb.atm.ce_symbol, nb.atm.pe_symbol
+                allow = self._agent_gates.entries_allowed(SCALPER_V3_STRATEGY, now) if self._agent_gates else True
+                self._paper_v3.on_frame(
+                    now=now, book=self.book, expiry=expiry, atm=atm, ce_symbol=ce, pe_symbol=pe, allow_entry=allow
+                )
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                self._log.warning("scalper_v3 paper book failed: %s", exc)
+                await asyncio.sleep(1.0)
+
     async def _paper_weekly_loop(self) -> None:
         """Weekly NIFTY strangle / 5%-wing condor paper books. Positions carry overnight."""
         interval = max(1.0, STREAM_INTERVAL_MS / 1000.0)
@@ -3470,6 +3514,11 @@ class FeedEngine:
             ai_body = self._paper_ai_agent.snapshot(book=self.book, spot=spot)
             ai_body["enabled"] = True
             body["ai_agent"] = ai_body
+        body[SCALPER_V3_STRATEGY] = (
+            self._paper_v3.snapshot(self.book)
+            if self._paper_v3 is not None
+            else {"ok": True, "mode": "paper", "enabled": False, "live_orders": False, "book": SCALPER_V3_STRATEGY, "name": "Scalper v3"}
+        )
         for name, cfg in WEEKLY_SELL_BOOKS.items():
             wbook = self._paper_weekly.get(name)
             body[name] = (

@@ -2371,6 +2371,7 @@
         <span class="history-meta" id="aiAgentMeta">Promoted fit still needs approval before paper opens</span>
       </div>
       <div class="history-detail" id="factorPaperLine">Factor paper: —</div>
+      <div class="history-detail" id="scalperV3Line">Scalper v3: —</div>
       <div class="history-detail" id="weeklyStrangleLine">Weekly strangle: —</div>
       <div class="history-detail" id="weeklyCondorLine">Weekly condor: —</div>
       <div class="history-detail" id="agentMacroLine">Macro: —</div>
@@ -6899,6 +6900,19 @@
         (fp.last_reject ? ` · ${fp.last_reject}` : "");
     }
 
+    function renderScalperV3(v3) {
+      const line = document.getElementById("scalperV3Line");
+      if (!line) return;
+      if (!v3.enabled) {
+        line.textContent = "Scalper v3 · off (ATLAS_LITE_PAPER_SCALPER_V3=0)";
+        return;
+      }
+      const pos = v3.position;
+      line.textContent = pos
+        ? `Scalper v3 · short ${pos.atm} straddle · credit ${pos.credit} · cost now ${pos.cost_now ?? "—"} (target ${pos.target} / stop ${pos.stop}) · open PnL ${pos.open_pnl ?? "—"}`
+        : `Scalper v3 · FLAT · sells the ATM straddle at 13:00 on non-expiry days` + (v3.last_reject ? ` · ${v3.last_reject}` : "");
+    }
+
     function renderWeeklySell(elId, wb) {
       const line = document.getElementById(elId);
       if (!line) return;
@@ -7104,6 +7118,7 @@
         }
         renderAiAgentBook(paper.ai_agent || {});
         renderFactorPaper(paper.factor_paper || {});
+        renderScalperV3(paper.scalper_v3 || {});
         renderWeeklySell("weeklyStrangleLine", paper.weekly_strangle || {});
         renderWeeklySell("weeklyCondorLine", paper.weekly_condor5 || {});
         if (macroEl) {

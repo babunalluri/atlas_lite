@@ -22,6 +22,8 @@ services:
       ATLAS_LITE_PAPER_FACTOR: ${ATLAS_LITE_PAPER_FACTOR:-0}
       # Weekly NIFTY strangle + 5%-wing condor paper books (paper only). On unless the host sets 0.
       ATLAS_LITE_PAPER_WEEKLY_SELL: ${ATLAS_LITE_PAPER_WEEKLY_SELL:-1}
+      # Scalper v3: daily 13:00 ATM straddle sale (paper only). On unless the host sets 0.
+      ATLAS_LITE_PAPER_SCALPER_V3: ${ATLAS_LITE_PAPER_SCALPER_V3:-1}
       # Agent entry knobs (looser week defaults in code; override here to tighten).
       ATLAS_LITE_AGENT_MORNING_MIN_SCORE: ${ATLAS_LITE_AGENT_MORNING_MIN_SCORE:-3}
       ATLAS_LITE_AGENT_MORNING_SCORE_UNTIL: ${ATLAS_LITE_AGENT_MORNING_SCORE_UNTIL:-10:30}

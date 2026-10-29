@@ -102,7 +102,7 @@ def fit(SP: dict, PX: dict, holidays: set[str]) -> tuple[dict[str, float], float
     return out, st.median(basis)
 
 
-def price_days(SP: dict, ratio: dict[str, float], basis: float, holidays: set[str]) -> dict:
+def price_days(SP: dict, ratio: dict[str, float], basis: float, holidays: set[str], wing: int = WING) -> dict:
     sessions = sorted(SP)
     out: dict = {}
     for d in sessions:
@@ -119,7 +119,7 @@ def price_days(SP: dict, ratio: dict[str, float], basis: float, holidays: set[st
             F = S * (1.0 + basis * cal)
             k0 = int(round(S / STEP) * STEP)
             row = {"_atm": (f"{k0}CE", f"{k0}PE")}
-            for i in range(-WING, WING + 1):
+            for i in range(-wing, wing + 1):
                 k = k0 + i * STEP
                 row[f"{k}CE"] = round(b76(F, k, T, sigma, True), 2)
                 row[f"{k}PE"] = round(b76(F, k, T, sigma, False), 2)
@@ -167,6 +167,10 @@ def main() -> None:
     year = price_days(KY, ratio, basis, holidays)
     (DATA / "px_est_kite_year.pkl").write_bytes(pickle.dumps(year))
     print(f"priced Kite year: {len(year)} sessions {min(year)}..{max(year)} -> data/px_est_kite_year.pkl")
+    if "--wide" in sys.argv:  # +-2,000 pt grid for far-wing structures
+        wide = price_days(KY, ratio, basis, holidays, wing=40)
+        (DATA / "px_est_kite_year_wide.pkl").write_bytes(pickle.dumps(wide))
+        print("priced +-2,000 pt grid -> data/px_est_kite_year_wide.pkl")
 
 
 if __name__ == "__main__":
