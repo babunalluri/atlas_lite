@@ -792,3 +792,88 @@ def test_fit_credit_vertical_none_when_band_miss() -> None:
         }
     )
     assert fit_credit_vertical(book, _sym, side="ce", atm=22400) is None
+
+
+def _opened(tmp_path: Path) -> tuple[PaperShortIronCondor, dict]:
+    bot = PaperShortIronCondor(path=tmp_path / "sic.jsonl", lot_size=65, lots=1, capital=200_000)
+    px = _band_book()
+    ev = bot.on_frame(
+        now=_now("10:00"), feed=_feed(), book=_book_from_map(px), atm=22400, option_symbol=_sym, allow_entry=True
+    )
+    assert ev is not None and ev["event"] == "open"
+    return bot, px
+
+
+def _ledger_rows(tmp_path: Path) -> list[dict]:
+    import json
+
+    return [json.loads(x) for x in (tmp_path / "sic.jsonl").read_text().splitlines() if x.strip()]
+
+
+def test_flatten_books_quote_pnl_and_spot_at_close(tmp_path: Path) -> None:
+    bot, px = _opened(tmp_path)
+    # Same marks as entry: neither the ₹ target nor a stop fires before the flatten.
+    bot.on_frame(now=_now("10:30"), feed=_feed(22455.0), book=_book_from_map(px), atm=22450, option_symbol=_sym)
+    assert bot.position is not None
+    out = bot.flatten(_now("10:31"), _book_from_map(px))
+    assert out["ok"] is True and out["pnl"] < 0 and out["spot_at_close"] == 22455.0  # charges only
+    assert bot.position is None
+    closes = [r for r in _ledger_rows(tmp_path) if r["event"] in ("close_set", "close")]
+    assert {r["reason"] for r in closes} == {"manual_flat"}
+    sets = [r for r in closes if r["event"] == "close_set"]
+    assert len(sets) == 2 and all(r["pnl"] is not None and r["pnl_known"] for r in sets)
+    assert all(r["spot_at_close"] == 22455.0 for r in closes)
+    assert sets[0]["spot"] == 22420.0  # entry spot kept for restore
+
+
+def test_flatten_refuses_without_quotes(tmp_path: Path) -> None:
+    bot, px = _opened(tmp_path)
+    partial = {k: v for k, v in px.items() if k != bot.position.pe.short_symbol}
+    out = bot.flatten(_now("10:31"), _book_from_map(partial))
+    assert out == {"ok": False, "error": "no_quote_pe"}
+    assert bot.position is not None and bot.position.ce.open and bot.position.pe.open
+    assert not any(r["event"] == "close_set" for r in _ledger_rows(tmp_path))
+
+
+def test_no_reopen_same_day_after_manual_flatten_even_after_restart(tmp_path: Path) -> None:
+    bot, px = _opened(tmp_path)
+    bot.entries_today = 0  # as on 2026-10-22: position carried in from the day before
+    assert bot.flatten(_now("11:03"), _book_from_map(px))["ok"] is True
+    again = bot.on_frame(now=_now("11:04"), feed=_feed(), book=_book_from_map(px), atm=22400, option_symbol=_sym)
+    assert again is None and bot.last_reject == "manual_flat_today"
+
+    restored = PaperShortIronCondor(path=tmp_path / "sic.jsonl", lot_size=65, lots=1, capital=200_000)
+    assert restored.manual_flat_day == "2026-10-06"
+    assert restored.on_frame(
+        now=_now("11:05"), feed=_feed(), book=_book_from_map(px), atm=22400, option_symbol=_sym
+    ) is None
+    nxt = restored.on_frame(
+        now=_now("10:00", day="2026-10-07"), feed=_feed(), book=_book_from_map(px), atm=22400, option_symbol=_sym
+    )
+    assert nxt is not None and nxt["event"] == "open"
+
+
+def test_stop_close_logs_spot_at_close(tmp_path: Path) -> None:
+    bot, _ = _opened(tmp_path)
+    pos = bot.position
+    credit = pos.ce.credit
+    px2 = {pos.ce.short_symbol: credit * 4 + 4.0, pos.ce.long_symbol: 4.0, pos.pe.short_symbol: 8.0, pos.pe.long_symbol: 4.0}
+    _confirm_stop(bot, day="2026-10-06", hm="11:00:00", feed=_feed(22800.0), book=_book_from_map(px2), atm=22400)
+    stop = next(r for r in _ledger_rows(tmp_path) if r["event"] == "close_set")
+    assert stop["reason"] == "set_stop_4x" and stop["spot_at_close"] == 22800.0
+
+
+def test_flatten_api_400_when_book_disabled(tmp_path: Path, monkeypatch) -> None:
+    from unittest.mock import MagicMock
+
+    from fastapi.testclient import TestClient
+
+    import atlas_lite.main as main
+    from atlas_lite.feed_engine import FeedEngine
+    from atlas_lite.kite_rest import KiteRest
+
+    eng = FeedEngine(rest=MagicMock(spec=KiteRest), data_dir=tmp_path)
+    eng._paper_short_ic = None
+    monkeypatch.setattr(main, "_engine", eng)
+    resp = TestClient(main.app).post("/api/paper/short_ic/flatten")
+    assert resp.status_code == 400 and resp.json()["detail"] == "short_ic_disabled"

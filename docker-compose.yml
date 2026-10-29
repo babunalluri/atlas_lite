@@ -18,6 +18,10 @@ services:
       ATLAS_LITE_API_TOKEN: ${ATLAS_LITE_API_TOKEN:-}
       # Live UI locked until host sets 1; Live checkbox also requires UI login.
       ATLAS_LITE_AGENT_LIVE_ALLOWED: ${ATLAS_LITE_AGENT_LIVE_ALLOWED:-0}
+      # factor_paper forward test (paper only, never Kite orders). Off unless the host sets 1.
+      ATLAS_LITE_PAPER_FACTOR: ${ATLAS_LITE_PAPER_FACTOR:-0}
+      # Weekly NIFTY strangle + 5%-wing condor paper books (paper only). On unless the host sets 0.
+      ATLAS_LITE_PAPER_WEEKLY_SELL: ${ATLAS_LITE_PAPER_WEEKLY_SELL:-1}
       # Agent entry knobs (looser week defaults in code; override here to tighten).
       ATLAS_LITE_AGENT_MORNING_MIN_SCORE: ${ATLAS_LITE_AGENT_MORNING_MIN_SCORE:-3}
       ATLAS_LITE_AGENT_MORNING_SCORE_UNTIL: ${ATLAS_LITE_AGENT_MORNING_SCORE_UNTIL:-10:30}

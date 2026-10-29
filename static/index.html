@@ -2370,6 +2370,9 @@
         <button type="button" id="aiAgentApproveBtn" title="Accept promoted model for real paper opens (not shadow)">Approve AI agent</button>
         <span class="history-meta" id="aiAgentMeta">Promoted fit still needs approval before paper opens</span>
       </div>
+      <div class="history-detail" id="factorPaperLine">Factor paper: —</div>
+      <div class="history-detail" id="weeklyStrangleLine">Weekly strangle: —</div>
+      <div class="history-detail" id="weeklyCondorLine">Weekly condor: —</div>
       <div class="history-detail" id="agentMacroLine">Macro: —</div>
       <div class="history-detail" id="agentDecision">Last cycle: —</div>
       <div class="history-table-wrap">
@@ -6877,6 +6880,43 @@
       }
     }
 
+    function renderFactorPaper(fp) {
+      const line = document.getElementById("factorPaperLine");
+      if (!line) return;
+      if (!fp.enabled) {
+        line.textContent = "Factor paper · off (ATLAS_LITE_PAPER_FACTOR=0)";
+        return;
+      }
+      const pos = fp.position;
+      const posText = pos
+        ? `OPEN ${String(pos.side || "").toUpperCase()} @ ${pos.entry} (mark ${pos.mark ?? "—"}, T ${pos.target} / S ${pos.stop})`
+        : "FLAT";
+      const sig = fp.last_signal;
+      line.textContent =
+        `Factor paper · ${posText} · entries ${fp.entries_today ?? 0}/${fp.max_entries_per_day ?? 3} · day PnL ${fp.day_pnl ?? 0}` +
+        (sig ? ` · last signal ${sig.bar} ${String(sig.side).toUpperCase()} ${sig.move > 0 ? "+" : ""}${sig.move}pt` : "") +
+        ((fp.side_locked || []).length ? ` · locked ${fp.side_locked.join("/").toUpperCase()}` : "") +
+        (fp.last_reject ? ` · ${fp.last_reject}` : "");
+    }
+
+    function renderWeeklySell(elId, wb) {
+      const line = document.getElementById(elId);
+      if (!line) return;
+      const name = wb.name || wb.book || "Weekly book";
+      if (!wb.enabled) {
+        line.textContent = `${name} · off (ATLAS_LITE_PAPER_WEEKLY_SELL=0)`;
+        return;
+      }
+      const pos = wb.position;
+      if (!pos) {
+        line.textContent = `${name} · FLAT · enters 15:25 three sessions before expiry` + (wb.last_reject ? ` · ${wb.last_reject}` : "");
+        return;
+      }
+      line.textContent =
+        `${name} · exp ${pos.expiry} · ${pos.legs.join(", ")} · credit ${pos.credit}` +
+        ` · cost now ${pos.cost_now ?? "—"} (stop ${pos.stop_level}) · open PnL ${pos.open_pnl ?? "—"}`;
+    }
+
     async function approveAiAgent() {
       const meta = document.getElementById("aiAgentMeta");
       const resp = await fetch("/api/paper/ai_agent/approve", {
@@ -7063,6 +7103,9 @@
           }
         }
         renderAiAgentBook(paper.ai_agent || {});
+        renderFactorPaper(paper.factor_paper || {});
+        renderWeeklySell("weeklyStrangleLine", paper.weekly_strangle || {});
+        renderWeeklySell("weeklyCondorLine", paper.weekly_condor5 || {});
         if (macroEl) {
           macroEl.textContent =
             `Macro as_of ${macro.fetched_at || "—"} · crude ${fmtMacroPct(macro.crude)} · gold ${fmtMacroPct(macro.gold)} · USDINR ${fmtMacroPct(macro.usdinr)} · ES ${fmtMacroPct(macro.es_futures)} · headlines ${((macro.headlines || []).length)}`;

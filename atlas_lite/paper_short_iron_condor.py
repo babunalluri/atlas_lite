@@ -19,6 +19,11 @@ Customer book (Sensibull-style short IC):
   (``pnl_known=false``); never use entry spot — unknown if no expiry print.
   Expiry spot is heartbeated to the ledger so a crash still has a settle print.
 
+* Manual flatten: ``POST /api/paper/short_ic/flatten`` closes every set at live
+  quotes (refuses if any leg has no quote) and blocks new opens for the rest of
+  that day, across restarts. Close events log ``spot_at_close``; ``spot`` stays
+  the set's entry spot.
+
 Ledger: ``paper_short_iron_condor.jsonl``.
 On by default; disable with ``ATLAS_LITE_PAPER_SHORT_IC=0``.
 """
@@ -77,6 +82,7 @@ SHORT_OFFSETS = tuple(range(150, 851, 50))
 SLIP_PCT = 0.02
 SLIP_MIN = 0.05
 PX_FLOOR = 0.05
+MANUAL_FLAT = "manual_flat"
 
 OptionSymbolFn = Callable[[int, str], str]
 Side = Literal["ce", "pe"]
@@ -414,6 +420,10 @@ class PaperShortIronCondor:
     eod_written: bool = False
     last_event: dict[str, Any] | None = None
     last_reject: str = ""
+    # NIFTY at the latest frame; close events log it (``spot`` there is the set's entry spot).
+    last_spot: float | None = None
+    # Day of a manual flatten — no new opens for the rest of that day.
+    manual_flat_day: str = ""
     _log: Any = field(default_factory=lambda: get_logger("atlas_lite.paper_short_ic"), repr=False)
 
     def __post_init__(self) -> None:
@@ -433,6 +443,7 @@ class PaperShortIronCondor:
         entries = 0
         day_pnl = 0.0
         eod = False
+        manual_day = ""
         for line in lines:
             raw = line.strip()
             if not raw:
@@ -500,6 +511,8 @@ class PaperShortIronCondor:
                         last_open = None
             elif kind == "close":
                 last_open = None
+                if str(ev.get("reason") or "") == MANUAL_FLAT:
+                    manual_day = d
             elif kind == "day_pnl":
                 eod = True
                 # Overnight: day_pnl seal must not wipe a still-open book.
@@ -511,6 +524,7 @@ class PaperShortIronCondor:
         self.entries_today = entries
         self.day_pnl = round(day_pnl, 2)
         self.eod_written = eod
+        self.manual_flat_day = manual_day if manual_day and manual_day == day else ""
         if last_open:
             self.position = self._pos_from_event(last_open)
 
@@ -897,6 +911,7 @@ class PaperShortIronCondor:
                 "charges": round(open_alloc + close_ch, 2),
                 "charges_open": pos.charges_open,
                 "stop_level": round(st.credit * self.stop_mult, 2),
+                "spot_at_close": self.last_spot,
                 **{
                     k: v
                     for k, v in body.items()
@@ -959,6 +974,7 @@ class PaperShortIronCondor:
                 "gross": None,
                 "pnl_known": False,
                 "charges": open_alloc,
+                "spot_at_close": self.last_spot,
                 "charges_open": pos.charges_open,
                 **{
                     k: v
@@ -1012,6 +1028,7 @@ class PaperShortIronCondor:
                     "reason": reason,
                     "pnl_known": pnl_known,
                     "realized_pnl": round(pos.realized_pnl, 2) if pnl_known else None,
+                    "spot_at_close": self.last_spot,
                     "atm": pos.atm,
                     "qty": pos.qty,
                     "expiry": pos.expiry,
@@ -1019,6 +1036,36 @@ class PaperShortIronCondor:
                 }
             )
         return last
+
+    def flatten(self, now: datetime, book: QuoteSource | None) -> dict[str, Any]:
+        """Manual flatten at live quotes; no new opens for the rest of the day.
+
+        Refuses when any open set has no quote, rather than booking an unknown
+        PnL (the 2026-10-22 hand flatten went through ``_force_close_unknown``
+        and left ``pnl: null`` in the ledger).
+        """
+        pos = self.position
+        if pos is None:
+            return {"ok": False, "error": "flat"}
+        for side, st in (("ce", pos.ce), ("pe", pos.pe)):
+            if st.open and None in self._set_mark(st, book):
+                return {"ok": False, "error": f"no_quote_{side}"}
+        before = pos.realized_pnl
+        self._close_all(now, book, MANUAL_FLAT)
+        if self.position is not None:
+            return {"ok": False, "error": "close_failed", "realized_pnl": round(pos.realized_pnl, 2)}
+        last = self.last_event or {}
+        if last.get("event") != "close" or last.get("reason") != MANUAL_FLAT:
+            # The sets are closed in memory but the ledger did not take the flatten.
+            return {"ok": False, "error": "ledger_write_failed", "realized_pnl": round(pos.realized_pnl, 2)}
+        self.manual_flat_day = now.strftime("%Y-%m-%d")
+        self.last_reject = "manual_flat_today"
+        return {
+            "ok": True,
+            "pnl": round(pos.realized_pnl - before, 2),
+            "realized_pnl": round(pos.realized_pnl, 2),
+            "spot_at_close": self.last_spot,
+        }
 
     def _reentry_allowed(self, now: datetime, pos: ShortIcPosition) -> bool:
         exp = _parse_expiry(pos.expiry)
@@ -1125,6 +1172,9 @@ class PaperShortIronCondor:
         allow_entry: bool = True,
         block_reason: str | None = None,
     ) -> dict[str, Any] | None:
+        spot_seen = _f(feed.get("spot")) or _f(feed.get("nifty_ltp"))
+        if spot_seen is not None and spot_seen > 0:
+            self.last_spot = spot_seen
         if not _weekday(now) and self.position is None:
             return None
         day = now.strftime("%Y-%m-%d")
@@ -1247,6 +1297,9 @@ class PaperShortIronCondor:
             self.last_reject = block_reason or "entry_blocked"
             return None
         if not in_short_ic_entry_window(now):
+            return None
+        if self.manual_flat_day == day:
+            self.last_reject = "manual_flat_today"
             return None
         if self.entries_today >= self.max_entries_per_day:
             self.last_reject = "max_entries"

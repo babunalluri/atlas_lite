@@ -37,6 +37,17 @@ from atlas_lite.paper_ai_agent import (
     PaperAiAgent,
     paper_ai_agent_enabled,
 )
+from atlas_lite.paper_weekly_sell import (
+    BOOKS as WEEKLY_SELL_BOOKS,
+    PaperWeeklySell,
+    paper_weekly_sell_enabled,
+)
+from atlas_lite.paper_factor import (
+    LEDGER_NAME as FACTOR_LEDGER,
+    STRATEGY as FACTOR_STRATEGY,
+    PaperFactor,
+    paper_factor_enabled,
+)
 from atlas_lite.notebook import NotebookConfig, get_notebook, NOTEBOOK_IDS, parse_notebook
 from atlas_lite.notebook_runtime import NotebookRuntime, NotebookSession
 from atlas_lite.instruments import (
@@ -284,6 +295,19 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
         "1 lot · max 8/day · daily loss stop",
         "target / stop / trail / time · shadow_open/close until approval · flat 15:14",
     ),
+    "weekly_strangle": (
+        "15:25, 3 sessions before Tuesday expiry · sell put/call at ±1.5 SD (ATM IV) · no wings · 1 lot",
+        "stop at 15:25 daily if cost ≥ 3× credit · else hold to expiry, close 15:29",
+    ),
+    "weekly_condor5": (
+        "15:25, 3 sessions before Tuesday expiry · sell put/call at ±1.5 SD · buy wings 5% beyond · 1 lot",
+        "stop at 15:25 daily if cost ≥ 3× credit · else hold to expiry, close 15:29",
+    ),
+    "factor_paper": (
+        "09:30–14:44 · spot ≥50 pt from open → buy ATM CE/PE · skip VIX ≥5% over open · "
+        "1 lot · max 3/day · −₹2k day stop · side blocks",
+        "+50% target / −25% stop / 90m hold · flat 15:14",
+    ),
 }
 
 
@@ -338,6 +362,8 @@ class FeedEngine:
     _combo_cache_row: dict[str, Any] | None = field(default=None, repr=False)
     _paper_agent: PaperAgent | None = field(default=None, repr=False)
     _paper_ai_agent: PaperAiAgent | None = field(default=None, repr=False)
+    _paper_factor: PaperFactor | None = field(default=None, repr=False)
+    _paper_weekly: dict[str, PaperWeeklySell] = field(default_factory=dict, repr=False)
     _ai_learn_running: bool = field(default=False, repr=False)
     _agent_gates: AgentGateStore | None = field(default=None, repr=False)
     _agent_live: AgentLiveFlag | None = field(default=None, repr=False)
@@ -594,12 +620,7 @@ class FeedEngine:
                 self._agent_live.is_enabled(),
             )
         if paper_ai_agent_enabled():
-            nifty_nb = self.notebooks.get("nifty")
-            lot = AI_AGENT_LOT
-            if nifty_nb and nifty_nb.universe:
-                lot = nifty_option_lot_size(nifty_nb.fo_csv, expiry=nifty_nb.universe.expiry)
-            elif self._paper is not None:
-                lot = self._paper.lot_size
+            lot = self._nifty_option_lot()
             self._paper_ai_agent = PaperAiAgent(
                 path=self.data_dir / "paper_ai_agent.jsonl",
                 lot_size=lot,
@@ -608,6 +629,21 @@ class FeedEngine:
                 "paper AI agent %d lots qty=%d (tape model, separate ledger, no live orders)",
                 self._paper_ai_agent.lots,
                 self._paper_ai_agent.lots * lot,
+            )
+        if paper_weekly_sell_enabled():
+            lot = self._nifty_option_lot()
+            for name, cfg in WEEKLY_SELL_BOOKS.items():
+                self._paper_weekly[name] = PaperWeeklySell(
+                    path=self.data_dir / cfg["ledger"], strategy=name, wing_pct=cfg["wing_pct"], lot_size=lot
+                )
+            self._log.info("weekly option-selling paper books: %s (qty %d, no live orders)", ", ".join(self._paper_weekly), lot)
+        if paper_factor_enabled():
+            lot = self._nifty_option_lot()
+            self._paper_factor = PaperFactor(path=self.data_dir / FACTOR_LEDGER, lot_size=lot)
+            self._log.info(
+                "factor_paper book qty=%d (trend %g pt, separate ledger, no live orders)",
+                self._paper_factor.lots * lot,
+                self._paper_factor.trend_pts,
             )
 
         self._agent_gates = AgentGateStore(self.data_dir / "agent_gates.json")
@@ -657,6 +693,10 @@ class FeedEngine:
             self._tasks.append(asyncio.create_task(self._paper_agent_loop()))
         if self._paper_ai_agent is not None:
             self._tasks.append(asyncio.create_task(self._paper_ai_agent_loop()))
+        if self._paper_factor is not None:
+            self._tasks.append(asyncio.create_task(self._paper_factor_loop()))
+        if self._paper_weekly:
+            self._tasks.append(asyncio.create_task(self._paper_weekly_loop()))
         if self._agent is not None:
             self._tasks.append(asyncio.create_task(self._agent_loop()))
 
@@ -2783,6 +2823,102 @@ class FeedEngine:
                 self._log.warning("paper AI agent failed: %s", exc)
                 await asyncio.sleep(1.0)
 
+    def _nifty_option_lot(self) -> int:
+        """NIFTY option lot for the current expiry; falls back to the iron-fly book, then 65."""
+        nifty_nb = self.notebooks.get("nifty")
+        if nifty_nb and nifty_nb.universe:
+            return nifty_option_lot_size(nifty_nb.fo_csv, expiry=nifty_nb.universe.expiry)
+        if self._paper is not None:
+            return self._paper.lot_size
+        return AI_AGENT_LOT
+
+    async def _paper_weekly_loop(self) -> None:
+        """Weekly NIFTY strangle / 5%-wing condor paper books. Positions carry overnight."""
+        interval = max(1.0, STREAM_INTERVAL_MS / 1000.0)
+        while True:
+            try:
+                now = datetime.now(IST)
+                if now.weekday() >= 5:
+                    await asyncio.sleep(30.0)
+                    continue
+                nb = self.notebooks.get("nifty")
+                expiry = option_symbol = atm = None
+                strikes: list[int] = []
+                if nb and nb.enabled and nb.universe:
+                    expiry = nb.universe.expiry
+                    option_symbol = nb.universe.option_symbol
+                    strikes = list((nb.chain_cache or ([], [], []))[0])
+                    if nb.atm:
+                        atm = int(nb.atm.strike)
+                for name, book in self._paper_weekly.items():
+                    try:  # one book failing must not stop the other's entry, stop or expiry close
+                        allow = self._agent_gates.entries_allowed(name, now) if self._agent_gates else True
+                        book.on_frame(
+                            now=now,
+                            book=self.book,
+                            expiry=expiry,
+                            strikes=strikes,
+                            option_symbol=option_symbol,
+                            atm=atm,
+                            allow_entry=allow,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        self._log.warning("%s paper book failed: %s", name, exc)
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                self._log.warning("weekly option-selling book failed: %s", exc)
+                await asyncio.sleep(1.0)
+
+    async def _paper_factor_loop(self) -> None:
+        """factor_paper book. Separate ledger. Does not place broker orders."""
+        if self._paper_factor is None:
+            return
+        interval = max(1.0, STREAM_INTERVAL_MS / 1000.0)
+        while True:
+            try:
+                now = datetime.now(IST)
+                if now.weekday() >= 5 and self._paper_factor.position is None:
+                    await asyncio.sleep(30.0)
+                    continue
+                _feed, ce, pe, atm = self._paper_option_ctx()
+                nifty_nb = self.notebooks.get("nifty")
+                spot = spot_open = vix = vix_open = fut_oi = None
+                if nifty_nb is not None:
+                    spot = self._spot(nifty_nb)
+                    spot_open = quote_session_open(self.book.get(nifty_nb.config.symbol))
+                    if nifty_nb.universe is not None:
+                        fut_oi = quote_oi(self.book.get(nifty_nb.universe.fut_symbol))
+                if VIX_SYMBOLS:
+                    vix_row = self.book.get(VIX_SYMBOLS[0])
+                    vix = quote_ltp(vix_row)
+                    vix_open = quote_session_open(vix_row)
+                allow = (
+                    self._agent_gates.entries_allowed(FACTOR_STRATEGY, now)
+                    if self._agent_gates
+                    else True
+                )
+                self._paper_factor.on_frame(
+                    now=now,
+                    book=self.book,
+                    spot=spot,
+                    spot_open=spot_open,
+                    vix=vix,
+                    vix_open=vix_open,
+                    fut_oi=fut_oi,
+                    ce_symbol=ce,
+                    pe_symbol=pe,
+                    atm=atm,
+                    allow_new_entries=allow,
+                )
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                self._log.warning("factor_paper book failed: %s", exc)
+                await asyncio.sleep(1.0)
+
     async def _agent_loop(self) -> None:
         """Periodic agent advise (scorecard autopilot or LLM; not every tick)."""
         if self._agent is None:
@@ -3144,6 +3280,13 @@ class FeedEngine:
             book, mode, until=until, reason=reason, source=source  # type: ignore[arg-type]
         )
 
+    def flatten_short_ic(self) -> dict[str, Any]:
+        """Close the short iron condor at live quotes and stop new opens for today."""
+        book = self._paper_short_ic
+        if book is None:
+            return {"ok": False, "error": "short_ic_disabled"}
+        return book.flatten(datetime.now(IST), self.book)
+
     def approve_ai_agent(self) -> dict[str, Any]:
         """Accept the current promoted AI-agent fit for real paper opens."""
         book = self._paper_ai_agent
@@ -3327,6 +3470,26 @@ class FeedEngine:
             ai_body = self._paper_ai_agent.snapshot(book=self.book, spot=spot)
             ai_body["enabled"] = True
             body["ai_agent"] = ai_body
+        for name, cfg in WEEKLY_SELL_BOOKS.items():
+            wbook = self._paper_weekly.get(name)
+            body[name] = (
+                wbook.snapshot(self.book)
+                if wbook is not None
+                else {"ok": True, "mode": "paper", "enabled": False, "live_orders": False, "book": name, "name": cfg["name"]}
+            )
+        if self._paper_factor is None:
+            body["factor_paper"] = {
+                "ok": True,
+                "mode": "paper",
+                "enabled": False,
+                "live_orders": False,
+                "book": FACTOR_STRATEGY,
+                "name": "Factor paper",
+            }
+        else:
+            nifty_nb = self.notebooks.get("nifty")
+            spot = self._spot(nifty_nb) if nifty_nb else None
+            body["factor_paper"] = self._paper_factor.snapshot(book=self.book, spot=spot)
         if self._agent_gates is not None:
             body["agent_gates"] = self._agent_gates.snapshot().get("gates")
         return body

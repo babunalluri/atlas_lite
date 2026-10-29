@@ -286,6 +286,22 @@ async def api_paper_trades(
     return await asyncio.to_thread(_engine.list_paper_trades, limit=limit, day=day, book=book)
 
 
+@app.post("/api/paper/short_ic/flatten")
+async def api_paper_short_ic_flatten(
+    request: Request,
+    x_atlas_token: Optional[str] = Header(default=None, alias="X-Atlas-Token"),
+) -> dict[str, Any]:
+    """Manual flatten of the short iron condor at live quotes; no new opens today."""
+    _agent_write_authorized(request, x_atlas_token=x_atlas_token)
+    if _engine is None:
+        raise HTTPException(status_code=503, detail="engine not started")
+    # On the event loop, like the book's own loop, so the two never interleave.
+    out = _engine.flatten_short_ic()
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or "flatten_failed")
+    return out
+
+
 @app.post("/api/paper/ai_agent/approve")
 async def api_paper_ai_agent_approve(
     request: Request,

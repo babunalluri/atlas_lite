@@ -1,6 +1,6 @@
 # factor_paper — separate book (follow institutional flow)
 
-Status: planned. **Not implemented.**
+Status: **built as a paper forward test (2026-10-28), off by default** (`ATLAS_LITE_PAPER_FACTOR=0`). Paper only, no Kite orders. See [Built: forward-test book](#built-forward-test-book-2026-10-28).
 
 - **Tape result (2026-10-24):** nothing passed on our 23 days. The sweep setup as specified loses, and no filter passes on its own.
 - **Direction (2026-10-25):** the book now **follows institutional flow**. Most institutional money is executed by algos that work large orders over hours, and that creates the intraday trends we can ride. The main setup is trend-following, with futures-OI and regime checks as confirmation. **The sweep is dropped as an entry,** because fading a move bets against an institution that has not finished its order.
@@ -309,6 +309,43 @@ Store their files in `data/truedata/` (not in git). A loader converts them into 
    - after 20 live trades, revert to paper if net < −₹1,500;
    - the −₹2,000 daily cap and the one-hard-reject block apply as in agent_paper.
 
+## Built: forward-test book (2026-10-28)
+
+The user chose to build the book now, as a paper forward test of the trend candidate, before the 12-month re-test. It is not a pass under Validation; no live money.
+
+| Item | Value |
+|---|---|
+| Module / ledger | `atlas_lite/paper_factor.py` → `data/paper_factor.jsonl`, strategy `factor_paper` |
+| Switch | `ATLAS_LITE_PAPER_FACTOR=1` (default `0`; passed through `docker-compose.yml`) |
+| Entry | Closed 1-min bar 09:30–14:44: spot ≥ 50 pt from Kite's session open → buy ATM CE (up) / PE (down) |
+| Filter | Skip while India VIX ≥ 5% above its session open (Kite `ohlc.open`; first print if missing) |
+| Exits | +50% / −25% / time at the close of signal bar + 90 min / flat 15:14. No trail. If the held strike has no quote, time and square-off exits use the last seen price |
+| Book rules | 1 lot, max 3 opens/day, −₹2,000 day stop, one position, 5 min after any exit, side blocks (stop 15 / loss 10 / win 5 min), side locked after a stop ≤ −₹400 or a second stop |
+| Logged, not gated | Futures OI change since the open on each entry (`oi_chg_open`), for the covering hypothesis |
+| Not under | ADX regime policy, the loss kill switch, or the LLM advisor's book gates (not in `KNOWN_BOOKS`). A manual gate set through the gates API still applies |
+| Sessions | No signals on weekends or NSE holidays (`NSE_HOLIDAYS`). A position carried past its session closes at its last seen price (`no_session` / `session_gap`), never at the next day's quote |
+| Restarts | VIX and futures-OI bases are taken only up to 09:20; after a later restart VIX uses Kite's `ohlc.open`, and `oi_chg_open` is logged empty rather than measured from the restart |
+| Knobs | `ATLAS_LITE_FACTOR_TREND_PTS`, `_ENTRY_AFTER`, `_ENTRY_UNTIL`, `_TARGET_PCT`, `_STOP_PCT`, `_HOLD_MIN`, `_VIX_RISE_MAX`, `_MAX_TRADES_DAY`, `_DAILY_LOSS_STOP` |
+| UI | Status line in the agent panel; trades list shows book `factor_paper` with its own PnL |
+| Tests | `tests/test_paper_factor.py` |
+
+**Parity check:** replaying the 23 recorded days through the live class gives the same 46 trades as `bt_setup_search` (same day, bar, side and exit reason). The book is ₹61/trade better, which is the tape's 0.5 pt/leg slippage (₹65) the paper fills don't charge. So compare paper results with the tape *before* slippage, or subtract ~₹65/trade.
+
+**Known differences from the tape:** live checks target/stop on every tick, not on minute prices, so some exits fire earlier inside a minute. VIX base is Kite's 09:15 open; the tape used the first 09:16 print.
+
+### Kite history (2026-10-28)
+
+`scripts/kite_factor_history.py` → `data/kite_history/` and `data/kite_spot_cache.pkl` (same shape as `data/spot_cache.pkl`).
+
+| Data | What Kite gives |
+|---|---|
+| NIFTY 50, 1-min | 247 sessions, 2025-10-29 → 2026-10-28, complete |
+| India VIX, 1-min | Same 247 sessions |
+| NIFTY futures OI | Daily only (continuous). Continuous 1-min returns 400; expired contracts are gone, so 1-min OI exists only for live contracts (~2–3 months) |
+| Option premiums | None for expired contracts → premiums must be estimated (Black-76 from spot + VIX) or bought (TrueData) |
+
+The year has up months (Nov +2.0%, Apr +5.0%, Jun +1.1%, Jul +2.0%), so the CE side can be tested once premiums are estimated.
+
 ## Implementation notes (for when it is built)
 
 | Area | Change |
@@ -338,6 +375,7 @@ Store their files in `data/truedata/` (not in git). A loader converts them into 
 | 2026-10-24 | 23-day tape test: the sweep fails (all 9 variants negative); no filter passes; the v2 morning on real spot is +₹90/tr with the first half negative. Decision: don't build; wait for TrueData. v2 stays live at 1 lot under the kill rule. |
 | 2026-10-24 | Setup search, 1,080 combos with cross-validation: only trend-following holds out of sample (T=50, +50%/−25%/90 min, VIX filter: +₹25,205 over 46 unseen trades), but all profit is on puts in a 6.8% falling market and CE loses. Next: paper forward test in `factor_paper`, plus TrueData up-months. No live money. |
 | 2026-10-25 | User: the book should follow institutional (algo) flow. Direction changed: trend-following + futures-OI/FII/regime confirmation; sweep dropped as an entry. OI test: build-up is noise; covering on v2's rules is the only both-halves, both-sides variant (13 trades), a hypothesis for the 12-month test. v2's tape profit depends on the rollover week. |
+| 2026-10-28 | User: build `factor_paper` now as a paper forward test (trend T=50, +50/−25/90, VIX filter), and pull one year of history from Kite. Built off by default; replay of the 23 days matches the tape trade for trade. Kite gives a full year of 1-min spot and VIX but no expired option prices or intraday futures OI history. |
 
 ## Status checklist
 
@@ -347,10 +385,11 @@ Store their files in `data/truedata/` (not in git). A loader converts them into 
 - [x] Setup search (trend, ORB, pullback, gap, sweep × exits × filters; cross-validated): trend T=50 wide-exit is the candidate, put-side only
 - [x] Futures-OI confirmation (build-up / covering): build-up noise; covering = hypothesis
 - [ ] Record FII/DII daily figures (NSE) and test as a regime input
-- [ ] Download ~1 year NIFTY 5m + VIX from Kite (`scripts/kite_regime_history.py`); test regime switch (CE in up, PE in down, none in range)
+- [x] Download ~1 year NIFTY 1-min + VIX 1-min + daily futures OI from Kite (`scripts/kite_factor_history.py`)
+- [ ] Estimate premiums (Black-76) on the Kite year; re-run the trend candidate; test regime switch (CE in up, PE in down, none in range)
 - [ ] Spread/depth and PCR filters (need more data)
 - [ ] TrueData history bought and loaded
 - [ ] 12-month validation of v2, sweep and IV-rise filter
-- [ ] `factor_paper` built as a separate book (`FACTOR_PAPER=0`)
+- [x] `factor_paper` built as a separate paper book (`ATLAS_LITE_PAPER_FACTOR=0`), trend candidate; tape parity 46/46
 - [ ] ≥ 20 paper trades
 - [ ] Explicit user decision to go live
