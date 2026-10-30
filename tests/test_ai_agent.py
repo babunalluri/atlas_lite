@@ -12,7 +12,9 @@ from atlas_lite.ai_agent_model import (
     MIN_TEST_TRADES,
     _model_decide,
     predict_action,
+    _held_premium,
     save_model,
+    side_edge,
     simulate_action,
     skip_rising_short,
     walk_forward,
@@ -138,17 +140,16 @@ def test_premium_is_remembered_before_the_entry_window(tmp_path) -> None:
 
 
 def test_sticky_feed_strike_is_not_treated_as_one_contract() -> None:
-    """Spot still rounds to 22450, but the feed has stepped up to 22500."""
-    minutes = {
-        "10:00": {"date": "2026-10-08", "hm": "10:00", "spot": 22470.0, "atm": 22450, "ce": 120.0, "pe": 110.0},
-        "10:01": {"date": "2026-10-08", "hm": "10:01", "spot": 22472.0, "atm": 22450, "ce": 121.0, "pe": 109.0},
-        "10:02": {"date": "2026-10-08", "hm": "10:02", "spot": 22474.0, "atm": 22500, "ce": 98.0, "pe": 132.0},
-    }
-    outcome = simulate_action(minutes, minutes["10:00"], "short_ce", qty=65)
-    assert outcome is not None
-    net, exit_hm = outcome
-    assert exit_hm == "10:01"
-    assert net < 0
+    """Spot still rounds to 22450, but the feed has stepped up to 22500: price the held 22450."""
+    row = {"date": "2026-10-08", "hm": "10:02", "spot": 22474.0, "atm": 22500, "ce": 98.0, "pe": 132.0}
+    call = _held_premium(row, "ce", 22450)
+    put = _held_premium(row, "pe", 22450)
+    assert call is not None and put is not None
+    # Forward 22466 from parity: the held 22450 call is worth more than the new 22500 call.
+    assert 115.0 < call < 130.0
+    # Put-call parity holds on the held strike.
+    assert abs((call - put) - (22466.0 - 22450.0)) < 1e-6
+    assert _held_premium(row, "ce", 22500) == 98.0
 
 
 def test_frozen_tape_is_left_out_of_the_fit() -> None:
@@ -160,17 +161,54 @@ def test_frozen_tape_is_left_out_of_the_fit() -> None:
     assert "2026-10-02" not in (report.get("test_days") or [])
 
 
-def test_strike_change_does_not_use_the_new_contract() -> None:
+def test_strike_change_prices_the_held_contract_not_the_new_one() -> None:
+    """Spot rises 50: the held 22500 call is priced at the new minute, not exited a minute early."""
     minutes = {
         "10:00": {"date": "2026-10-12", "hm": "10:00", "spot": 22510.0, "ce": 100.0, "pe": 100.0},
         "10:04": {"date": "2026-10-12", "hm": "10:04", "spot": 22520.0, "ce": 101.0, "pe": 99.0},
-        "10:05": {"date": "2026-10-12", "hm": "10:05", "spot": 22560.0, "ce": 180.0, "pe": 40.0},
+        "10:05": {"date": "2026-10-12", "hm": "10:05", "spot": 22560.0, "ce": 95.0, "pe": 85.0},
     }
     outcome = simulate_action(minutes, minutes["10:00"], "long_ce", qty=65)
     assert outcome is not None
     net, exit_hm = outcome
-    assert exit_hm == "10:04"
-    assert net < 100
+    assert exit_hm == "10:05"
+    # The held call is about 123, a winner; the new 22550 call's 95 would read as a loss.
+    assert net > 1000
+
+
+def _edge_days() -> dict:
+    """Three mornings: spot rises, so the call gains and the put loses."""
+    days = {}
+    for day in ("2026-10-12", "2026-10-13", "2026-10-14"):
+        minutes = {}
+        for i in range(0, 21):
+            hm = f"10:{i:02d}"
+            minutes[hm] = {"date": day, "hm": hm, "spot": 22500.0 + i, "atm": 22500, "ce": 100.0 + i, "pe": 100.0 - i * 0.8}
+        days[day] = minutes
+    return days
+
+
+def test_learned_side_that_beats_random_counts() -> None:
+    days = _edge_days()
+    entries = []
+    for day, minutes in days.items():
+        net, _ = simulate_action(minutes, minutes["10:00"], "long_ce", qty=65)
+        entries.append((day, minutes["10:00"], "long_ce", net))
+    edge = side_edge(days, entries, qty=65)
+    assert edge["trades"] == 3
+    assert edge["edge_per_trade"] > 0
+    assert edge["beats_random"] is True
+
+
+def test_learned_side_no_better_than_random_does_not_count() -> None:
+    days = _edge_days()
+    entries = []
+    for i, (day, minutes) in enumerate(days.items()):
+        action = "long_ce" if i % 2 == 0 else "long_pe"
+        net, _ = simulate_action(minutes, minutes["10:00"], action, qty=65)
+        entries.append((day, minutes["10:00"], action, net))
+    edge = side_edge(days, entries, qty=65)
+    assert edge["beats_random"] is False
 
 
 def test_restart_does_not_carry_yesterday_pnl_into_an_open_trade(tmp_path) -> None:
@@ -759,3 +797,68 @@ def test_approve_api_returns_400_when_disabled(tmp_path, monkeypatch) -> None:
     resp = client.post("/api/paper/ai_agent/approve")
     assert resp.status_code == 400
     assert resp.json()["detail"] == "ai_agent_disabled"
+
+
+def _flat_minutes(day: str, start: int, count: int) -> dict:
+    minutes = {}
+    for minute in range(start, start + count):
+        hm = f"{minute // 60:02d}:{minute % 60:02d}"
+        minutes[hm] = {"date": day, "hm": hm, "spot": 22520.0, "atm": 22500, "ce": 100.0, "pe": 100.0}
+    return minutes
+
+
+def test_long_hold_follows_the_live_book(monkeypatch) -> None:
+    minutes = _flat_minutes("2026-10-08", 10 * 60, 41)
+    monkeypatch.setenv("ATLAS_LITE_AGENT_SCALPER_V2", "1")
+    assert simulate_action(minutes, minutes["10:00"], "long_ce", qty=65)[1] == "10:30"
+    monkeypatch.setenv("ATLAS_LITE_AGENT_SCALPER_V2", "0")
+    assert simulate_action(minutes, minutes["10:00"], "long_ce", qty=65)[1] == "10:20"
+
+
+def test_rolled_mark_starts_from_the_last_real_print() -> None:
+    row = {"date": "2026-10-08", "hm": "10:02", "spot": 22474.0, "atm": 22500, "ce": 98.0, "pe": 132.0}
+    plain = _held_premium(row, "ce", 22450)
+    assert _held_premium(row, "ce", 22450, offset=3.0) == plain + 3.0
+
+
+def test_side_edge_counts_a_trade_it_cannot_compare_as_no_edge() -> None:
+    days = _edge_days()
+    entries = []
+    for day, minutes in days.items():
+        net, _ = simulate_action(minutes, minutes["10:00"], "long_ce", qty=65)
+        entries.append((day, minutes["10:00"], "long_ce", net))
+    # The put cannot be priced on the last day: that trade scores as no edge, not dropped.
+    last_day = entries[-1][0]
+    for row in days[last_day].values():
+        if row["hm"] > "10:00":
+            row["pe"] = None
+    edge = side_edge(days, entries, qty=65)
+    assert edge["trades"] == 3
+
+
+def test_short_exits_only_on_stop_or_square_off(tmp_path) -> None:
+    """As simulate_action trains it: a collapsing premium is not a target exit."""
+    model_path = tmp_path / "ai_agent_model.json"
+    save_model(model_path, {"promoted": False, "reason": "test", "feature_names": list(FEATURE_NAMES), "weights": _weights("short_pe")})
+    paper = PaperAiAgent(path=tmp_path / "paper_ai_agent.jsonl", model_path=model_path, lot_size=65)
+    quotes = Book()
+    ce, pe = "NIFTY26O1923000CE", "NIFTY26O1923000PE"
+    quotes.quotes[ce] = {"last_price": 40.0}
+    quotes.quotes[pe] = {"last_price": 80.0}
+    frame = dict(
+        feed={"ce": 40.0, "pe": 80.0, "adx": 25.0, "spot_chg_open_pct": -0.4, "atr": 8.0, "pcr": 1.2},
+        book=quotes,
+        ce_symbol=ce,
+        pe_symbol=pe,
+        atm=23000,
+        spot=22980.0,
+    )
+    assert paper.on_frame(now=_stamp("2026-10-19", "11:34"), **frame) is None
+    opened = paper.on_frame(now=_stamp("2026-10-19", "11:35"), **frame)
+    assert opened is not None and opened["style"] == "short"
+    quotes.quotes[pe] = {"last_price": 0.5}
+    frame["feed"] = {"ce": 70.0, "pe": 0.5, "adx": 25.0, "spot_chg_open_pct": 0.4, "atr": 8.0, "pcr": 1.2}
+    assert paper.on_frame(now=_stamp("2026-10-19", "12:00"), **frame) is None
+    assert paper.shadow is not None
+    closed = paper.on_frame(now=_stamp("2026-10-19", "15:14"), **frame)
+    assert closed is not None and closed["reason"] == "square_off"

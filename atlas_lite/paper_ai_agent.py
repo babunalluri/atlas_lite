@@ -643,11 +643,9 @@ class PaperAiAgent:
         if session_due:
             return self._close_shadow(now, book, "square_off", exit_px=px, spot=spot)
         if pos.style == "short":
-            if px <= pos.target:
-                return self._close_shadow(now, book, "target", exit_px=px, spot=spot)
+            # Stop or square-off only, as simulate_action trains it.
             if px >= pos.stop:
-                reason = "trail" if pos.trail_armed else "stop"
-                return self._close_shadow(now, book, reason, exit_px=px, spot=spot)
+                return self._close_shadow(now, book, "stop", exit_px=px, spot=spot)
         else:
             if px >= pos.target:
                 return self._close_shadow(now, book, "target", exit_px=px, spot=spot)
@@ -761,11 +759,9 @@ class PaperAiAgent:
         if session_due:
             return self._close(now, book, "square_off", exit_px=px, spot=spot)
         if pos.style == "short":
-            if px <= pos.target:
-                return self._close(now, book, "target", exit_px=px, spot=spot)
+            # Stop or square-off only, as simulate_action trains it.
             if px >= pos.stop:
-                reason = "trail" if pos.trail_armed else "stop"
-                return self._close(now, book, reason, exit_px=px, spot=spot)
+                return self._close(now, book, "stop", exit_px=px, spot=spot)
         else:
             if px >= pos.target:
                 return self._close(now, book, "target", exit_px=px, spot=spot)
@@ -954,6 +950,8 @@ class PaperAiAgent:
             "model_reason": report.get("reason"),
             "test_net": report.get("test_net"),
             "scorecard_test_net": report.get("scorecard_test_net"),
+            "random_side_test_net": report.get("random_side_test_net"),
+            "side_edge_per_trade": report.get("side_edge_per_trade"),
             "position": pos_body,
             "entries_today": self.entries_today,
             "day_pnl": self.day_pnl,

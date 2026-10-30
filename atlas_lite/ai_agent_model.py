@@ -3,12 +3,15 @@
 Fits one linear score per action (long/short call and put) on finished minute
 rows. Walk-forward trains on earlier days and scores only later days. The
 scorecard is replayed on those same later days. ``promoted`` is true only when
-the learned book makes more, after charges, on the days it did not train on.
+the learned book makes money, after charges, on the days it did not train on,
+and its choice of call or put beats picking the side at random at the same
+minutes (a sale at a random side earns most of what a learned sale does).
 """
 
 from __future__ import annotations
 
 import json
+import math
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
@@ -17,10 +20,12 @@ from atlas_lite.agent_scorecard import build_strategy_scorecard
 from atlas_lite.instruments import round_atm_strike
 from atlas_lite.kite_charges import kite_nfo_charges
 from atlas_lite.paper_agent import (
+    COOLDOWN_MIN,
+    DAILY_LOSS_STOP,
     DEFAULT_LOT_SIZE,
-    HOLD_MINUTES,
     SQUARE_OFF,
     agent_exit_profile,
+    agent_hold_until,
     initial_target_stop,
     trail_gap_px,
 )
@@ -56,6 +61,8 @@ MIN_PREDICTED_NET = 150.0
 # The fit learns whether a normal trade paid. A freak print does not own the weights.
 TARGET_CLIP = 1300.0
 PREMIUM_LOOKBACK_MIN = 15
+# The side choice must beat a random side by this many standard errors of the difference.
+MIN_SIDE_EDGE_SE = 2.0
 MAX_ENTRIES_PER_DAY = 8
 SESSION_OPEN_HM = "09:15"
 
@@ -267,6 +274,43 @@ def _dead_session(minutes: dict[str, dict[str, Any]]) -> bool:
     return max(spots) == min(spots) and max(calls) == min(calls)
 
 
+def _model_premium(row: dict[str, Any], side: str, strike: int) -> float | None:
+    """A strike's premium from this minute's ATM pair: the forward from put-call parity,
+    the expected move from the straddle, then a normal (Bachelier) price."""
+    row_strike = _row_strike(row)
+    if row_strike is None:
+        return None
+    ce, pe = _f(row.get("ce")), _f(row.get("pe"))
+    if ce is None or pe is None or ce <= 0 or pe <= 0:
+        return None
+    forward = row_strike + ce - pe
+    # ATM straddle = 2 * s * phi(0) for the expected move s.
+    move = (ce + pe) * math.sqrt(math.pi / 2.0)
+    d = (forward - strike) / move
+    call = (forward - strike) * 0.5 * (1.0 + math.erf(d / math.sqrt(2.0))) + move * math.exp(-d * d / 2.0) / math.sqrt(2.0 * math.pi)
+    return call if side == "ce" else call - (forward - strike)
+
+
+def _held_premium(row: dict[str, Any], side: str, entry_strike: int | None, offset: float = 0.0) -> float | None:
+    """The held contract's premium on this minute.
+
+    ce/pe on a row are the feed's current strike. Once that strike moves, the held
+    strike is the model price plus ``offset``, the gap between the last real print
+    and the model on that minute, so the mark does not jump at the roll. A straight
+    shift by delta underprices every held option and flatters sales. No later minute is used.
+    """
+    px = _f(row.get(side))
+    if px is None or px <= 0:
+        return None
+    if entry_strike is None:
+        return px
+    row_strike = _row_strike(row)
+    if row_strike == entry_strike:
+        return px
+    model = _model_premium(row, side, entry_strike)
+    return None if model is None else max(0.05, model + offset)
+
+
 def simulate_action(
     minutes: dict[str, dict[str, Any]],
     entry: dict[str, Any],
@@ -296,33 +340,29 @@ def simulate_action(
     best = entry_px
     armed = False
     square_min = _hm_to_min(f"{SQUARE_OFF[0]:02d}:{SQUARE_OFF[1]:02d}")
-    if style == "short":
-        hold_end = square_min
-    else:
-        hold_end = min(start + int(HOLD_MINUTES), square_min)
+    # The live book's hold: shorts to square-off, longs 20 or 30 minutes (Scalper v2 env).
+    held_until = agent_hold_until(opened, style)
+    hold_end = min(held_until.hour * 60 + held_until.minute, square_min)
     entry_strike = _row_strike(entry)
+    offset = 0.0
+    if entry_strike is not None:
+        model = _model_premium(entry, side, entry_strike)
+        if model is not None:
+            offset = entry_px - model
     exit_px: float | None = None
     exit_hm: str | None = None
-    last_px: float | None = None
-    last_hm: str | None = None
     for minute in range(start + 1, hold_end + 1):
         hm = _min_to_hm(minute)
         row = minutes.get(hm)
         if row is None:
             continue
-        # ce/pe on a row are the feed's current strike. Once that strike changes,
-        # the printed premium is a different contract. Exit at the last price of
-        # the strike that was sold or bought.
-        if entry_strike is not None and _row_strike(row) != entry_strike:
-            if last_px is not None and last_hm is not None:
-                exit_px = last_px
-                exit_hm = last_hm
-            break
-        px = _f(row.get(side))
-        if px is None or px <= 0:
+        px = _held_premium(row, side, entry_strike, offset)
+        if px is None:
             continue
-        last_px = px
-        last_hm = hm
+        if entry_strike is not None and _row_strike(row) == entry_strike:
+            model = _model_premium(row, side, entry_strike)
+            if model is not None:
+                offset = px - model
         if style == "short":
             # Match agent_paper short profile: stop or square-off only.
             if px >= stop or minute >= hold_end:
@@ -438,8 +478,12 @@ def _replay(
     *,
     qty: int = DEFAULT_LOT_SIZE,
     max_entries: int | None = None,
+    entries_out: list[tuple[str, dict[str, Any], str, float]] | None = None,
 ) -> dict[str, Any]:
-    """One position at a time, 3-minute cooldown, ₹5,000 day stop. Same path as the book."""
+    """One position at a time, the book's cooldown and day stop. Same path as the book.
+
+    ``entries_out`` collects (day, row, action, net) for every trade taken.
+    """
     net = 0.0
     trades = 0
     by_day: dict[str, float] = {}
@@ -452,7 +496,7 @@ def _replay(
         while cursor <= end:
             hm = _min_to_hm(cursor)
             row = minutes.get(hm)
-            if row is None or not _in_entry_window(hm) or day_net <= -5000.0:
+            if row is None or not _in_entry_window(hm) or day_net <= DAILY_LOSS_STOP:
                 cursor += 1
                 continue
             if max_entries is not None and entries >= max_entries:
@@ -467,13 +511,49 @@ def _replay(
                 cursor += 1
                 continue
             pnl, exit_hm = outcome
+            if entries_out is not None:
+                entries_out.append((day, row, action, pnl))
             day_net = round(day_net + pnl, 2)
             net = round(net + pnl, 2)
             trades += 1
             entries += 1
-            cursor = _hm_to_min(exit_hm) + 3
+            cursor = _hm_to_min(exit_hm) + COOLDOWN_MIN
         by_day[day] = round(day_net, 2)
     return {"net": round(net, 2), "trades": trades, "by_day": by_day}
+
+
+def side_edge(
+    days: dict[str, dict[str, dict[str, Any]]],
+    entries: list[tuple[str, dict[str, Any], str, float]],
+    *,
+    qty: int = DEFAULT_LOT_SIZE,
+) -> dict[str, Any]:
+    """The learned side against a random side at the same minutes, same buy or sell.
+
+    A random side earns the average of the call and the put. Per trade the difference
+    is the learned net minus that average; the edge counts only when its mean clears
+    ``MIN_SIDE_EDGE_SE`` standard errors. Every learned trade counts: one whose other side
+    cannot be priced scores as no edge, so the edge is measured on the same trades as the net.
+    """
+    diffs: list[float] = []
+    random_net = 0.0
+    for day, row, action, pnl in entries:
+        style = action.split("_", 1)[0]
+        outs = [simulate_action(days[day], row, f"{style}_{side}", qty=qty) for side in ("ce", "pe")]
+        avg = pnl if outs[0] is None or outs[1] is None else (outs[0][0] + outs[1][0]) / 2.0
+        random_net += avg
+        diffs.append(pnl - avg)
+    n = len(diffs)
+    mean = sum(diffs) / n if n else 0.0
+    sd = (sum((d - mean) ** 2 for d in diffs) / (n - 1)) ** 0.5 if n > 1 else 0.0
+    se = sd / n**0.5 if n > 1 else 0.0
+    return {
+        "trades": n,
+        "random_net": round(random_net, 2),
+        "edge_per_trade": round(mean, 2),
+        "edge_se": round(se, 2),
+        "beats_random": n > 1 and mean > 0 and mean > MIN_SIDE_EDGE_SE * se,
+    }
 
 
 def skip_rising_short(action: str, ce_chg: float | None, pe_chg: float | None) -> str:
@@ -562,6 +642,7 @@ def walk_forward(rows: list[dict[str, Any]], *, qty: int = DEFAULT_LOT_SIZE) -> 
     weights = {
         action: _fit_ridge(samples[action], targets[action]) for action in ACTIONS
     }
+    entries: list[tuple[str, dict[str, Any], str, float]] = []
     learned = _replay(
         test_days,
         days,
@@ -569,28 +650,34 @@ def walk_forward(rows: list[dict[str, Any]], *, qty: int = DEFAULT_LOT_SIZE) -> 
         _model_decide(weights),
         qty=qty,
         max_entries=MAX_ENTRIES_PER_DAY,
+        entries_out=entries,
     )
+    edge = side_edge(days, entries, qty=qty)
     baseline = _replay(
         test_days,
         days,
         opens,
         lambda row, day_open: _scorecard_action(row, day_open=day_open),
         qty=qty,
+        max_entries=MAX_ENTRIES_PER_DAY,
     )
     promoted = (
         len(test_days) >= MIN_TEST_DAYS
         and learned["trades"] >= MIN_TEST_TRADES
         and learned["net"] > 0
         and learned["net"] > baseline["net"]
+        and edge["beats_random"]
     )
     if promoted:
-        reason = "beats_scorecard_on_unseen_days"
+        reason = "beats_random_side_on_unseen_days"
     elif len(test_days) < MIN_TEST_DAYS:
         reason = "not_enough_test_days"
     elif learned["trades"] < MIN_TEST_TRADES:
         reason = "not_enough_test_trades"
-    else:
+    elif learned["net"] <= 0 or learned["net"] <= baseline["net"]:
         reason = "does_not_beat_scorecard"
+    else:
+        reason = "side_no_better_than_random"
     return {
         "promoted": promoted,
         "reason": reason,
@@ -604,6 +691,9 @@ def walk_forward(rows: list[dict[str, Any]], *, qty: int = DEFAULT_LOT_SIZE) -> 
         "scorecard_test_net": baseline["net"],
         "scorecard_test_trades": baseline["trades"],
         "scorecard_by_day": baseline["by_day"],
+        "random_side_test_net": edge["random_net"],
+        "side_edge_per_trade": edge["edge_per_trade"],
+        "side_edge_se": edge["edge_se"],
         "train_samples": len(samples["long_ce"]),
     }
 
@@ -624,6 +714,9 @@ def save_model(path: Path, report: dict[str, Any]) -> None:
         "test_trades": report.get("test_trades"),
         "scorecard_test_net": report.get("scorecard_test_net"),
         "scorecard_test_trades": report.get("scorecard_test_trades"),
+        "random_side_test_net": report.get("random_side_test_net"),
+        "side_edge_per_trade": report.get("side_edge_per_trade"),
+        "side_edge_se": report.get("side_edge_se"),
         "trained_at": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
     path.write_text(json.dumps(body, indent=2) + "\n", encoding="utf-8")
