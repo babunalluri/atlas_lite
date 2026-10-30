@@ -279,11 +279,14 @@ async def api_paper_trades(
     limit: int = Query(default=200, ge=1, le=1000),
     day: Optional[str] = Query(default=None, description="IST day YYYY-MM-DD; omit for all"),
     book: Optional[str] = Query(default=None, description="Strategy / book name; omit for all"),
+    retired: bool = Query(default=False, description="Include retired books' ledgers"),
 ) -> dict[str, Any]:
     """Paper fills across books (open/close). Latest first. Never live orders."""
     if _engine is None:
         raise HTTPException(status_code=503, detail="engine not started")
-    return await asyncio.to_thread(_engine.list_paper_trades, limit=limit, day=day, book=book)
+    return await asyncio.to_thread(
+        _engine.list_paper_trades, limit=limit, day=day, book=book, hide_retired=not retired
+    )
 
 
 @app.post("/api/paper/short_ic/flatten")

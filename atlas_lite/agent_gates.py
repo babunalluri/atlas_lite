@@ -64,6 +64,12 @@ KNOWN_BOOKS = (
     "ict",
 )
 
+# Retired after the 2026-10-30 paper review (or never past paper). Their flags stay off;
+# the gates list leaves them out. Gates can still be read or set by name.
+RETIRED_BOOKS = frozenset(
+    {"vwap_long", "short_straddle", "skew_fade", "long_iron_condor", "theta_cliff", "impulse_fade", "combo", "ict"}
+)
+
 BOOK_ALIASES = {
     "short_iron_fly": "iron_fly",
     "fly": "iron_fly",
@@ -222,7 +228,7 @@ class AgentGateStore:
     def snapshot(self, now: datetime | None = None) -> dict[str, Any]:
         with self._lock:
             now = now or datetime.now(IST)
-            books = sorted(set(KNOWN_BOOKS) | set(self._gates) | set(self._manual))
+            books = sorted((set(KNOWN_BOOKS) | set(self._gates) | set(self._manual)) - RETIRED_BOOKS)
             return {
                 "ok": True,
                 "path": str(self.path),

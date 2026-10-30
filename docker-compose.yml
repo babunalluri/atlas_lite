@@ -24,6 +24,10 @@ services:
       ATLAS_LITE_PAPER_WEEKLY_SELL: ${ATLAS_LITE_PAPER_WEEKLY_SELL:-1}
       # Scalper v3: daily 13:00 ATM straddle sale (paper only). On unless the host sets 0.
       ATLAS_LITE_PAPER_SCALPER_V3: ${ATLAS_LITE_PAPER_SCALPER_V3:-1}
+      # Retired 2026-10-30 after the paper review (14:30 straddle, theta cliff, ICT). Off unless the host sets 1.
+      ATLAS_LITE_PAPER_SHORT_STR: ${ATLAS_LITE_PAPER_SHORT_STR:-0}
+      ATLAS_LITE_PAPER_THETA_CLIFF: ${ATLAS_LITE_PAPER_THETA_CLIFF:-0}
+      ATLAS_LITE_PAPER_ICT: ${ATLAS_LITE_PAPER_ICT:-0}
       # Agent entry knobs (looser week defaults in code; override here to tighten).
       ATLAS_LITE_AGENT_MORNING_MIN_SCORE: ${ATLAS_LITE_AGENT_MORNING_MIN_SCORE:-3}
       ATLAS_LITE_AGENT_MORNING_SCORE_UNTIL: ${ATLAS_LITE_AGENT_MORNING_SCORE_UNTIL:-10:30}

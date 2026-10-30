@@ -6884,10 +6884,9 @@
     function renderFactorPaper(fp) {
       const line = document.getElementById("factorPaperLine");
       if (!line) return;
-      if (!fp.enabled) {
-        line.textContent = "Factor paper · off (ATLAS_LITE_PAPER_FACTOR=0)";
-        return;
-      }
+      // Retired while off: no line at all.
+      line.hidden = !fp.enabled;
+      if (!fp.enabled) return;
       const pos = fp.position;
       const posText = pos
         ? `OPEN ${String(pos.side || "").toUpperCase()} @ ${pos.entry} (mark ${pos.mark ?? "—"}, T ${pos.target} / S ${pos.stop})`

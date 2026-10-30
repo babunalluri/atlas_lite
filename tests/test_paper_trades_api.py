@@ -695,3 +695,24 @@ def test_list_paper_trades_includes_ai_agent_shadow_fills(tmp_path: Path) -> Non
     assert out["trades"][0]["pnl"] == -2962.82
     legend = FeedEngine._paper_book_legend("ai_agent")
     assert "promoted" in legend.lower() or "Entry:" in legend
+
+
+def test_retired_books_are_hidden_when_asked(tmp_path: Path) -> None:
+    def ledger(name: str, strategy: str, pnl: float) -> None:
+        rows = [
+            {"ts": "2026-10-14T13:30:00+05:30", "day": "2026-10-14", "event": "open", "strategy": strategy,
+             "side": "pe", "symbol": f"NFO:{strategy}", "entry": 100.0},
+            {"ts": "2026-10-14T15:14:00+05:30", "day": "2026-10-14", "event": "close", "strategy": strategy,
+             "side": "pe", "symbol": f"NFO:{strategy}", "entry": 100.0, "exit": 90.0, "pnl": pnl},
+        ]
+        (tmp_path / name).write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+
+    ledger("paper_ict.jsonl", "ict", -1314.0)
+    ledger("paper_scalper_v3.jsonl", "scalper_v3", 695.0)
+    eng = _engine(tmp_path)
+    everything = eng.list_paper_trades(limit=10)
+    assert set(everything["books"]) == {"ict", "scalper_v3"}
+    shown = eng.list_paper_trades(limit=10, hide_retired=True)
+    assert shown["books"] == ["scalper_v3"]
+    assert {t["strategy"] for t in shown["trades"]} == {"scalper_v3"}
+    assert shown["pnl_total"] == 695.0

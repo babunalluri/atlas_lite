@@ -5,7 +5,7 @@ Scalper v2 (buy ATM CE/PE when spot is >=100 pt from the open, 09:30-12:00,
 only when a gradient-boosted model expects a big NIFTY move over the next 30 min.
 
 The size model is walk-forward (trained on earlier months only; see
-scripts/ml_scalp_test.py for features). Label: |30-min move| above the training
+scripts/ml_scalp_study.py for features). Label: |30-min move| above the training
 median. Thresholds: the model's own training-set percentiles (top 50/30/20%).
 Scored on the Kite year with estimated premiums and on the recorded days with
 real premiums. Book rules and costs from scripts/bt_setup_search.py (0.5 pt slip).
@@ -27,7 +27,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import bt_common as eng  # noqa: E402
-import ml_scalp_test as ml  # noqa: E402
+import ml_scalp_study as ml  # noqa: E402
 from bt_setup_search import runx, trend  # noqa: E402
 
 V2_EXITS = (0.20, 0.10, 30)

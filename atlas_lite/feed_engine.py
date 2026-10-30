@@ -233,6 +233,24 @@ ADX_KITE_FETCH_S = 5.0
 # WS ticks this fresh count as healthy even if REST auth is sticky-failed.
 HEALTH_TICK_MAX_AGE_S = 90.0
 
+# Ledger strategies of retired books. Their ledgers stay on disk; /api/paper/trades leaves
+# them out unless asked (retired=1), so the UI shows only books still running.
+RETIRED_PAPER_STRATEGIES = frozenset(
+    {
+        "short_atm_straddle",
+        "theta_cliff_fence",
+        "theta_cliff",
+        "ict",
+        "atm_skew_fade",
+        "atm_impulse_fade",
+        "combo_confluence",
+        "long_iron_condor",
+        "nifty_vwap_long",
+        "long_straddle",
+        "factor_paper",
+    }
+)
+
 # Book playbook legend for trades hover (Entry / Exit gates).
 PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
     "short_iron_condor": (
@@ -3571,8 +3589,12 @@ class FeedEngine:
         limit: int = 200,
         day: str | None = None,
         book: str | None = None,
+        hide_retired: bool = False,
     ) -> dict[str, Any]:
-        """Paper fills across books — paired open/close, consolidated PnL by book×day."""
+        """Paper fills across books — paired open/close, consolidated PnL by book×day.
+
+        ``hide_retired`` leaves out RETIRED_PAPER_STRATEGIES (days, books and totals too).
+        """
         # close_set / reentry: short IC (and similar) book PnL per side, not on flatten close.
         want = (
             self._PAPER_OPEN_EVENTS
@@ -3604,6 +3626,8 @@ class FeedEngine:
                     continue
                 event_day = str(event.get("day") or "").strip()
                 event_book = str(event.get("strategy") or event.get("book") or "").strip()
+                if hide_retired and event_book in RETIRED_PAPER_STRATEGIES:
+                    continue
                 if event_day:
                     all_days.add(event_day)
                 if event_book:

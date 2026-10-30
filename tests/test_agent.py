@@ -289,7 +289,9 @@ def test_agent_gate_store_pause_blocks_entries(tmp_path: Path) -> None:
     store.set_gate("combo", "allow", source="manual", now=now)
     assert store.entries_allowed("combo", now=now) is True
     snap = store.snapshot()
-    assert "combo" in snap["gates"]
+    # combo is retired: its gate still works by name, but the gates list leaves it out.
+    assert "combo" not in snap["gates"]
+    assert "iron_fly" in snap["gates"]
 
 
 def test_next_session_end_skips_weekend_and_nse_holiday() -> None:
