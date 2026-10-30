@@ -41,4 +41,5 @@ Kite basket margin on 2026-10-29, 1 lot: this straddle (MIS) ₹1,93,794; weekly
 ## Rollout
 
 1. Paper for 2–3 months (~40–60 trades); compare each day with the backtest rule.
+   `scripts/paper_vs_backtest.py --fetch` replays each paper day on that day's real recorded premiums and prints the gap.
 2. Live, 1 lot, only after an explicit decision and a margin check.

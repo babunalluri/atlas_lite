@@ -45,5 +45,6 @@ Data: NSE F&O bhavcopy for every trading day since NIFTY weeklies began (1,901 d
 ## Rollout
 
 1. Paper both books for **3 months (~12 expiries)**. Compare each week's paper P&L with what the backtest rules give for that week.
+   `scripts/paper_vs_backtest.py --fetch` prints both side by side once the expiry's bhavcopy is downloaded (`scripts/nse_nifty_options_history.py --start <entry day>`).
 2. Live, 1 lot, only after an explicit decision. Strangle needs ~₹3 lakh margin; condor fits ₹1–1.5 lakh.
 3. Kill rule for live: back to paper after 3 consecutive stop-outs or a loss beyond the backtest's worst week.
