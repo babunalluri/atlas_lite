@@ -458,13 +458,18 @@ class PaperWeeklySell:
                 m = quote_ltp(book.get(leg.symbol)) if book is not None else leg.mark
                 marks.append(m if m is not None else leg.mark)
             cost = None if any(m is None for m in marks) else sum(-leg.sign * m for leg, m in zip(pos.legs, marks))
+            close_ch = 0.0
+            if cost is not None:
+                fills = [(m, pos.qty, "buy" if leg.sign < 0 else "sell") for leg, m in zip(pos.legs, marks) if m]
+                close_ch = float(kite_nfo_charges(fills)["total"]) if fills else 0.0
             body["position"] = {
                 "expiry": pos.expiry,
                 "legs": [f"{'sell' if leg.sign < 0 else 'buy'} {leg.strike} {leg.opt}" for leg in pos.legs],
                 "credit": pos.credit_fill,
                 "cost_now": None if cost is None else round(cost, 2),
                 "stop_level": round(self.stop_mult * pos.credit_ltp, 2),
-                "open_pnl": None if cost is None else round((pos.credit_fill - cost) * pos.qty, 2),
+                # Net of entry charges and estimated exit charges, like the ledger's pnl.
+                "open_pnl": None if cost is None else round((pos.credit_fill - cost) * pos.qty - pos.charges_open - close_ch, 2),
             }
         return body
 

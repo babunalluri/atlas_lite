@@ -206,3 +206,19 @@ def test_restart_on_the_entry_evening_does_not_check_the_stop(tmp_path) -> None:
     assert frame(again, t(ENTRY_DAY, "19:37"), chain(F=22300)) is None
     assert again.position is not None
     assert [e for e in ledger(again) if e["event"] == "stop_check"] == []
+
+
+def test_snapshot_open_pnl_is_net_of_entry_and_exit_charges(tmp_path) -> None:
+    from atlas_lite.kite_charges import kite_nfo_charges
+
+    b = mk(tmp_path)
+    frame(b, t(ENTRY_DAY, "15:25"), chain())
+    rows = chain(scale=0.8)
+    snap = b.snapshot(Book(rows))["position"]
+    pos = b.position
+    marks = [rows[leg.symbol]["last_price"] for leg in pos.legs]
+    cost = sum(-leg.sign * m for leg, m in zip(pos.legs, marks))
+    close_ch = kite_nfo_charges([(m, pos.qty, "buy" if leg.sign < 0 else "sell") for leg, m in zip(pos.legs, marks)])["total"]
+    gross = (pos.credit_fill - cost) * pos.qty
+    assert snap["open_pnl"] == round(gross - pos.charges_open - close_ch, 2)
+    assert snap["open_pnl"] < gross
