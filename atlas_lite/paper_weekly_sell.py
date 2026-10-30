@@ -190,7 +190,8 @@ class PaperWeeklySell:
             if ev.get("strategy") != self.strategy:
                 continue
             if ev.get("event") == "open":
-                open_ev = ev
+                # The entry day counts as checked (first check is the next session), as in _try_open.
+                open_ev = {**ev, "stop_checked": ev.get("day")}
                 self.entered_for = str(ev.get("expiry") or "")
             elif ev.get("event") == "close":
                 open_ev = None

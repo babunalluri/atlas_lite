@@ -195,3 +195,14 @@ def test_close_uses_the_quantity_it_opened_with(tmp_path) -> None:
     assert again.position.qty == 75
     ev = frame(again, t("2026-11-03", "15:29"), chain(scale=0.02))
     assert ev["qty"] == 75
+
+
+def test_restart_on_the_entry_evening_does_not_check_the_stop(tmp_path) -> None:
+    """The entry day counts as checked; a restart that evening must not add a check."""
+    b = mk(tmp_path)
+    frame(b, t(ENTRY_DAY, "15:25"), chain())
+    again = mk(tmp_path)
+    assert again.position is not None and again.position.stop_checked == ENTRY_DAY
+    assert frame(again, t(ENTRY_DAY, "19:37"), chain(F=22300)) is None
+    assert again.position is not None
+    assert [e for e in ledger(again) if e["event"] == "stop_check"] == []
