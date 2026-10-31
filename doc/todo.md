@@ -18,7 +18,7 @@ Checked every trading day. Tick items as done (`[x]`), add new ones with a date.
 - [ ] 15:40: ai_agent refit with the fixed learner. Expect `promoted: false` (`side_no_better_than_random`).
 - [ ] **NSE vs BSE gap watcher** (read-only): after 09:15, `data/arb/watch.log` on the server should say `connected` (needs Monday's fresh Kite token). If the container restarted since Saturday, start it again:
   `docker exec -d atlas-lite sh -c "python scripts/nse_bse_gap_watch.py >> /app/data/arb/watch.log 2>&1"`
-- [ ] After 15:30: read `data/arb/summary-2026-11-02.json`: crossings, how many beat the ~0.083% cost, how long they lasted, shares available. Decide whether NSE–BSE arbitrage is worth anything (expect not).
+- [ ] After 15:30: read `data/arb/summary-2026-11-02.json`, **small caps first, then mid, then large** (658 stocks: 515 small, 98 mid, 45 large; BSE groups A/B/X only): crossings, how many beat the ~0.083% cost, how long they lasted, shares available. Decide whether NSE–BSE arbitrage is worth anything, starting with small caps.
 
 ### Tue 3 Nov 2026 (weekly expiry)
 - [ ] 15:29: weekly strangle and condor close at expiry. v3 skips the day.

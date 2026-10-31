@@ -13,8 +13,9 @@ gap, the shares available at both best prices, and whether buying on one exchang
 selling on the other would clear Zerodha intraday costs (brokerage, STT, exchange and SEBI
 fees, GST, stamp duty). Episodes (same stock and direction, back to back) get a duration.
 
---universe is {"large": [...], "mid": [...], "small": [...]} NSE symbols (ranked by NSE traded
-value); the summary is reported per group. Without the file, STOCKS below is watched as "large".
+--universe is {"small": [...], "mid": [...], "large": [...]}, each entry {"nse": symbol, "bse": symbol,
+...} (matched by ISIN; ranked by NSE traded value; BSE groups A/B/X only). The summary is reported
+per group, small caps first. Without the file, STOCKS below is watched as "large".
 
 Writes <out>/gaps-<day>.jsonl (one line per crossing episode) and <out>/summary-<day>.json,
 and prints the summary at --end.
@@ -63,30 +64,35 @@ def intraday_cost(buy_px: float, sell_px: float, qty: int, buy_exch: str) -> flo
     return brokerage + stt + txn + sebi + gst + stamp
 
 
-def load_universe(path: Path) -> dict[str, str]:
-    """stock -> group."""
+GROUP_ORDER = ("small", "mid", "large")
+
+
+def load_universe(path: Path) -> dict[str, tuple[str, str]]:
+    """NSE symbol -> (group, BSE symbol)."""
     if path.is_file():
         groups = json.loads(path.read_text(encoding="utf-8"))
-        return {s: g for g, names in groups.items() for s in names}
-    return {s: "large" for s in STOCKS}
+        return {e["nse"]: (g, e["bse"]) for g, entries in groups.items() for e in entries}
+    return {s: ("large", s) for s in STOCKS}
 
 
-def load_tokens(universe: dict[str, str]) -> dict[int, tuple[str, str]]:
-    """instrument_token -> (exchange, stock) for universe stocks listed on both exchanges."""
+def load_tokens(universe: dict[str, tuple[str, str]]) -> dict[int, tuple[str, str]]:
+    """instrument_token -> (exchange, NSE symbol) for universe stocks found on both exchanges."""
+    want = {"NSE": set(universe), "BSE": {bse for _, bse in universe.values()}}
     found: dict[str, dict[str, int]] = {"NSE": {}, "BSE": {}}
     for exch, name in (("NSE", "nse_instruments.csv"), ("BSE", "bse_instruments.csv")):
         with (ROOT / "data" / name).open(encoding="utf-8") as fh:
             for row in csv.DictReader(fh):
-                if row["exchange"] == exch and row["instrument_type"] == "EQ" and row["tradingsymbol"] in universe:
+                if row["exchange"] == exch and row["instrument_type"] == "EQ" and row["tradingsymbol"] in want[exch]:
                     found[exch][row["tradingsymbol"]] = int(row["instrument_token"])
-    both = [s for s in universe if s in found["NSE"] and s in found["BSE"]]
-    return {**{found["NSE"][s]: ("NSE", s) for s in both}, **{found["BSE"][s]: ("BSE", s) for s in both}}
+    both = [s for s, (_, bse) in universe.items() if s in found["NSE"] and bse in found["BSE"]]
+    return {**{found["NSE"][s]: ("NSE", s) for s in both}, **{found["BSE"][universe[s][1]]: ("BSE", s) for s in both}}
 
 
 class Watch:
-    def __init__(self, tokens: dict[int, tuple[str, str]], out: Path, day: str, groups: dict[str, str] | None = None) -> None:
+    def __init__(self, tokens: dict[int, tuple[str, str]], out: Path, day: str,
+                 universe: dict[str, tuple[str, str]] | None = None) -> None:
         self.tokens = tokens
-        self.groups = groups or {}
+        self.groups = {s: g for s, (g, _) in (universe or {}).items()}
         self.quotes: dict[tuple[str, str], dict] = {}
         self.open_eps: dict[tuple[str, str], dict] = {}
         self.episodes: list[dict] = []
@@ -186,9 +192,11 @@ class Watch:
                 "top_profitable_stocks": dict(sorted(by_stock.items(), key=lambda kv: -kv[1])[:10]),
             }
 
-        out = {"ticks": self.ticks, "all": block(self.episodes, None)}
-        for g in sorted({*self.groups.values()} or {"large"}):
+        out: dict = {"ticks": self.ticks}
+        present = set(self.groups.values()) or {"large"}
+        for g in [x for x in GROUP_ORDER if x in present]:  # small caps first
             out[g] = block([e for e in self.episodes if e.get("group") == g], g)
+        out["all"] = block(self.episodes, None)
         return out
 
 
