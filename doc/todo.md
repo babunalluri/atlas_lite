@@ -33,7 +33,7 @@ Checked every trading day. Tick items as done (`[x]`), add new ones with a date.
 - [ ] 15:25: weekly books open the next week (expiry 10 Nov). No stop check on the entry evening.
 
 ### Fri 6 Nov 2026
-- [ ] **Evening: NSE vs BSE research week analysis** (5 days in `data/arb/`). Find the best combination, small caps first: group × paper track (₹1/100/200/300/500/1,000) × order delay (100/300/600 ms) × stock × time of day. Judge on net after costs and failed legs, both-filled rate, and **day-by-day consistency** (a rule that only worked on one day is noise). Then paper-confirm the chosen rule for another week before any real order.
+- [ ] **Evening: NSE vs BSE research week analysis** (5 days in `data/arb/`). Find the best combination, small caps first: group × paper track (₹1/100/200/300/500/1,000) × order delay (100/300/600 ms) × stock × time of day. Judge on net after costs and failed legs, both-filled rate, and **day-by-day consistency** (a rule that only worked on one day is noise). Also replay the week under a **capital limit** (₹1 lakh one trade at a time, and ₹2.5 lakh up to two at once): first-come-first-served vs **highest estimated net first**; the paper file has every attempt's time and estimate, so no new recording is needed. Then paper-confirm the chosen rule for another week before any real order.
 - [ ] **ai_agent decision:** its shadow trades vs Scalper v3 for the week. Retire (`ATLAS_LITE_PAPER_AI_AGENT=0`) unless it clearly beat v3.
 
 ### ~Fri 27 Nov 2026 (about 55 real days)
