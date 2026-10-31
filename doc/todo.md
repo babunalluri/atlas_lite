@@ -10,6 +10,9 @@ Checked every trading day. Tick items as done (`[x]`), add new ones with a date.
 - [ ] **ai_agent (shadow):** today's shadow trades and P&L.
 - [ ] **Paper vs backtest:** `.venv/bin/python scripts/paper_vs_backtest.py --fetch`. A gap above ~₹300/trade, or an exit that differs from the backtest, gets investigated.
 - [ ] **Server health:** dashboard loads; no repeated warnings.
+- [ ] **NSE vs BSE gap watcher (research week, 2 – 6 Nov):** dashboard "NSE vs BSE gaps" line says live/final for today. If the container restarted (deploy), start it again:
+  `docker exec -d atlas-lite sh -c "python scripts/nse_bse_gap_watch.py --until 2026-11-06 >> /app/data/arb/watch.log 2>&1"`
+  (Optional guard: `scripts/arb_watch_guard.sh` from cron, `*/10 9-15 * * 1-5`; not installed, needs the owner's OK.)
 
 ## Dated
 
@@ -33,6 +36,7 @@ Checked every trading day. Tick items as done (`[x]`), add new ones with a date.
 - [ ] 15:25: weekly books open the next week (expiry 10 Nov). No stop check on the entry evening.
 
 ### Fri 6 Nov 2026
+- [ ] **Evening: NSE vs BSE research week analysis** (5 days in `data/arb/`). Find the best combination, small caps first: group × paper track (₹1/100/200/300/500/1,000) × order delay (100/300/600 ms) × stock × time of day. Judge on net after costs and failed legs, both-filled rate, and **day-by-day consistency** (a rule that only worked on one day is noise). Then paper-confirm the chosen rule for another week before any real order.
 - [ ] **ai_agent decision:** its shadow trades vs Scalper v3 for the week. Retire (`ATLAS_LITE_PAPER_AI_AGENT=0`) unless it clearly beat v3.
 
 ### ~Fri 27 Nov 2026 (about 55 real days)
