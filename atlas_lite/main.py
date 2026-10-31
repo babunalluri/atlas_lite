@@ -287,16 +287,43 @@ async def api_arb() -> dict[str, Any]:
         if not days:
             return {"ok": True, "available": False}
         day = max(days)
-        path = arb / f"summary-{day}.json"
-        if not path.is_file():
-            path = arb / f"live-{day}.json"
-        try:
-            report = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return {"ok": True, "available": False}
-        return {"ok": True, "available": True, **report}
+        for path in (arb / f"summary-{day}.json", arb / f"live-{day}.json"):  # final first; live if unreadable
+            try:
+                report = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            return {"ok": True, "available": True, **report}
+        return {"ok": True, "available": False}
 
     return await asyncio.to_thread(latest)
+
+
+@app.get("/api/arb/trades")
+async def api_arb_trades(
+    latency_ms: int = Query(default=300, description="simulated order delay: 100, 300 or 600"),
+    limit: int = Query(default=300, ge=1, le=2000),
+) -> dict[str, Any]:
+    """The gap watcher's paper trades for the latest day, newest first (paper only, no orders)."""
+
+    def read() -> dict[str, Any]:
+        files = sorted((DATA_DIR / "arb").glob("paper-*.jsonl"))
+        if not files:
+            return {"ok": True, "day": None, "latency_ms": latency_ms, "count": 0, "trades": []}
+        path = files[-1]
+        rows: list[dict[str, Any]] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and row.get("latency_ms") == latency_ms:
+                rows.append(row)
+        rows.sort(key=lambda r: str(r.get("seen") or ""), reverse=True)
+        return {"ok": True, "day": path.stem.split("-", 1)[1], "latency_ms": latency_ms,
+                "count": len(rows), "net": round(sum(float(r.get("net") or 0) for r in rows), 2),
+                "trades": rows[:limit]}
+
+    return await asyncio.to_thread(read)
 
 
 @app.get("/api/paper/trades")

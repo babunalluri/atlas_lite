@@ -49,6 +49,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from atlas_lite.config import load_settings  # noqa: E402
+from atlas_lite.kite_charges import order_charges as kite_order_charges  # noqa: E402
 from atlas_lite.kite_ws import KITE_WS_URL, WS_MODE_FULL, parse_binary_ticks  # noqa: E402
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -59,36 +60,31 @@ STOCKS = (
 ).split()
 FRESH_S = 1.0
 LATENCIES_MS = (100, 300, 600)
+# A leg's fill uses the first quote update at or after its arrival; none within this long counts as stale.
+NEXT_QUOTE_WAIT_S = 2.0
 MAX_NOTIONAL = 100_000.0
 PAPER_COOLDOWN_S = 2.0
 TXN_RATE = {"NSE": 0.0000297, "BSE": 0.0000375}
 
 
 def order_charges(fills: list[tuple[str, str, float, int]]) -> float:
-    """Zerodha equity intraday charges for executed orders (exchange, buy|sell, price, qty)."""
+    """Zerodha equity intraday charges for executed orders (exchange, buy|sell, price, qty).
+
+    atlas_lite.kite_charges.order_charges does the rounding and GST base; equity intraday rates:
+    brokerage 0.03% capped at ₹20, STT 0.025% on sells, exchange fees per exchange.
+    """
     total = 0.0
     for exch, side, px, qty in fills:
         value = px * qty
-        brokerage = min(20.0, 0.0003 * value)
-        txn = TXN_RATE[exch] * value
-        sebi = 0.000001 * value
-        total += brokerage + txn + sebi + 0.18 * (brokerage + txn + sebi)
-        total += 0.00025 * value if side == "sell" else 0.00003 * value  # STT on sells, stamp duty on buys
+        total += kite_order_charges(value, side=side, brokerage=round(min(20.0, 0.0003 * value), 2),
+                                    txn_rate=TXN_RATE[exch], stt_sell_rate=0.00025)["total"]
     return total
 
 
 def intraday_cost(buy_px: float, sell_px: float, qty: int, buy_exch: str) -> float:
-    """Zerodha equity intraday round trip, rupees (rates as of 2026)."""
-    buy_val, sell_val = buy_px * qty, sell_px * qty
-    brokerage = min(20.0, 0.0003 * buy_val) + min(20.0, 0.0003 * sell_val)
-    stt = 0.00025 * sell_val
-    txn_rate = {"NSE": 0.0000297, "BSE": 0.0000375}
+    """Zerodha equity intraday round trip, rupees: the same charges the paper fills pay."""
     sell_exch = "BSE" if buy_exch == "NSE" else "NSE"
-    txn = txn_rate[buy_exch] * buy_val + txn_rate[sell_exch] * sell_val
-    sebi = 0.000001 * (buy_val + sell_val)
-    gst = 0.18 * (brokerage + txn + sebi)
-    stamp = 0.00003 * buy_val
-    return brokerage + stt + txn + sebi + gst + stamp
+    return order_charges([(buy_exch, "buy", buy_px, qty), (sell_exch, "sell", sell_px, qty)])
 
 
 GROUP_ORDER = ("small", "mid", "large")
@@ -99,6 +95,8 @@ def load_universe(path: Path) -> dict[str, tuple[str, str]]:
     if path.is_file():
         groups = json.loads(path.read_text(encoding="utf-8"))
         return {e["nse"]: (g, e["bse"]) for g, entries in groups.items() for e in entries}
+    print(f"WARNING: {path} not found: watching only {len(STOCKS)} built-in large caps, no small or mid caps",
+          flush=True)
     return {s: ("large", s) for s in STOCKS}
 
 
@@ -113,6 +111,13 @@ def load_tokens(universe: dict[str, tuple[str, str]]) -> dict[int, tuple[str, st
                     found[exch][row["tradingsymbol"]] = int(row["instrument_token"])
     both = [s for s, (_, bse) in universe.items() if s in found["NSE"] and bse in found["BSE"]]
     return {**{found["NSE"][s]: ("NSE", s) for s in both}, **{found["BSE"][universe[s][1]]: ("BSE", s) for s in both}}
+
+
+def tradable_qty(buy_q: dict, sell_q: dict) -> int:
+    """Shares at both best prices, capped at MAX_NOTIONAL: the same size for crossing stats and paper."""
+    if not buy_q.get("ask") or not sell_q.get("bid"):
+        return 0
+    return int(min(sell_q["bid_qty"], buy_q["ask_qty"], MAX_NOTIONAL // buy_q["ask"]))
 
 
 class Watch:
@@ -134,6 +139,7 @@ class Watch:
         self._paper_last: dict[tuple[str, int], float] = {}
         self._paper_busy: set[tuple[str, int]] = set()
         self._tasks: set[asyncio.Task] = set()
+        self.paper_errors = 0
         self.day = day
         self.live_path = out / f"live-{day}.json"
         self._live_at = 0.0
@@ -168,9 +174,9 @@ class Watch:
         for direction, sell_q, buy_q, buy_exch in (("buy BSE sell NSE", n, b, "BSE"), ("buy NSE sell BSE", b, n, "NSE")):
             k = (stock, direction)
             gap = sell_q["bid"] - buy_q["ask"]
-            if gap > 0:
-                qty = int(min(sell_q["bid_qty"], buy_q["ask_qty"]))
-                net = gap * qty - intraday_cost(buy_q["ask"], sell_q["bid"], qty, buy_exch) if qty > 0 else 0.0
+            qty = tradable_qty(buy_q, sell_q)
+            if gap > 0 and qty >= 1:
+                net = gap * qty - intraday_cost(buy_q["ask"], sell_q["bid"], qty, buy_exch)
                 ep = self.open_eps.get(k)
                 if ep is None:
                     ep = self.open_eps[k] = {"stock": stock, "group": self.groups.get(stock, "large"),
@@ -186,7 +192,7 @@ class Watch:
                 self.close(k)
 
     def maybe_paper(self, stock: str, buy_exch: str, sell_exch: str, buy_q: dict, sell_q: dict, now: float) -> None:
-        qty = int(min(sell_q["bid_qty"], buy_q["ask_qty"], MAX_NOTIONAL // buy_q["ask"]))
+        qty = tradable_qty(buy_q, sell_q)
         if qty < 1:
             return
         if (sell_q["bid"] - buy_q["ask"]) * qty - intraday_cost(buy_q["ask"], sell_q["bid"], qty, buy_exch) <= 0:
@@ -203,14 +209,37 @@ class Watch:
             self._paper_last[key] = now
             task = loop.create_task(self.paper_attempt(stock, buy_exch, sell_exch, buy_q["ask"], sell_q["bid"], qty, lat))
             self._tasks.add(task)
-            task.add_done_callback(self._tasks.discard)
+            task.add_done_callback(self._paper_done)
+
+    def _paper_done(self, task: asyncio.Task) -> None:
+        self._tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            self.paper_errors += 1
+            print(f"{datetime.now(IST):%H:%M:%S} paper attempt failed: {task.exception()!r}", flush=True)
+
+    async def _quote_after(self, key: tuple[str, str], t_min: float) -> tuple[dict | None, bool]:
+        """First quote update at or after t_min; (last quote, False) if none comes within NEXT_QUOTE_WAIT_S."""
+        deadline = t_min + NEXT_QUOTE_WAIT_S
+        while True:
+            q = self.quotes.get(key)
+            if q is not None and q["at"] >= t_min:
+                return q, True
+            if time.time() >= deadline:
+                return q, False
+            await asyncio.sleep(0.02)
 
     async def paper_attempt(self, stock: str, buy_exch: str, sell_exch: str, buy_lim: float, sell_lim: float,
                             qty: int, lat: int) -> None:
         try:
             seen = time.time()
+            arrive = seen + lat / 1000
             await asyncio.sleep(lat / 1000)
-            bq, sq = self.quotes[(buy_exch, stock)], self.quotes[(sell_exch, stock)]
+            # Kite streams quote snapshots, not every trade: a leg fills against the first update at or
+            # after its arrival, not the quote that triggered it.
+            (bq, b_fresh), (sq, s_fresh) = await asyncio.gather(
+                self._quote_after((buy_exch, stock), arrive), self._quote_after((sell_exch, stock), arrive))
+            if bq is None or sq is None:
+                return
             bought = int(min(qty, bq["ask_qty"])) if bq["ask"] and bq["ask"] <= buy_lim else 0
             sold = int(min(qty, sq["bid_qty"])) if sq["bid"] and sq["bid"] >= sell_lim else 0
             buy_px, sell_px = bq["ask"], sq["bid"]
@@ -223,16 +252,17 @@ class Watch:
             gross = matched * (sell_px - buy_px) if matched else 0.0
             unwind_pnl = 0.0
             if bought != sold:  # one leg filled more: close the extra at market after another delay
+                t_unwind = time.time() + lat / 1000
                 await asyncio.sleep(lat / 1000)
                 if bought > sold:
-                    q = self.quotes[(buy_exch, stock)]
-                    px = q["bid"] or buy_px * 0.995  # no bid: assume a 0.5% hit
+                    q, _ = await self._quote_after((buy_exch, stock), t_unwind)
+                    px = (q or {}).get("bid") or buy_px * 0.995  # no bid: assume a 0.5% hit
                     extra = bought - sold
                     unwind_pnl = extra * (px - buy_px)
                     fills.append((buy_exch, "sell", px, extra))
                 else:
-                    q = self.quotes[(sell_exch, stock)]
-                    px = q["ask"] or sell_px * 1.005
+                    q, _ = await self._quote_after((sell_exch, stock), t_unwind)
+                    px = (q or {}).get("ask") or sell_px * 1.005
                     extra = sold - bought
                     unwind_pnl = extra * (sell_px - px)
                     fills.append((sell_exch, "buy", px, extra))
@@ -243,6 +273,7 @@ class Watch:
                    "seen": datetime.fromtimestamp(seen, IST).isoformat(timespec="milliseconds"),
                    "direction": f"buy {buy_exch} sell {sell_exch}", "buy_limit": buy_lim, "sell_limit": sell_lim,
                    "qty": qty, "bought": bought, "sold": sold, "outcome": outcome,
+                   "quotes_updated": b_fresh and s_fresh,
                    "gross": round(gross, 2), "unwind_pnl": round(unwind_pnl, 2), "net": round(net, 2)}
             self.paper.append(rec)
             with self.paper_path.open("a", encoding="utf-8") as fh:
@@ -311,13 +342,14 @@ class Watch:
                 counts = {o: sum(x["outcome"] == o for x in r) for o in ("both", "none", "one_leg", "partial")}
                 out_b[f"{lat}ms"] = {
                     "attempts": len(r), **counts,
+                    "no_quote_update": sum(not x.get("quotes_updated", True) for x in r),
                     "net": round(sum(x["net"] for x in r), 2),
                     "net_both_filled": round(sum(x["net"] for x in r if x["outcome"] == "both"), 2),
                     "net_failed_legs": round(sum(x["net"] for x in r if x["outcome"] in ("one_leg", "partial")), 2),
                 }
             return out_b
 
-        out: dict = {"ticks": self.ticks}
+        out: dict = {"ticks": self.ticks, "paper_errors": self.paper_errors}
         present = set(self.groups.values()) or {"large"}
         for g in [x for x in GROUP_ORDER if x in present]:  # small caps first
             out[g] = block([e for e in self.episodes if e.get("group") == g], g)
