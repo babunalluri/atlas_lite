@@ -42,11 +42,13 @@ Checked every trading day. Tick items as done (`[x]`), add new ones with a date.
 
 - [ ] Optional: paper book "v3 at 14:30" (same rules, 14:30 entry) to compare with 13:00 on real fills.
 - [ ] Before any live book: build the live order path for that one book: Kite basket-margin and funds check before every entry, partial-fill handling, kill rule (back to paper after 3 stop-outs in a row or a loss beyond the backtest's worst day), and an explicit go-ahead.
+- [ ] Add the depth-tape bid/ask builder (`~/px_build/build_quotes.py` on the server) to `scripts/build_px_real.py`, so buying-side backtests price at ask in / bid out by default.
 - [ ] Delete `~/.cache/huggingface` (1.1 GB of Kronos weights) if the space is wanted.
 
 ## Reference
 
 - **Running:** Scalper v3 (13:00 straddle sale), weekly strangle, weekly condor (5% wings), short iron condor, iron fly, agent (Scalper v2, paper), ai_agent (shadow).
 - **Retired (flags off, ledgers kept):** 14:30 short straddle, theta cliff, ICT, combo, impulse fade, skew fade, long iron condor, VWAP long, factor paper.
-- **Scalping research summary:** buying-side scalps all lost after costs (ML, Kronos, ICT, engulfing, 2-min EMA, v2, long straddles); intraday selling only pays when held into the last hour (Scalper v3). Details in `doc/scalper-v3.md` and `doc/weekly-option-selling.md`.
+- **Scalping research summary:** buying-side scalps all lost after costs (ML, Kronos, ICT, engulfing, 2-min EMA, v2, long straddles, the framework doc's compression breakout); intraday selling only pays when held into the last hour (Scalper v3).
+- **Pricing lesson (31 Oct):** last-price backtests overstate breakout buying by ₹400–900/trade (exits on prints above the bid). At real bid/ask the compression breakout went from +₹512/+₹802 to −₹13/−₹102 per trade, while Scalper v3 improved (+₹774 → +₹969 on the same 15 days; 30 Oct sim = paper ₹695 exactly). Details in `doc/scalper-v3.md` and `doc/weekly-option-selling.md`.
 - **Live switch:** `ATLAS_LITE_AGENT_LIVE_ALLOWED=0` on the server. Nothing goes live without an explicit decision.
