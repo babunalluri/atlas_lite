@@ -366,9 +366,62 @@ def test_until_is_the_end_even_past_the_days_count(tmp_path, monkeypatch) -> Non
             return real(2026, 11, 2, 10, 0, tzinfo=tz)
 
     monkeypatch.setattr(W, "run_day", fake_run_day)
-    monkeypatch.setattr(W, "finalize_missing", lambda out, uni: None)
+    monkeypatch.setattr(W, "finalize_missing", lambda out, uni, end="15:30": None)
     monkeypatch.setattr(W, "datetime", Clock)
     monkeypatch.setattr(W, "idle", lambda: asyncio.sleep(0))
     monkeypatch.setattr(sys, "argv", ["w", "--out", str(tmp_path), "--days", "2", "--until", "2026-11-04"])
     asyncio.run(W.main())
     assert seen == ["2026-11-02", "2026-11-03", "2026-11-04"]  # 3 sessions although --days 2
+
+
+def test_restart_restores_ticks_open_crossings_and_waits_before_paper(tmp_path) -> None:
+    open_ep = {"stock": "AAA", "group": "small", "direction": "buy BSE sell NSE", "start": "2026-11-02T10:00:00.000+05:30",
+               "end": "2026-11-02T10:00:01.000+05:30", "duration_s": 1.0, "ticks": 3, "max_gap_pct": 0.4,
+               "max_qty": 200, "best_net": 600.0}
+    (tmp_path / "live-2026-11-02.json").write_text(json.dumps({"day": "2026-11-02", "final": False, "ticks": 12345,
+                                                                "open_crossings": [open_ep]}))
+    w = W.Watch({1: ("NSE", "AAA"), 2: ("BSE", "AAA")}, tmp_path, "2026-11-02", {"AAA": ("small", "AAA")})
+    s = w.summary(final=False)
+    assert s["ticks"] == 12345 and s["small"]["crossings"] == 1
+    assert w.episodes[0]["closed_by"] == "restart"
+    assert W.Watch({}, tmp_path, "2026-11-02", {}).episodes.__len__() == 1  # written once, not again on the next restart
+    import time as _t
+    assert w._resume_until > _t.time()
+    w.maybe_paper("AAA", "BSE", "NSE", {"ask": 498.0, "ask_qty": 1000}, {"bid": 502.0, "bid_qty": 1000}, _t.time())
+    assert not w._tasks  # no paper trade straight after a restart
+
+
+def test_live_snapshot_lists_crossings_still_open(tmp_path) -> None:
+    w = W.Watch({1: ("NSE", "AAA"), 2: ("BSE", "AAA")}, tmp_path, "2026-11-02", {"AAA": ("small", "AAA")})
+    w.on_tick({"instrument_token": 1, "bid": 500.0, "ask": 500.2, "depth": {"buy": [{"quantity": 100}], "sell": [{"quantity": 100}]}})
+    w.on_tick({"instrument_token": 2, "bid": 497.8, "ask": 498.0, "depth": {"buy": [{"quantity": 100}], "sell": [{"quantity": 100}]}})
+    live = w.write_report(final=False)
+    assert len(live["open_crossings"]) == 1 and live["open_crossings"][0]["stock"] == "AAA"
+    assert "open_crossings" not in w.write_report(final=True)
+
+
+def test_recovery_respects_a_custom_session_end(tmp_path, monkeypatch) -> None:
+    from datetime import datetime as real
+
+    class Clock:
+        @staticmethod
+        def now(tz=None):
+            return real(2026, 11, 2, 14, 0, tzinfo=tz)
+
+        @staticmethod
+        def fromtimestamp(*a, **k):
+            return real.fromtimestamp(*a, **k)
+
+        @staticmethod
+        def fromisoformat(v):
+            return real.fromisoformat(v)
+
+    monkeypatch.setattr(W, "datetime", Clock)
+    monkeypatch.setattr(W, "load_tokens", lambda universe: {})
+    (tmp_path / "paper-2026-11-02.jsonl").write_text(json.dumps({"stock": "AAA", "latency_ms": 300, "net": 1.0}) + "\n")
+    uni = tmp_path / "u.json"
+    uni.write_text(json.dumps({"small": []}))
+    W.finalize_missing(tmp_path, uni, end="15:00")  # 14:00 < 15:00: today's session not over
+    assert not (tmp_path / "summary-2026-11-02.json").exists()
+    W.finalize_missing(tmp_path, uni, end="13:30")  # 14:00 >= 13:30: over, rebuild
+    assert (tmp_path / "summary-2026-11-02.json").exists()

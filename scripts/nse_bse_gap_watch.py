@@ -178,6 +178,8 @@ class Watch:
         self.day = day
         self.live_path = out / f"live-{day}.json"
         self._live_at = 0.0
+        self.ticks_base = 0
+        self._resume_until = 0.0
         self._reload()
 
     def _reload(self) -> None:
@@ -194,6 +196,17 @@ class Watch:
                     continue
                 if isinstance(row, dict):
                     bucket.append(row)
+        try:
+            live = json.loads(self.live_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            live = {}
+        self.ticks_base = int(live.get("ticks") or 0)
+        known = {(e.get("stock"), e.get("direction"), e.get("start")) for e in self.episodes}
+        for ep in live.get("open_crossings") or []:  # open when the last process stopped
+            if (ep.get("stock"), ep.get("direction"), ep.get("start")) not in known:
+                self._append_episode({**ep, "closed_by": "restart"})
+        if self.paper or live:  # a restart: no paper trade until every cooldown has passed
+            self._resume_until = time.time() + PAPER_COOLDOWN_S
         for rec in self.paper:
             try:
                 at = datetime.fromisoformat(str(rec["seen"])).timestamp()
@@ -250,6 +263,8 @@ class Watch:
                 self.close(k)
 
     def maybe_paper(self, stock: str, buy_exch: str, sell_exch: str, buy_q: dict, sell_q: dict, now: float) -> None:
+        if now < self._resume_until:  # just restarted: an attempt lost in flight may still be cooling down
+            return
         qty = tradable_qty(buy_q, sell_q)
         if qty < 1:
             return
@@ -353,13 +368,20 @@ class Watch:
         with self.paper_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec) + "\n")
 
+    @staticmethod
+    def _serialized(ep: dict) -> dict:
+        out = dict(ep)
+        out["duration_s"] = round(ep["end"] - ep["start"], 3)
+        out["start"] = datetime.fromtimestamp(ep["start"], IST).isoformat(timespec="milliseconds")
+        out["end"] = datetime.fromtimestamp(ep["end"], IST).isoformat(timespec="milliseconds")
+        out["max_gap_pct"] = round(ep["max_gap_pct"], 4)
+        out["best_net"] = round(ep["best_net"], 2)
+        return out
+
     def close(self, k: tuple[str, str]) -> None:
-        ep = self.open_eps.pop(k)
-        ep["duration_s"] = round(ep["end"] - ep["start"], 3)
-        ep["start"] = datetime.fromtimestamp(ep["start"], IST).isoformat(timespec="milliseconds")
-        ep["end"] = datetime.fromtimestamp(ep["end"], IST).isoformat(timespec="milliseconds")
-        ep["max_gap_pct"] = round(ep["max_gap_pct"], 4)
-        ep["best_net"] = round(ep["best_net"], 2)
+        self._append_episode(self._serialized(self.open_eps.pop(k)))
+
+    def _append_episode(self, ep: dict) -> None:
         self.episodes.append(ep)
         with self.path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(ep) + "\n")
@@ -367,6 +389,8 @@ class Watch:
     def write_report(self, final: bool) -> dict:
         report = {"day": self.day, "final": final,
                   "updated_at": datetime.now(IST).isoformat(timespec="seconds"), **self.summary(final)}
+        if not final:  # a restart (or recovery) adds these back, closed at their last-seen time
+            report["open_crossings"] = [self._serialized(ep) for ep in self.open_eps.values()]
         path = self.summary_path if final else self.live_path
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(report, indent=2), encoding="utf-8")
@@ -411,17 +435,17 @@ class Watch:
         def paper_block(recs: list[dict]) -> dict:
             out_b = {}
             for lat in LATENCIES_MS:
-                r = [x for x in recs if x["latency_ms"] == lat]
-                counts = {o: sum(x["outcome"] == o for x in r) for o in ("both", "none", "one_leg", "partial", "unknown")}
+                r = [x for x in recs if x.get("latency_ms") == lat]
+                counts = {o: sum(x.get("outcome") == o for x in r) for o in ("both", "none", "one_leg", "partial", "unknown")}
                 out_b[f"{lat}ms"] = {
                     "attempts": len(r), **counts,
-                    "net": round(sum(x["net"] or 0 for x in r), 2),  # unknown attempts carry no P&L
-                    "net_both_filled": round(sum(x["net"] for x in r if x["outcome"] == "both"), 2),
-                    "net_failed_legs": round(sum(x["net"] for x in r if x["outcome"] in ("one_leg", "partial")), 2),
+                    "net": round(sum(x.get("net") or 0 for x in r), 2),  # unknown attempts carry no P&L
+                    "net_both_filled": round(sum(x.get("net") or 0 for x in r if x.get("outcome") == "both"), 2),
+                    "net_failed_legs": round(sum(x.get("net") or 0 for x in r if x.get("outcome") in ("one_leg", "partial")), 2),
                 }
             return out_b
 
-        out: dict = {"ticks": self.ticks, "quote_samples_since": self.samples_since, "paper_errors": self.paper_errors,
+        out: dict = {"ticks": self.ticks_base + self.ticks, "quote_samples_since": self.samples_since, "paper_errors": self.paper_errors,
                      "paper_cancelled_at_close": self.cancelled_at_close, "min_net": MIN_PAPER_NET,
                      "research_nets": sorted(RESEARCH_NETS)}
 
@@ -434,7 +458,7 @@ class Watch:
         present = set(self.groups.values()) or {"large"}
         for g in [x for x in GROUP_ORDER if x in present]:  # small caps first
             out[g] = block([e for e in self.episodes if e.get("group") == g], g)
-            in_group = [x for x in self.paper if x["group"] == g]
+            in_group = [x for x in self.paper if x.get("group") == g]  # reloaded rows may be partial
             out[g]["paper"] = paper_block(main_track(in_group))
             out[g]["paper_research"] = research(in_group)
         out["all"] = block(self.episodes, None)
@@ -496,8 +520,8 @@ async def main() -> None:
         lock = acquire_lock(out)
     if not args.until:  # the last of --days trading sessions, so a long run never spills past it
         args.until = planned_until(datetime.now(IST), args.days, args.end).isoformat()
-    print(f"{datetime.now(IST):%Y-%m-%d %H:%M}: recording up to {args.days} trading day(s), last {args.until}", flush=True)
-    finalize_missing(out, Path(args.universe))
+    print(f"{datetime.now(IST):%Y-%m-%d %H:%M}: recording trading days until {args.until}", flush=True)
+    finalize_missing(out, Path(args.universe), args.end)
     n = 0
     while datetime.now(IST).strftime("%Y-%m-%d") <= args.until:  # --until is the end; --days only sets it
         n += 1
@@ -505,6 +529,7 @@ async def main() -> None:
         if day >= args.until:
             break
     print(f"{datetime.now(IST):%Y-%m-%d %H:%M}: recording finished (last day {args.until}); idling", flush=True)
+    lock.close()  # idle without the lock, so a manual watcher can run
     await idle()
 
 
@@ -547,13 +572,13 @@ def planned_until(now: datetime, days: int, end: str):
         d += timedelta(days=1)
 
 
-def finalize_missing(out: Path, universe_path: Path) -> None:
+def finalize_missing(out: Path, universe_path: Path, end: str = "15:30") -> None:
     """A day whose watcher died after the close (or before writing it) gets its final report rebuilt
     from its files, marked recovered. Today counts only once its session is over."""
     today, now_hm = datetime.now(IST).strftime("%Y-%m-%d"), hm_now()
     days = {p.stem.split("-", 1)[1] for p in [*out.glob("gaps-*.jsonl"), *out.glob("paper-*.jsonl")]}
     for day in sorted(days):
-        if (out / f"summary-{day}.json").is_file() or (day == today and now_hm < "15:30") or day > today:
+        if (out / f"summary-{day}.json").is_file() or (day == today and now_hm < end) or day > today:
             continue
         universe = load_universe(universe_path)
         watch = Watch(load_tokens(universe), out, day, universe)
