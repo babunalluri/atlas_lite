@@ -1,4 +1,4 @@
-"""Usage: python3 scripts/nse_bse_gap_watch.py [--out data/arb] [--start 09:15] [--end 15:30]
+"""Usage: python3 scripts/nse_bse_gap_watch.py [--universe data/arb_universe.json] [--out data/arb] [--start 09:15] [--end 15:30]
 
 Watch NSE vs BSE best bid/ask for liquid stocks and record every moment one exchange's
 bid is above the other's ask. Read-only: never places an order.
@@ -12,6 +12,9 @@ A crossing counts only when both quotes are under 1 s old. For each crossing it 
 gap, the shares available at both best prices, and whether buying on one exchange and
 selling on the other would clear Zerodha intraday costs (brokerage, STT, exchange and SEBI
 fees, GST, stamp duty). Episodes (same stock and direction, back to back) get a duration.
+
+--universe is {"large": [...], "mid": [...], "small": [...]} NSE symbols (ranked by NSE traded
+value); the summary is reported per group. Without the file, STOCKS below is watched as "large".
 
 Writes <out>/gaps-<day>.jsonl (one line per crossing episode) and <out>/summary-<day>.json,
 and prints the summary at --end.
@@ -60,26 +63,35 @@ def intraday_cost(buy_px: float, sell_px: float, qty: int, buy_exch: str) -> flo
     return brokerage + stt + txn + sebi + gst + stamp
 
 
-def load_tokens() -> dict[int, tuple[str, str]]:
-    """instrument_token -> (exchange, stock) for STOCKS listed on both exchanges."""
+def load_universe(path: Path) -> dict[str, str]:
+    """stock -> group."""
+    if path.is_file():
+        groups = json.loads(path.read_text(encoding="utf-8"))
+        return {s: g for g, names in groups.items() for s in names}
+    return {s: "large" for s in STOCKS}
+
+
+def load_tokens(universe: dict[str, str]) -> dict[int, tuple[str, str]]:
+    """instrument_token -> (exchange, stock) for universe stocks listed on both exchanges."""
     found: dict[str, dict[str, int]] = {"NSE": {}, "BSE": {}}
     for exch, name in (("NSE", "nse_instruments.csv"), ("BSE", "bse_instruments.csv")):
         with (ROOT / "data" / name).open(encoding="utf-8") as fh:
             for row in csv.DictReader(fh):
-                if row["exchange"] == exch and row["instrument_type"] == "EQ" and row["tradingsymbol"] in STOCKS:
+                if row["exchange"] == exch and row["instrument_type"] == "EQ" and row["tradingsymbol"] in universe:
                     found[exch][row["tradingsymbol"]] = int(row["instrument_token"])
-    both = [s for s in STOCKS if s in found["NSE"] and s in found["BSE"]]
+    both = [s for s in universe if s in found["NSE"] and s in found["BSE"]]
     return {**{found["NSE"][s]: ("NSE", s) for s in both}, **{found["BSE"][s]: ("BSE", s) for s in both}}
 
 
 class Watch:
-    def __init__(self, tokens: dict[int, tuple[str, str]], out: Path, day: str) -> None:
+    def __init__(self, tokens: dict[int, tuple[str, str]], out: Path, day: str, groups: dict[str, str] | None = None) -> None:
         self.tokens = tokens
+        self.groups = groups or {}
         self.quotes: dict[tuple[str, str], dict] = {}
         self.open_eps: dict[tuple[str, str], dict] = {}
         self.episodes: list[dict] = []
-        self.mid_gaps: list[float] = []
-        self.spreads: dict[str, list[float]] = {"NSE": [], "BSE": []}
+        self.mid_gaps: dict[str, list[float]] = {}
+        self.spreads: dict[str, dict[str, list[float]]] = {}
         self.ticks = 0
         self.path = out / f"gaps-{day}.jsonl"
         self.summary_path = out / f"summary-{day}.json"
@@ -107,9 +119,11 @@ class Watch:
         mid = (n["bid"] + n["ask"] + b["bid"] + b["ask"]) / 4
         if now - self._last_sample.get(stock, 0) >= 1.0:  # once a second per stock
             self._last_sample[stock] = now
-            self.mid_gaps.append(((n["bid"] + n["ask"]) - (b["bid"] + b["ask"])) / 2 / mid)
-            self.spreads["NSE"].append((n["ask"] - n["bid"]) / mid)
-            self.spreads["BSE"].append((b["ask"] - b["bid"]) / mid)
+            g = self.groups.get(stock, "large")
+            self.mid_gaps.setdefault(g, []).append(((n["bid"] + n["ask"]) - (b["bid"] + b["ask"])) / 2 / mid)
+            sp = self.spreads.setdefault(g, {"NSE": [], "BSE": []})
+            sp["NSE"].append((n["ask"] - n["bid"]) / mid)
+            sp["BSE"].append((b["ask"] - b["bid"]) / mid)
         for direction, sell_q, buy_q, buy_exch in (("buy BSE sell NSE", n, b, "BSE"), ("buy NSE sell BSE", b, n, "NSE")):
             k = (stock, direction)
             gap = sell_q["bid"] - buy_q["ask"]
@@ -118,7 +132,8 @@ class Watch:
                 net = gap * qty - intraday_cost(buy_q["ask"], sell_q["bid"], qty, buy_exch) if qty > 0 else 0.0
                 ep = self.open_eps.get(k)
                 if ep is None:
-                    ep = self.open_eps[k] = {"stock": stock, "direction": direction, "start": now, "ticks": 0,
+                    ep = self.open_eps[k] = {"stock": stock, "group": self.groups.get(stock, "large"),
+                                             "direction": direction, "start": now, "ticks": 0,
                                              "max_gap_pct": 0.0, "max_qty": 0, "best_net": float("-inf")}
                 ep["ticks"] += 1
                 ep["end"] = now
@@ -142,30 +157,39 @@ class Watch:
     def summary(self) -> dict:
         for k in list(self.open_eps):
             self.close(k)
-        eps = self.episodes
-        profitable = [e for e in eps if e["best_net"] > 0]
-        lasting = [e for e in profitable if e["duration_s"] >= 0.5]
 
         def pct(values: list[float], q: float) -> float | None:
             return round(sorted(values)[int(q * (len(values) - 1))] * 100, 4) if values else None
 
-        by_stock: dict[str, int] = {}
-        for e in profitable:
-            by_stock[e["stock"]] = by_stock.get(e["stock"], 0) + 1
-        return {
-            "ticks": self.ticks,
-            "crossings": len(eps),
-            "crossings_profitable_after_costs": len(profitable),
-            "profitable_lasting_0_5s_or_more": len(lasting),
-            "sum_best_net_if_every_profitable_one_were_caught": round(sum(e["best_net"] for e in profitable), 2),
-            "median_crossing_duration_s": round(st.median([e["duration_s"] for e in eps]), 3) if eps else None,
-            "median_crossing_gap_pct": round(st.median([e["max_gap_pct"] for e in eps]), 4) if eps else None,
-            "mid_gap_pct_p50_abs": pct([abs(x) for x in self.mid_gaps], 0.5),
-            "mid_gap_pct_p99_abs": pct([abs(x) for x in self.mid_gaps], 0.99),
-            "nse_spread_pct_median": pct(self.spreads["NSE"], 0.5),
-            "bse_spread_pct_median": pct(self.spreads["BSE"], 0.5),
-            "profitable_by_stock": dict(sorted(by_stock.items(), key=lambda kv: -kv[1])),
-        }
+        def block(eps: list[dict], group: str | None) -> dict:
+            profitable = [e for e in eps if e["best_net"] > 0]
+            lasting = [e for e in profitable if e["duration_s"] >= 0.5]
+            by_stock: dict[str, int] = {}
+            for e in profitable:
+                by_stock[e["stock"]] = by_stock.get(e["stock"], 0) + 1
+            gaps = self.mid_gaps.get(group, []) if group else [x for v in self.mid_gaps.values() for x in v]
+            spreads = self.spreads.get(group, {"NSE": [], "BSE": []}) if group else {
+                ex: [x for v in self.spreads.values() for x in v[ex]] for ex in ("NSE", "BSE")}
+            return {
+                "stocks": len({s for _, s in self.tokens.values() if group in (None, self.groups.get(s, "large"))}),
+                "crossings": len(eps),
+                "crossings_profitable_after_costs": len(profitable),
+                "profitable_lasting_0_5s_or_more": len(lasting),
+                "sum_best_net_if_every_profitable_one_were_caught": round(sum(e["best_net"] for e in profitable), 2),
+                "sum_best_net_lasting_0_5s_or_more": round(sum(e["best_net"] for e in lasting), 2),
+                "median_crossing_duration_s": round(st.median([e["duration_s"] for e in eps]), 3) if eps else None,
+                "median_crossing_gap_pct": round(st.median([e["max_gap_pct"] for e in eps]), 4) if eps else None,
+                "mid_gap_pct_p50_abs": pct([abs(x) for x in gaps], 0.5),
+                "mid_gap_pct_p99_abs": pct([abs(x) for x in gaps], 0.99),
+                "nse_spread_pct_median": pct(spreads["NSE"], 0.5),
+                "bse_spread_pct_median": pct(spreads["BSE"], 0.5),
+                "top_profitable_stocks": dict(sorted(by_stock.items(), key=lambda kv: -kv[1])[:10]),
+            }
+
+        out = {"ticks": self.ticks, "all": block(self.episodes, None)}
+        for g in sorted({*self.groups.values()} or {"large"}):
+            out[g] = block([e for e in self.episodes if e.get("group") == g], g)
+        return out
 
 
 def hm_now() -> str:
@@ -194,6 +218,7 @@ async def session(watch: Watch, end: str) -> None:
 
 async def main() -> None:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--universe", default=str(ROOT / "data" / "arb_universe.json"))
     ap.add_argument("--out", default=str(ROOT / "data" / "arb"))
     ap.add_argument("--start", default="09:15")
     ap.add_argument("--end", default="15:30")
@@ -203,7 +228,8 @@ async def main() -> None:
     while datetime.now(IST).weekday() >= 5 or hm_now() < args.start or hm_now() >= args.end:
         await asyncio.sleep(20)
     day = datetime.now(IST).strftime("%Y-%m-%d")
-    watch = Watch(load_tokens(), out, day)
+    universe = load_universe(Path(args.universe))
+    watch = Watch(load_tokens(universe), out, day, universe)
     print(f"{day}: watching {len(watch.tokens) // 2} stocks on NSE and BSE until {args.end}", flush=True)
     backoff = 5.0
     while hm_now() < args.end:
