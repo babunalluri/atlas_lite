@@ -7006,7 +7006,7 @@
       meta.textContent = `Paper trades ${data.day}${trackText} · ${data.latency_ms} ms delay${shown} · net ₹${data.net} (all ${data.count})`;
       const cell = (v) => escapeTradeHtml(v ?? "—");
       tbody.innerHTML = (data.trades || []).map((t) => {
-        const stale = t.unwind_quote_updated === false ? " · unwind at last price" : "";
+        const stale = t.unwind_quote_updated === false ? " · unwind: no fresh price, assumed one spread worse" : "";
         return `<tr>
           <td>${cell(String(t.seen || "").slice(11, 23))}</td>
           <td>${cell(t.stock)}</td>

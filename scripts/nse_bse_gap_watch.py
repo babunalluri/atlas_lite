@@ -164,6 +164,7 @@ class Watch:
         self.mid_gaps: dict[str, list[float]] = {}
         self.spreads: dict[str, dict[str, list[float]]] = {}
         self.ticks = 0
+        self.samples_since = datetime.now(IST).isoformat(timespec="seconds")
         self.path = out / f"gaps-{day}.jsonl"
         self.summary_path = out / f"summary-{day}.json"
         self._last_sample: dict[str, float] = {}
@@ -181,7 +182,8 @@ class Watch:
 
     def _reload(self) -> None:
         """A restart mid-day picks up the day's crossings and paper trades already written, so the
-        reports keep covering the whole day. Quote samples (typical gap, spreads) restart empty."""
+        reports keep covering the whole day, and restores each track's cooldown from the last attempt.
+        Quote samples (typical gap, spreads) restart empty: the report says when they start."""
         for path, bucket in ((self.path, self.episodes), (self.paper_path, self.paper)):
             if not path.is_file():
                 continue
@@ -192,6 +194,13 @@ class Watch:
                     continue
                 if isinstance(row, dict):
                     bucket.append(row)
+        for rec in self.paper:
+            try:
+                at = datetime.fromisoformat(str(rec["seen"])).timestamp()
+                key = (rec["stock"], int(rec["latency_ms"]), float(rec.get("track", MIN_PAPER_NET)))
+            except (KeyError, TypeError, ValueError):
+                continue
+            self._paper_last[key] = max(self._paper_last.get(key, 0.0), at)
 
     def on_tick(self, tick: dict) -> None:
         key = self.tokens.get(int(tick.get("instrument_token") or 0))
@@ -412,7 +421,7 @@ class Watch:
                 }
             return out_b
 
-        out: dict = {"ticks": self.ticks, "paper_errors": self.paper_errors,
+        out: dict = {"ticks": self.ticks, "quote_samples_since": self.samples_since, "paper_errors": self.paper_errors,
                      "paper_cancelled_at_close": self.cancelled_at_close, "min_net": MIN_PAPER_NET,
                      "research_nets": sorted(RESEARCH_NETS)}
 
@@ -488,11 +497,12 @@ async def main() -> None:
     if not args.until:  # the last of --days trading sessions, so a long run never spills past it
         args.until = planned_until(datetime.now(IST), args.days, args.end).isoformat()
     print(f"{datetime.now(IST):%Y-%m-%d %H:%M}: recording up to {args.days} trading day(s), last {args.until}", flush=True)
-    for n in range(1, args.days + 1):
-        if args.until and datetime.now(IST).strftime("%Y-%m-%d") > args.until:
-            break
+    finalize_missing(out, Path(args.universe))
+    n = 0
+    while datetime.now(IST).strftime("%Y-%m-%d") <= args.until:  # --until is the end; --days only sets it
+        n += 1
         day = await run_day(args, out, n)
-        if args.until and day >= args.until:
+        if day >= args.until:
             break
     print(f"{datetime.now(IST):%Y-%m-%d %H:%M}: recording finished (last day {args.until}); idling", flush=True)
     await idle()
@@ -537,6 +547,22 @@ def planned_until(now: datetime, days: int, end: str):
         d += timedelta(days=1)
 
 
+def finalize_missing(out: Path, universe_path: Path) -> None:
+    """A day whose watcher died after the close (or before writing it) gets its final report rebuilt
+    from its files, marked recovered. Today counts only once its session is over."""
+    today, now_hm = datetime.now(IST).strftime("%Y-%m-%d"), hm_now()
+    days = {p.stem.split("-", 1)[1] for p in [*out.glob("gaps-*.jsonl"), *out.glob("paper-*.jsonl")]}
+    for day in sorted(days):
+        if (out / f"summary-{day}.json").is_file() or (day == today and now_hm < "15:30") or day > today:
+            continue
+        universe = load_universe(universe_path)
+        watch = Watch(load_tokens(universe), out, day, universe)
+        report = watch.write_report(final=True)
+        report["recovered"] = True
+        (out / f"summary-{day}.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+        print(f"{day}: final report rebuilt from its files (watcher stopped before writing it)", flush=True)
+
+
 async def run_day(args: argparse.Namespace, out: Path, n: int) -> str:
     """Wait for the next trading session (weekdays, not NSE holidays), record it, write the final report."""
     while (not _is_nse_trading_day(datetime.now(IST).date()) or hm_now() < args.start or hm_now() >= args.end
@@ -547,7 +573,7 @@ async def run_day(args: argparse.Namespace, out: Path, n: int) -> str:
     day = datetime.now(IST).strftime("%Y-%m-%d")
     universe = load_universe(Path(args.universe))
     watch = Watch(load_tokens(universe), out, day, universe)
-    print(f"{day} (day {n} of {args.days}): watching {len(watch.tokens) // 2} stocks on NSE and BSE until {args.end}; "
+    print(f"{day} (day {n}, last {args.until}): watching {len(watch.tokens) // 2} stocks on NSE and BSE until {args.end}; "
           f"paper tracks ₹{', ₹'.join(f'{t:g}' for t in paper_tracks())}", flush=True)
     backoff = 5.0
     while hm_now() < args.end:

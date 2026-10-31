@@ -322,3 +322,53 @@ def test_unwind_without_a_fresh_quote_assumes_a_spread_against() -> None:
     assert W.unwind_price(q, "sell", False, 101.0) == 99.8
     assert W.unwind_price(q, "buy", False, 99.0) == 100.4
     assert W.unwind_price(None, "sell", False, 100.0) == 99.5
+
+
+def test_restart_restores_each_tracks_cooldown(tmp_path) -> None:
+    (tmp_path / "paper-2026-11-02.jsonl").write_text(json.dumps(
+        {"stock": "AAA", "group": "small", "latency_ms": 300, "track": 500.0, "outcome": "both", "net": 250.0,
+         "seen": "2026-11-02T10:00:00.000+05:30"}) + "\n")
+    w = W.Watch({1: ("NSE", "AAA"), 2: ("BSE", "AAA")}, tmp_path, "2026-11-02", {"AAA": ("small", "AAA")})
+    from datetime import datetime
+    assert w._paper_last[("AAA", 300, 500.0)] == datetime.fromisoformat("2026-11-02T10:00:00.000+05:30").timestamp()
+
+
+def test_a_day_without_a_final_report_is_rebuilt_from_its_files(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(W, "load_tokens", lambda universe: {1: ("NSE", "AAA"), 2: ("BSE", "AAA")})
+    (tmp_path / "paper-2026-10-30.jsonl").write_text(json.dumps(
+        {"stock": "AAA", "group": "small", "latency_ms": 300, "track": 500.0, "outcome": "both", "net": 250.0,
+         "seen": "2026-10-30T10:00:00.000+05:30"}) + "\n")
+    uni = tmp_path / "universe.json"
+    uni.write_text(json.dumps({"small": [{"nse": "AAA", "bse": "AAA"}]}))
+    W.finalize_missing(tmp_path, uni)
+    report = json.loads((tmp_path / "summary-2026-10-30.json").read_text())
+    assert report["recovered"] is True and report["final"] is True
+    assert report["small"]["stocks"] == 1 and report["small"]["paper"]["300ms"]["net"] == 250.0
+    W.finalize_missing(tmp_path, uni)  # a day with a final report is left alone
+    assert json.loads((tmp_path / "summary-2026-10-30.json").read_text())["recovered"] is True
+
+
+def test_until_is_the_end_even_past_the_days_count(tmp_path, monkeypatch) -> None:
+    import argparse
+    from datetime import date
+
+    seen: list[str] = []
+    days = iter(["2026-11-02", "2026-11-03", "2026-11-04"])
+
+    async def fake_run_day(args, out, n):
+        seen.append(next(days))
+        return seen[-1]
+
+    class Clock:  # today's date stays before --until until the last run returns it
+        @staticmethod
+        def now(tz=None):
+            from datetime import datetime as real
+            return real(2026, 11, 2, 10, 0, tzinfo=tz)
+
+    monkeypatch.setattr(W, "run_day", fake_run_day)
+    monkeypatch.setattr(W, "finalize_missing", lambda out, uni: None)
+    monkeypatch.setattr(W, "datetime", Clock)
+    monkeypatch.setattr(W, "idle", lambda: asyncio.sleep(0))
+    monkeypatch.setattr(sys, "argv", ["w", "--out", str(tmp_path), "--days", "2", "--until", "2026-11-04"])
+    asyncio.run(W.main())
+    assert seen == ["2026-11-02", "2026-11-03", "2026-11-04"]  # 3 sessions although --days 2
