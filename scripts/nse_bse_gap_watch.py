@@ -27,7 +27,8 @@ Full Zerodha intraday charges on every order, unwinds included. One attempt per 
 at a time, 2 s cooldown.
 
 Writes <out>/gaps-<day>.jsonl (one line per crossing episode), <out>/paper-<day>.jsonl (one line
-per paper attempt) and <out>/summary-<day>.json, and prints the summary at --end.
+per paper attempt), <out>/live-<day>.json every 60 s (crossings still open are left out) and
+<out>/summary-<day>.json at --end, which it also prints. The dashboard reads them via /api/arb.
 """
 
 from __future__ import annotations
@@ -133,6 +134,9 @@ class Watch:
         self._paper_last: dict[tuple[str, int], float] = {}
         self._paper_busy: set[tuple[str, int]] = set()
         self._tasks: set[asyncio.Task] = set()
+        self.day = day
+        self.live_path = out / f"live-{day}.json"
+        self._live_at = 0.0
 
     def on_tick(self, tick: dict) -> None:
         key = self.tokens.get(int(tick.get("instrument_token") or 0))
@@ -257,9 +261,20 @@ class Watch:
         with self.path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(ep) + "\n")
 
-    def summary(self) -> dict:
-        for k in list(self.open_eps):
-            self.close(k)
+    def write_report(self, final: bool) -> dict:
+        report = {"day": self.day, "final": final,
+                  "updated_at": datetime.now(IST).isoformat(timespec="seconds"), **self.summary(final)}
+        path = self.summary_path if final else self.live_path
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        tmp.replace(path)
+        self._live_at = time.time()
+        return report
+
+    def summary(self, final: bool = True) -> dict:
+        if final:  # a live snapshot leaves crossings still open out
+            for k in list(self.open_eps):
+                self.close(k)
 
         def pct(values: list[float], q: float) -> float | None:
             return round(sorted(values)[int(q * (len(values) - 1))] * 100, 4) if values else None
@@ -334,6 +349,8 @@ async def session(watch: Watch, end: str) -> None:
             if isinstance(msg, bytes):
                 for tick in parse_binary_ticks(msg):
                     watch.on_tick(tick)
+            if time.time() - watch._live_at >= 60:
+                watch.write_report(final=False)
 
 
 async def main() -> None:
@@ -361,8 +378,7 @@ async def main() -> None:
             backoff = min(backoff * 2, 60.0)
     if watch._tasks:  # let paper attempts in flight finish (the longest is 2 x 600 ms)
         await asyncio.wait(set(watch._tasks), timeout=5)
-    report = watch.summary()
-    watch.summary_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    report = watch.write_report(final=True)
     print(json.dumps(report, indent=2), flush=True)
 
 

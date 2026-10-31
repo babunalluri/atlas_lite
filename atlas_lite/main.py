@@ -274,6 +274,31 @@ async def api_paper() -> dict[str, Any]:
     return _engine.paper_snapshot()
 
 
+@app.get("/api/arb")
+async def api_arb() -> dict[str, Any]:
+    """NSE vs BSE gap watcher report (scripts/nse_bse_gap_watch.py; read-only, paper only).
+
+    The latest day: its final summary when written, else the live snapshot.
+    """
+
+    def latest() -> dict[str, Any]:
+        arb = DATA_DIR / "arb"
+        days = {p.stem.split("-", 1)[1] for p in [*arb.glob("summary-*.json"), *arb.glob("live-*.json")]}
+        if not days:
+            return {"ok": True, "available": False}
+        day = max(days)
+        path = arb / f"summary-{day}.json"
+        if not path.is_file():
+            path = arb / f"live-{day}.json"
+        try:
+            report = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {"ok": True, "available": False}
+        return {"ok": True, "available": True, **report}
+
+    return await asyncio.to_thread(latest)
+
+
 @app.get("/api/paper/trades")
 async def api_paper_trades(
     limit: int = Query(default=200, ge=1, le=1000),

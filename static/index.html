@@ -2374,6 +2374,17 @@
       <div class="history-detail" id="scalperV3Line">Scalper v3: —</div>
       <div class="history-detail" id="weeklyStrangleLine">Weekly strangle: —</div>
       <div class="history-detail" id="weeklyCondorLine">Weekly condor: —</div>
+      <div class="history-detail" id="arbMeta">NSE vs BSE gaps: —</div>
+      <div class="history-table-wrap">
+        <table class="history-table" id="arbTable">
+          <thead>
+            <tr><th>Group</th><th>Stocks</th><th>Crossings</th><th>Beat costs</th><th>Lasted ≥0.5 s</th><th>₹ (≥0.5 s)</th><th>Paper tries (300 ms)</th><th>Both filled</th><th>One leg</th><th>Paper net ₹</th></tr>
+          </thead>
+          <tbody id="arbRows">
+            <tr><td colspan="10" class="hist-muted">Waiting for the NSE vs BSE watcher (runs 09:15–15:30)</td></tr>
+          </tbody>
+        </table>
+      </div>
       <div class="history-detail" id="agentMacroLine">Macro: —</div>
       <div class="history-detail" id="agentDecision">Last cycle: —</div>
       <div class="history-table-wrap">
@@ -6899,6 +6910,38 @@
         (fp.last_reject ? ` · ${fp.last_reject}` : "");
     }
 
+    // NSE vs BSE gap watcher (paper only): small caps first, paper results at the realistic 300 ms delay.
+    function renderArb(arb) {
+      const meta = document.getElementById("arbMeta");
+      const tbody = document.getElementById("arbRows");
+      if (!meta || !tbody) return;
+      if (!arb || !arb.available) {
+        meta.textContent = "NSE vs BSE gaps · no report yet (watcher runs 09:15–15:30 on trading days)";
+        return;
+      }
+      const when = String(arb.updated_at || "").slice(11, 16);
+      meta.textContent = `NSE vs BSE gaps · ${arb.day} · ${arb.final ? "final" : "live, updated " + when} · paper only, no orders`;
+      const rows = ["small", "mid", "large", "all"].filter((g) => arb[g]).map((g) => {
+        const r = arb[g];
+        const p = (r.paper || {})["300ms"] || {};
+        const top = Object.keys(r.top_profitable_stocks || {}).slice(0, 3).join(", ");
+        const cell = (v) => escapeTradeHtml(v ?? "—");
+        return `<tr${g === "all" ? ' class="hist-muted"' : ""}>
+          <td title="${escapeTradeHtml(top ? "most profitable crossings: " + top : "")}">${cell(g)}</td>
+          <td>${cell(r.stocks)}</td>
+          <td>${cell(r.crossings)}</td>
+          <td>${cell(r.crossings_profitable_after_costs)}</td>
+          <td>${cell(r.profitable_lasting_0_5s_or_more)}</td>
+          <td>${cell(r.sum_best_net_lasting_0_5s_or_more)}</td>
+          <td>${cell(p.attempts)}</td>
+          <td>${cell(p.both)}</td>
+          <td>${cell((p.one_leg ?? 0) + (p.partial ?? 0))}</td>
+          <td>${cell(p.net)}</td>
+        </tr>`;
+      });
+      tbody.innerHTML = rows.join("") || `<tr><td colspan="10" class="hist-muted">No data yet</td></tr>`;
+    }
+
     function renderScalperV3(v3) {
       const line = document.getElementById("scalperV3Line");
       if (!line) return;
@@ -7119,6 +7162,7 @@
           }
         }
         renderAiAgentBook(paper.ai_agent || {});
+        fetch("/api/arb").then((r) => (r.ok ? r.json() : null)).then(renderArb).catch(() => renderArb(null));
         renderFactorPaper(paper.factor_paper || {});
         renderScalperV3(paper.scalper_v3 || {});
         renderWeeklySell("weeklyStrangleLine", paper.weekly_strangle || {});
