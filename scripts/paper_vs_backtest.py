@@ -97,20 +97,25 @@ def scalper_v3(ledger_dir: Path) -> None:
         print("  no paper trades yet\n")
         return
     eng.PX = real_premiums()
-    print(f"  {'day':10s}  {'credit paper/bt':>16s}  {'exit paper/bt':>20s}  {'paper':>8s}  {'backtest':>9s}  {'gap':>7s}")
+    print(f"  {'day':10s}  {'gamma':>12s}  {'credit paper/bt':>16s}  {'exit paper/bt':>20s}  {'paper':>8s}  {'backtest':>9s}  {'gap':>7s}")
     paper_sum = bt_sum = 0.0
     n = 0
+    by_regime: dict[str, list[float]] = {}
     for t in rows:
         o, c = t["open"], t["close"]
         day = o["day"]
         bt = bsp.trade(day, *V3_RULE) if day in eng.PX else None
         pnl = c.get("pnl") if c else None
         exit_p = (c.get("reason") if c else "open") or "?"
+        g = o.get("gamma") or {}
+        regime = f"{g['regime']} {g['share']:+.2f}" if g else "—"
+        if g and pnl is not None:
+            by_regime.setdefault(g["regime"], []).append(pnl)
         if bt is None:
-            print(f"  {day}  {o['credit_ltp']:7.2f} / {'—':>6s}  {exit_p:>9s} / {'—':>8s}  {rupees(pnl):>8s}  {'no real px':>9s}")
+            print(f"  {day}  {regime:>12s}  {o['credit_ltp']:7.2f} / {'—':>6s}  {exit_p:>9s} / {'—':>8s}  {rupees(pnl):>8s}  {'no real px':>9s}")
             continue
         gap = None if pnl is None else pnl - bt["net"]
-        print(f"  {day}  {o['credit_ltp']:7.2f} / {bt['credit']:6.2f}  {exit_p:>9s} / {bt['why']:>8s}  "
+        print(f"  {day}  {regime:>12s}  {o['credit_ltp']:7.2f} / {bt['credit']:6.2f}  {exit_p:>9s} / {bt['why']:>8s}  "
               f"{rupees(pnl):>8s}  {rupees(bt['net']):>9s}  {rupees(gap):>7s}")
         if pnl is not None:
             paper_sum += pnl
@@ -119,6 +124,8 @@ def scalper_v3(ledger_dir: Path) -> None:
     if n:
         print(f"  {n} closed with real prices: paper {rupees(paper_sum)}, backtest {rupees(bt_sum)}, "
               f"gap {rupees(paper_sum - bt_sum)} ({rupees((paper_sum - bt_sum) / n)}/trade)")
+    for regime, pnls in sorted(by_regime.items()):
+        print(f"  paper by gamma regime — {regime}: {len(pnls)} trades, {rupees(sum(pnls))} ({rupees(sum(pnls) / len(pnls))}/trade)")
     print()
 
 

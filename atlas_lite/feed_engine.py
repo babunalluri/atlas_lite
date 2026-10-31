@@ -37,6 +37,7 @@ from atlas_lite.paper_ai_agent import (
     PaperAiAgent,
     paper_ai_agent_enabled,
 )
+from atlas_lite.gamma_regime import GammaOi, previous_trading_day
 from atlas_lite.paper_scalper_v3 import (
     LEDGER_NAME as SCALPER_V3_LEDGER,
     STRATEGY as SCALPER_V3_STRATEGY,
@@ -393,6 +394,9 @@ class FeedEngine:
     _paper_factor: PaperFactor | None = field(default=None, repr=False)
     _paper_weekly: dict[str, PaperWeeklySell] = field(default_factory=dict, repr=False)
     _paper_v3: PaperScalperV3 | None = field(default=None, repr=False)
+    # Previous day's NIFTY open interest, for the dealer-gamma reading Scalper v3 logs.
+    _gamma_oi: GammaOi | None = field(default=None, repr=False)
+    _gamma_oi_tried_at: float = field(default=0.0, repr=False)
     _ai_learn_running: bool = field(default=False, repr=False)
     _agent_gates: AgentGateStore | None = field(default=None, repr=False)
     _agent_live: AgentLiveFlag | None = field(default=None, repr=False)
@@ -661,6 +665,7 @@ class FeedEngine:
             )
         if paper_scalper_v3_enabled():
             self._paper_v3 = PaperScalperV3(path=self.data_dir / SCALPER_V3_LEDGER, lot_size=self._nifty_option_lot())
+            self._gamma_oi = GammaOi(self.data_dir)
             self._log.info("scalper_v3 paper book qty %d (13:00 straddle sale, no live orders)", self._paper_v3.qty)
         if paper_weekly_sell_enabled():
             lot = self._nifty_option_lot()
@@ -2884,8 +2889,16 @@ class FeedEngine:
                     if nb.atm:
                         atm, ce, pe = int(nb.atm.strike), nb.atm.ce_symbol, nb.atm.pe_symbol
                 allow = self._agent_gates.entries_allowed(SCALPER_V3_STRATEGY, now) if self._agent_gates else True
+                await self._refresh_gamma_oi(now)
                 self._paper_v3.on_frame(
-                    now=now, book=self.book, expiry=expiry, atm=atm, ce_symbol=ce, pe_symbol=pe, allow_entry=allow
+                    now=now,
+                    book=self.book,
+                    expiry=expiry,
+                    atm=atm,
+                    ce_symbol=ce,
+                    pe_symbol=pe,
+                    allow_entry=allow,
+                    gamma=lambda now=now, nb=nb: self._gamma_reading(now, nb),
                 )
                 await asyncio.sleep(interval)
             except asyncio.CancelledError:
@@ -2893,6 +2906,28 @@ class FeedEngine:
             except Exception as exc:  # noqa: BLE001
                 self._log.warning("scalper_v3 paper book failed: %s", exc)
                 await asyncio.sleep(1.0)
+
+    async def _refresh_gamma_oi(self, now: datetime) -> None:
+        """Load the previous session's open interest once a trading morning; retry every 10 min."""
+        gamma = self._gamma_oi
+        if gamma is None or now.weekday() >= 5 or now.hour < 9:
+            return
+        if gamma.rows and gamma.day == previous_trading_day(now.date()).isoformat():
+            return
+        if time.monotonic() - self._gamma_oi_tried_at < 600.0:
+            return
+        self._gamma_oi_tried_at = time.monotonic()
+        try:
+            if not await gamma.ensure(now.date()):
+                self._log.warning("gamma regime: no NSE open interest for the previous session yet")
+        except Exception as exc:  # noqa: BLE001 - logging aid only
+            self._log.warning("gamma regime: open interest load failed: %s", exc)
+
+    def _gamma_reading(self, now: datetime, nb: NotebookRuntime | None) -> dict[str, Any] | None:
+        if self._gamma_oi is None:
+            return None
+        vix = quote_ltp(self.book.get(VIX_SYMBOLS[0])) if VIX_SYMBOLS else None
+        return self._gamma_oi.reading(spot=self._spot(nb), vix=vix, now=now)
 
     async def _paper_weekly_loop(self) -> None:
         """Weekly NIFTY strangle / 5%-wing condor paper books. Positions carry overnight."""

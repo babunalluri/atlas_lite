@@ -6907,9 +6907,12 @@
         return;
       }
       const pos = v3.position;
-      line.textContent = pos
+      // Logged only: the regime never blocks a v3 entry.
+      const g = v3.gamma;
+      const gammaText = g ? ` · last entry gamma ${g.regime} (${g.share > 0 ? "+" : ""}${g.share})` : "";
+      line.textContent = (pos
         ? `Scalper v3 · short ${pos.atm} straddle · credit ${pos.credit} · cost now ${pos.cost_now ?? "—"} (target ${pos.target} / stop ${pos.stop}) · open PnL ${pos.open_pnl ?? "—"}`
-        : `Scalper v3 · FLAT · sells the ATM straddle at 13:00 on non-expiry days` + (v3.last_reject ? ` · ${v3.last_reject}` : "");
+        : `Scalper v3 · FLAT · sells the ATM straddle at 13:00 on non-expiry days` + (v3.last_reject ? ` · ${v3.last_reject}` : "")) + gammaText;
     }
 
     function renderWeeklySell(elId, wb) {

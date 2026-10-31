@@ -168,3 +168,23 @@ def test_open_pnl_is_net_of_charges(tmp_path) -> None:
     snap = b.snapshot(Book(quotes(100, 100)))
     gross = (b.position.credit_fill - 200) * b.position.qty
     assert snap["position"]["open_pnl"] < gross - b.position.charges_open
+
+
+def test_entry_logs_the_gamma_reading_and_restores_it(tmp_path) -> None:
+    b = mk(tmp_path)
+    reading = {"regime": "long", "share": 0.12, "net": 5, "oi_day": "2026-10-28", "spot": 22950.0, "vix": 14.0}
+    calls = []
+    ev = b.on_frame(now=t("13:00"), book=Book(quotes(100, 100)), expiry=EXPIRY, atm=22950, ce_symbol=CE, pe_symbol=PE,
+                    gamma=lambda: calls.append(1) or reading)
+    assert ev["gamma"] == reading and calls == [1]  # read once, at entry
+    assert b.snapshot()["gamma"] == reading
+    assert mk(tmp_path).last_gamma == reading
+
+
+def test_a_failed_gamma_reading_never_blocks_the_entry(tmp_path) -> None:
+    def broken():
+        raise RuntimeError("no open interest")
+
+    ev = mk(tmp_path).on_frame(now=t("13:00"), book=Book(quotes(100, 100)), expiry=EXPIRY, atm=22950,
+                               ce_symbol=CE, pe_symbol=PE, gamma=broken)
+    assert ev is not None and ev["event"] == "open" and ev["gamma"] is None

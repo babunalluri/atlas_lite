@@ -12,6 +12,9 @@ Walk-forward test on the Kite year (estimated premiums): +₹241/trade, PF 1.71,
 real recorded premiums: +₹256/trade over 16 days. Expiry days are skipped: real fills
 lost far more there than the premium model predicted.
 
+Each entry logs the dealer-gamma regime at that moment (atlas_lite/gamma_regime.py), for
+splitting paper results by regime later. Logging only: the regime never blocks a trade.
+
 Fills are paper: sell at bid, buy at ask when quotes have them, else last price -/+ SLIP_PTS.
 Kite charges at current rates. A position left open past 15:14 (engine down) is closed on
 the next frame with P&L unknown.
@@ -24,7 +27,7 @@ import os
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from atlas_lite.agent_gates import _is_nse_trading_day
 from atlas_lite.kite_charges import kite_nfo_charges
@@ -78,6 +81,7 @@ class PaperScalperV3:
     position: V3Position | None = None
     traded_day: str = ""  # one entry per day
     last_reject: str | None = None
+    last_gamma: dict[str, Any] | None = None
     _log: Any = field(default_factory=lambda: get_logger("atlas_lite.paper_scalper_v3"), repr=False)
 
     def __post_init__(self) -> None:
@@ -118,6 +122,7 @@ class PaperScalperV3:
             if ev.get("event") == "open":
                 open_ev = ev
                 self.traded_day = str(ev.get("day") or "")
+                self.last_gamma = ev.get("gamma")
             elif ev.get("event") == "close":
                 open_ev = None
         if open_ev is not None:
@@ -144,7 +149,15 @@ class PaperScalperV3:
         ask = quote_ask(row)
         return ask if ask and ask > 0 else ltp + SLIP_PTS
 
-    def _open(self, now: datetime, book: QuoteSource, atm: int, ce_symbol: str, pe_symbol: str) -> dict[str, Any] | None:
+    def _open(
+        self,
+        now: datetime,
+        book: QuoteSource,
+        atm: int,
+        ce_symbol: str,
+        pe_symbol: str,
+        gamma: Callable[[], dict[str, Any] | None] | None = None,
+    ) -> dict[str, Any] | None:
         ce_row, pe_row = book.get(ce_symbol), book.get(pe_symbol)
         ce, pe = quote_ltp(ce_row), quote_ltp(pe_row)
         ce_fill, pe_fill = self._fill(ce_row, True), self._fill(pe_row, True)
@@ -152,6 +165,11 @@ class PaperScalperV3:
             self.last_reject = "no_atm_quote"
             return None
         charges_open = round(float(kite_nfo_charges([(ce_fill, self.qty, "sell"), (pe_fill, self.qty, "sell")])["total"]), 2)
+        try:
+            regime = gamma() if gamma is not None else None
+        except Exception as exc:  # noqa: BLE001 - a logging field must never block the entry
+            self._log.warning("scalper_v3 gamma reading failed: %s", exc)
+            regime = None
         pos = V3Position(
             day=now.strftime("%Y-%m-%d"),
             opened_at=now.isoformat(),
@@ -185,6 +203,7 @@ class PaperScalperV3:
                 "target": round(pos.credit_ltp * (1 - self.take_profit), 2),
                 "stop": round(pos.credit_ltp * (1 + self.stop_loss), 2),
                 "charges_open": charges_open,
+                "gamma": regime,
                 "reason": "13:00 ATM straddle sale, non-expiry day",
             }
         )
@@ -193,6 +212,7 @@ class PaperScalperV3:
         self.position = pos
         self.traded_day = pos.day
         self.last_reject = None
+        self.last_gamma = regime
         return ev
 
     def _close(self, now: datetime, book: QuoteSource, reason: str) -> dict[str, Any] | None:
@@ -249,7 +269,9 @@ class PaperScalperV3:
         ce_symbol: str | None,
         pe_symbol: str | None,
         allow_entry: bool = True,
+        gamma: Callable[[], dict[str, Any] | None] | None = None,
     ) -> dict[str, Any] | None:
+        """``gamma`` returns the dealer-gamma reading; called once, at entry, for the log."""
         today = now.strftime("%Y-%m-%d")
         pos = self.position
         if pos is not None:
@@ -286,7 +308,7 @@ class PaperScalperV3:
         if not allow_entry:
             self.last_reject = "gate_paused"
             return None
-        return self._open(now, book, atm, ce_symbol, pe_symbol)
+        return self._open(now, book, atm, ce_symbol, pe_symbol, gamma)
 
     def snapshot(self, book: QuoteSource | None = None) -> dict[str, Any]:
         pos = self.position
@@ -298,6 +320,7 @@ class PaperScalperV3:
             "name": "Scalper v3",
             "enabled": True,
             "last_reject": self.last_reject,
+            "gamma": self.last_gamma,
             "position": None,
         }
         if pos is not None:
