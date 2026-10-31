@@ -2385,6 +2385,26 @@
           </tbody>
         </table>
       </div>
+      <div class="history-toolbar" style="margin-top:0;">
+        <span class="history-meta" id="arbTradesMeta">Paper trades: —</span>
+        <label class="history-meta" for="arbLatency">Order delay
+          <select id="arbLatency">
+            <option value="100">100 ms</option>
+            <option value="300" selected>300 ms (Kite-like)</option>
+            <option value="600">600 ms</option>
+          </select>
+        </label>
+      </div>
+      <div class="history-table-wrap" style="max-height:22rem;overflow:auto;">
+        <table class="history-table" id="arbTradesTable">
+          <thead>
+            <tr><th>Time</th><th>Stock</th><th>Group</th><th>Direction</th><th>Buy @ / Sell @</th><th>Qty</th><th>Bought</th><th>Sold</th><th>Outcome</th><th>Gross ₹</th><th>Unwind ₹</th><th>Net ₹</th></tr>
+          </thead>
+          <tbody id="arbTradesRows">
+            <tr><td colspan="12" class="hist-muted">No paper trades yet</td></tr>
+          </tbody>
+        </table>
+      </div>
       <div class="history-detail" id="agentMacroLine">Macro: —</div>
       <div class="history-detail" id="agentDecision">Last cycle: —</div>
       <div class="history-table-wrap">
@@ -6942,6 +6962,47 @@
       tbody.innerHTML = rows.join("") || `<tr><td colspan="10" class="hist-muted">No data yet</td></tr>`;
     }
 
+    // One row per paper attempt (simulated IOC pair), newest first.
+    const ARB_OUTCOME = { both: "both filled", none: "neither filled", one_leg: "one leg (unwound)", partial: "partial (unwound)" };
+    function renderArbTrades(data) {
+      const meta = document.getElementById("arbTradesMeta");
+      const tbody = document.getElementById("arbTradesRows");
+      if (!meta || !tbody) return;
+      if (!data || !data.day) {
+        meta.textContent = "Paper trades: none yet";
+        tbody.innerHTML = `<tr><td colspan="12" class="hist-muted">No paper trades yet</td></tr>`;
+        return;
+      }
+      meta.textContent = `Paper trades ${data.day} · ${data.latency_ms} ms delay · ${data.count} attempts · net ₹${data.net}`;
+      const cell = (v) => escapeTradeHtml(v ?? "—");
+      tbody.innerHTML = (data.trades || []).map((t) => {
+        const stale = t.quotes_updated === false ? " (no quote update)" : "";
+        return `<tr>
+          <td>${cell(String(t.seen || "").slice(11, 23))}</td>
+          <td>${cell(t.stock)}</td>
+          <td>${cell(t.group)}</td>
+          <td>${cell(t.direction)}</td>
+          <td>${cell(t.buy_limit)} / ${cell(t.sell_limit)}</td>
+          <td>${cell(t.qty)}</td>
+          <td>${cell(t.bought)}</td>
+          <td>${cell(t.sold)}</td>
+          <td>${cell((ARB_OUTCOME[t.outcome] || t.outcome) + stale)}</td>
+          <td>${cell(t.gross)}</td>
+          <td>${cell(t.unwind_pnl)}</td>
+          <td>${cell(t.net)}</td>
+        </tr>`;
+      }).join("") || `<tr><td colspan="12" class="hist-muted">No paper trades at this delay</td></tr>`;
+    }
+
+    function loadArbTrades() {
+      const lat = document.getElementById("arbLatency")?.value || "300";
+      fetch(`/api/arb/trades?latency_ms=${encodeURIComponent(lat)}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then(renderArbTrades)
+        .catch(() => renderArbTrades(null));
+    }
+    document.getElementById("arbLatency")?.addEventListener("change", loadArbTrades);
+
     function renderScalperV3(v3) {
       const line = document.getElementById("scalperV3Line");
       if (!line) return;
@@ -7163,6 +7224,7 @@
         }
         renderAiAgentBook(paper.ai_agent || {});
         fetch("/api/arb").then((r) => (r.ok ? r.json() : null)).then(renderArb).catch(() => renderArb(null));
+        loadArbTrades();
         renderFactorPaper(paper.factor_paper || {});
         renderScalperV3(paper.scalper_v3 || {});
         renderWeeklySell("weeklyStrangleLine", paper.weekly_strangle || {});
