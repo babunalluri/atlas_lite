@@ -45,6 +45,7 @@ import argparse
 import asyncio
 import csv
 import json
+import os
 import statistics as st
 import sys
 import time
@@ -129,6 +130,20 @@ def load_tokens(universe: dict[str, tuple[str, str]]) -> dict[int, tuple[str, st
     return {**{found["NSE"][s]: ("NSE", s) for s in both}, **{found["BSE"][universe[s][1]]: ("BSE", s) for s in both}}
 
 
+def unwind_price(q: dict | None, side: str, fresh: bool, ref_px: float) -> float:
+    """Market order closing a leg left over. Fresh quote: its bid (sell) or ask (buy). No fresh quote:
+    that price moved one spread against us. No price at all: 0.5% against the leg's own fill."""
+    q = q or {}
+    bid, ask = q.get("bid"), q.get("ask")
+    if side == "sell":
+        if not bid:
+            return round(ref_px * 0.995, 2)
+        return bid if fresh else round(max(0.05, bid - ((ask - bid) if ask else 0.0)), 2)
+    if not ask:
+        return round(ref_px * 1.005, 2)
+    return ask if fresh else round(ask + ((ask - bid) if bid else 0.0), 2)
+
+
 def tradable_qty(buy_q: dict, sell_q: dict) -> int:
     """Shares at both best prices, capped at MAX_NOTIONAL: the same size for crossing stats and paper."""
     if not buy_q.get("ask") or not sell_q.get("bid"):
@@ -156,9 +171,25 @@ class Watch:
         self._paper_busy: set[tuple[str, int, float]] = set()
         self._tasks: set[asyncio.Task] = set()
         self.paper_errors = 0
+        self.cancelled_at_close = 0
         self.day = day
         self.live_path = out / f"live-{day}.json"
         self._live_at = 0.0
+        self._reload()
+
+    def _reload(self) -> None:
+        """A restart mid-day picks up the day's crossings and paper trades already written, so the
+        reports keep covering the whole day. Quote samples (typical gap, spreads) restart empty."""
+        for path, bucket in ((self.path, self.episodes), (self.paper_path, self.paper)):
+            if not path.is_file():
+                continue
+            for line in path.read_text(encoding="utf-8").splitlines():
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(row, dict):
+                    bucket.append(row)
 
     def on_tick(self, tick: dict) -> None:
         key = self.tokens.get(int(tick.get("instrument_token") or 0))
@@ -285,13 +316,13 @@ class Watch:
                 await asyncio.sleep(lat / 1000)
                 if bought > sold:
                     q, unwind_updated = await self._quote_after((buy_exch, stock), t_unwind)
-                    px = (q or {}).get("bid") or buy_px * 0.995  # no bid: assume a 0.5% hit
+                    px = unwind_price(q, "sell", unwind_updated, buy_px)
                     extra = bought - sold
                     unwind_pnl = extra * (px - buy_px)
                     fills.append((buy_exch, "sell", px, extra))
                 else:
                     q, unwind_updated = await self._quote_after((sell_exch, stock), t_unwind)
-                    px = (q or {}).get("ask") or sell_px * 1.005
+                    px = unwind_price(q, "buy", unwind_updated, sell_px)
                     extra = sold - bought
                     unwind_pnl = extra * (sell_px - px)
                     fills.append((sell_exch, "buy", px, extra))
@@ -379,7 +410,8 @@ class Watch:
                 }
             return out_b
 
-        out: dict = {"ticks": self.ticks, "paper_errors": self.paper_errors, "min_net": MIN_PAPER_NET,
+        out: dict = {"ticks": self.ticks, "paper_errors": self.paper_errors,
+                     "paper_cancelled_at_close": self.cancelled_at_close, "min_net": MIN_PAPER_NET,
                      "research_nets": sorted(RESEARCH_NETS)}
 
         def main_track(recs: list[dict]) -> list[dict]:
@@ -443,6 +475,13 @@ async def main() -> None:
     RESEARCH_NETS = tuple(float(x) for x in args.research_nets.split(",") if x.strip())
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    lock = acquire_lock(out)  # held for the process lifetime
+    if lock is None:
+        print(f"{datetime.now(IST):%H:%M:%S} another gap watcher holds {out / LOCK_NAME}; exiting", flush=True)
+        return
+    if not args.until:  # the last of --days trading sessions, so a long run never spills past it
+        args.until = planned_until(datetime.now(IST), args.days, args.end).isoformat()
+    print(f"{datetime.now(IST):%Y-%m-%d %H:%M}: recording up to {args.days} trading day(s), last {args.until}", flush=True)
     for n in range(1, args.days + 1):
         if args.until and datetime.now(IST).strftime("%Y-%m-%d") > args.until:
             break
@@ -450,6 +489,40 @@ async def main() -> None:
         if args.until and day >= args.until:
             break
     print(f"{datetime.now(IST):%Y-%m-%d %H:%M}: recording finished; stopping", flush=True)
+
+
+LOCK_NAME = "watcher.lock"
+
+
+def acquire_lock(out: Path):
+    """Exclusive, non-blocking lock so two watchers never write the same day's files."""
+    import fcntl
+
+    fh = (out / LOCK_NAME).open("w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return None
+    fh.write(str(os.getpid()))
+    fh.flush()
+    return fh
+
+
+def planned_until(now: datetime, days: int, end: str):
+    """Date of the days-th trading session from now (today counts if it has not ended)."""
+    from datetime import timedelta
+
+    d = now.date()
+    if not (_is_nse_trading_day(d) and now.strftime("%H:%M") < end):
+        d += timedelta(days=1)
+    count = 0
+    while True:
+        if _is_nse_trading_day(d):
+            count += 1
+            if count >= days:
+                return d
+        d += timedelta(days=1)
 
 
 async def run_day(args: argparse.Namespace, out: Path, n: int) -> str:
@@ -473,7 +546,10 @@ async def run_day(args: argparse.Namespace, out: Path, n: int) -> str:
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 60.0)
     if watch._tasks:  # let paper attempts in flight finish: worst case 2 x (600 ms + 2 s quote wait)
-        await asyncio.wait(set(watch._tasks), timeout=15)
+        _, pending = await asyncio.wait(set(watch._tasks), timeout=15)
+        for task in pending:  # anything still running is dropped, not written after the final report
+            task.cancel()
+        watch.cancelled_at_close = len(pending)
     report = watch.write_report(final=True)
     print(json.dumps(report, indent=2), flush=True)
     return day

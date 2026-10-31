@@ -276,3 +276,49 @@ def test_trade_list_filters_by_track_and_defaults_to_main(tmp_path, monkeypatch)
     assert main_out["track"] == 500.0 and main_out["count"] == 1 and main_out["net"] == 600.0
     research = asyncio.run(main.api_arb_trades(latency_ms=300, limit=300, day=None, track=100.0))
     assert research["count"] == 2 and research["net"] == 80.0
+
+
+def test_trade_list_default_is_the_main_track_even_without_main_rows(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "DATA_DIR", tmp_path)
+    arb = tmp_path / "arb"
+    arb.mkdir()
+    (arb / "live-2026-11-02.json").write_text(json.dumps({"day": "2026-11-02", "final": False, "min_net": 500.0}))
+    (arb / "paper-2026-11-02.jsonl").write_text(json.dumps({"seen": "a", "latency_ms": 300, "track": 1000.0, "net": 900.0}) + "\n")
+    out = asyncio.run(main.api_arb_trades(latency_ms=300, limit=300, day=None, track=None))
+    assert out["track"] == 500.0 and out["count"] == 0  # not the ₹1,000 research track
+
+
+def test_restart_mid_day_reloads_the_days_records(tmp_path) -> None:
+    (tmp_path / "gaps-2026-11-02.jsonl").write_text(json.dumps(
+        {"stock": "AAA", "group": "small", "direction": "buy BSE sell NSE", "duration_s": 0.7,
+         "max_gap_pct": 0.3, "max_qty": 100, "best_net": 300.0}) + "\n")
+    (tmp_path / "paper-2026-11-02.jsonl").write_text(json.dumps(
+        {"stock": "AAA", "group": "small", "latency_ms": 300, "track": 500.0, "outcome": "both", "net": 250.0}) + "\n")
+    w = W.Watch({1: ("NSE", "AAA"), 2: ("BSE", "AAA")}, tmp_path, "2026-11-02", {"AAA": ("small", "AAA")})
+    s = w.summary(final=False)["small"]
+    assert s["crossings"] == 1 and s["paper"]["300ms"]["attempts"] == 1 and s["paper"]["300ms"]["net"] == 250.0
+
+
+def test_a_second_watcher_cannot_take_the_lock(tmp_path) -> None:
+    first = W.acquire_lock(tmp_path)
+    assert first is not None
+    assert W.acquire_lock(tmp_path) is None
+    first.close()
+    assert W.acquire_lock(tmp_path) is not None
+
+
+def test_planned_last_day_of_a_five_day_run() -> None:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    ist = ZoneInfo("Asia/Kolkata")
+    assert W.planned_until(datetime(2026, 10, 31, 12, 0, tzinfo=ist), 5, "15:30").isoformat() == "2026-11-06"
+    assert W.planned_until(datetime(2026, 11, 2, 10, 0, tzinfo=ist), 5, "15:30").isoformat() == "2026-11-06"
+
+
+def test_unwind_without_a_fresh_quote_assumes_a_spread_against() -> None:
+    q = {"bid": 100.0, "ask": 100.2}
+    assert W.unwind_price(q, "sell", True, 101.0) == 100.0
+    assert W.unwind_price(q, "sell", False, 101.0) == 99.8
+    assert W.unwind_price(q, "buy", False, 99.0) == 100.4
+    assert W.unwind_price(None, "sell", False, 100.0) == 99.5

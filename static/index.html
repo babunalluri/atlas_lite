@@ -2378,10 +2378,10 @@
       <div class="history-table-wrap">
         <table class="history-table" id="arbTable">
           <thead>
-            <tr><th>Group</th><th>Stocks</th><th>Crossings</th><th>Beat costs</th><th>Est. net ≥ min</th><th>Lasted ≥0.5 s</th><th>₹ (≥0.5 s)</th><th>Paper tries (300 ms)</th><th>Both filled</th><th>One leg</th><th>Paper net ₹</th></tr>
+            <tr><th>Group</th><th>Stocks</th><th>Crossings</th><th>Beat costs</th><th>Est. net ≥ min</th><th>Lasted ≥0.5 s</th><th>₹ (≥0.5 s)</th><th id="arbPaperHead">Paper tries</th><th>Both filled</th><th>One leg</th><th>Neither</th><th>Unknown</th><th>Paper net ₹</th></tr>
           </thead>
           <tbody id="arbRows">
-            <tr><td colspan="11" class="hist-muted">Waiting for the NSE vs BSE watcher (runs 09:15–15:30)</td></tr>
+            <tr><td colspan="13" class="hist-muted">Waiting for the NSE vs BSE watcher (runs 09:15–15:30)</td></tr>
           </tbody>
         </table>
       </div>
@@ -6941,21 +6941,30 @@
     }
 
     // NSE vs BSE gap watcher (paper only): small caps first, paper results at the realistic 300 ms delay.
+    let arbLast = null;
     function renderArb(arb) {
       const meta = document.getElementById("arbMeta");
       const tbody = document.getElementById("arbRows");
       if (!meta || !tbody) return;
+      arbLast = arb;
       arbDay = (arb && arb.day) || null;  // the trade list shows the same day as this summary
       if (!arb || !arb.available) {
         meta.textContent = "NSE vs BSE gaps · no report yet (watcher runs 09:15–15:30 on trading days)";
+        tbody.innerHTML = `<tr><td colspan="13" class="hist-muted">No report yet</td></tr>`;
         return;
       }
+      // The paper columns follow the Track and Order delay selectors below the table.
+      const lat = `${document.getElementById("arbLatency")?.value || "300"}ms`;
+      const trackSel = document.getElementById("arbTrack")?.value || "";
+      const head = document.getElementById("arbPaperHead");
+      if (head) head.textContent = `Paper tries (${trackSel ? "₹" + trackSel + "+" : "main"}, ${lat})`;
       const when = String(arb.updated_at || "").slice(11, 16);
       const minNet = arb.min_net != null ? ` · paper trades need est. net ≥ ₹${arb.min_net}` : "";
       meta.textContent = `NSE vs BSE gaps · ${arb.day} · ${arb.final ? "final" : "live, updated " + when}${minNet} · paper only, no orders`;
       const rows = ["small", "mid", "large", "all"].filter((g) => arb[g]).map((g) => {
         const r = arb[g];
-        const p = (r.paper || {})["300ms"] || {};
+        const block = trackSel ? ((r.paper_research || {})[trackSel] || {}) : (r.paper || {});
+        const p = block[lat] || {};
         const top = Object.keys(r.top_profitable_stocks || {}).slice(0, 3).join(", ");
         const cell = (v) => escapeTradeHtml(v ?? "—");
         return `<tr${g === "all" ? ' class="hist-muted"' : ""}>
@@ -6969,10 +6978,12 @@
           <td>${cell(p.attempts)}</td>
           <td>${cell(p.both)}</td>
           <td>${cell((p.one_leg ?? 0) + (p.partial ?? 0))}</td>
+          <td>${cell(p.none)}</td>
+          <td>${cell(p.unknown)}</td>
           <td>${cell(p.net)}</td>
         </tr>`;
       });
-      tbody.innerHTML = rows.join("") || `<tr><td colspan="11" class="hist-muted">No data yet</td></tr>`;
+      tbody.innerHTML = rows.join("") || `<tr><td colspan="13" class="hist-muted">No data yet</td></tr>`;
     }
 
     // One row per paper attempt (simulated IOC pair), newest first.
@@ -7024,8 +7035,12 @@
         .then(renderArbTrades)
         .catch(() => renderArbTrades(null));
     }
-    document.getElementById("arbLatency")?.addEventListener("change", loadArbTrades);
-    document.getElementById("arbTrack")?.addEventListener("change", loadArbTrades);
+    for (const id of ["arbLatency", "arbTrack"]) {
+      document.getElementById(id)?.addEventListener("change", () => {
+        renderArb(arbLast);  // summary columns follow the selectors too
+        loadArbTrades();
+      });
+    }
 
     function renderScalperV3(v3) {
       const line = document.getElementById("scalperV3Line");
