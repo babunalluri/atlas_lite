@@ -54,6 +54,7 @@ def _watch(tmp_path, monkeypatch):
     monkeypatch.setattr(W, "LATENCIES_MS", (100,))
     monkeypatch.setattr(W, "NEXT_QUOTE_WAIT_S", 0.3)
     monkeypatch.setattr(W, "MIN_PAPER_NET", 0.0)  # mechanics tests; the ₹500 rule has its own tests
+    monkeypatch.setattr(W, "RESEARCH_NETS", ())  # one track: research tracks have their own test
     universe = {"AAA": ("small", "AAA")}
     w = W.Watch({1: ("NSE", "AAA"), 2: ("BSE", "AAA")}, tmp_path, "2026-11-02", universe)
 
@@ -177,7 +178,7 @@ def test_api_arb_falls_back_to_live_when_the_summary_is_unreadable(tmp_path, mon
 
 def test_api_arb_trades_lists_the_latest_day_newest_first_by_delay(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(main, "DATA_DIR", tmp_path)
-    assert asyncio.run(main.api_arb_trades(latency_ms=300, limit=300, day=None))["count"] == 0
+    assert asyncio.run(main.api_arb_trades(latency_ms=300, limit=300, day=None, track=None))["count"] == 0
     arb = tmp_path / "arb"
     arb.mkdir()
     rows = [
@@ -187,7 +188,7 @@ def test_api_arb_trades_lists_the_latest_day_newest_first_by_delay(tmp_path, mon
     ]
     (arb / "paper-2026-11-02.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n{bad line\n")
     (arb / "paper-2026-10-30.jsonl").write_text(json.dumps(rows[0]) + "\n")
-    out = asyncio.run(main.api_arb_trades(latency_ms=300, limit=300, day=None))
+    out = asyncio.run(main.api_arb_trades(latency_ms=300, limit=300, day=None, track=None))
     assert out["day"] == "2026-11-02" and out["count"] == 2 and out["net"] == 140.0
     assert [t["stock"] for t in out["trades"]] == ["BBB", "AAA"]
 
@@ -200,10 +201,10 @@ def test_summary_and_trade_list_use_the_same_day(tmp_path, monkeypatch) -> None:
     (arb / "paper-2026-10-30.jsonl").write_text(json.dumps({"seen": "x", "latency_ms": 300, "net": 5.0}) + "\n")
     (arb / "paper-2026-11-02.jsonl").write_text(json.dumps({"seen": "y", "latency_ms": 300, "net": 7.0}) + "\n")
     summary = asyncio.run(main.api_arb())
-    trades = asyncio.run(main.api_arb_trades(latency_ms=300, limit=300, day=None))
+    trades = asyncio.run(main.api_arb_trades(latency_ms=300, limit=300, day=None, track=None))
     assert summary["day"] == trades["day"] == "2026-11-02"  # newest paper day; no summary for it yet
     assert summary["available"] is False
-    older = asyncio.run(main.api_arb_trades(latency_ms=300, limit=300, day="2026-10-30"))
+    older = asyncio.run(main.api_arb_trades(latency_ms=300, limit=300, day="2026-10-30", track=None))
     assert older["count"] == 1 and older["net"] == 5.0
 
 
@@ -213,7 +214,7 @@ def test_trade_list_says_how_many_are_shown(tmp_path, monkeypatch) -> None:
     arb.mkdir()
     rows = [{"seen": f"2026-11-02T10:00:{i:02d}", "latency_ms": 300, "net": 1.0} for i in range(5)]
     (arb / "paper-2026-11-02.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
-    out = asyncio.run(main.api_arb_trades(latency_ms=300, limit=2, day=None))
+    out = asyncio.run(main.api_arb_trades(latency_ms=300, limit=2, day=None, track=None))
     assert out["count"] == 5 and out["shown"] == 2 and len(out["trades"]) == 2 and out["net"] == 5.0
 
 
@@ -239,3 +240,39 @@ def test_paper_trades_need_the_minimum_estimated_net(tmp_path, monkeypatch) -> N
     assert rec["est_net"] >= 500 and rec["outcome"] == "both" and rec["qty"] == 200
     s = w.summary(final=True)
     assert s["min_net"] == 500.0 and s["small"]["crossings_meeting_min_net"] >= 1
+
+
+def test_research_tracks_run_beside_the_main_track(tmp_path, monkeypatch) -> None:
+    w, tick = _watch(tmp_path, monkeypatch)
+    monkeypatch.setattr(W, "MIN_PAPER_NET", 500.0)
+    monkeypatch.setattr(W, "RESEARCH_NETS", (100.0, 200.0, 300.0, 1000.0))
+
+    async def go():
+        # ₹4 cross on 200 shares: about ₹717 estimated -> tracks 100, 200, 300 and 500; not 1000
+        tick(1, 502.0, 502.2, bq=1000, aq=1000)
+        tick(2, 497.8, 498.0, bq=1000, aq=1000)
+        await asyncio.sleep(0.15)
+        tick(1, 502.0, 502.2, bq=1000, aq=1000)
+        tick(2, 497.8, 498.0, bq=1000, aq=1000)
+        await _settle(w)
+
+    asyncio.run(go())
+    assert sorted(r["track"] for r in w.paper) == [100.0, 200.0, 300.0, 500.0]
+    s = w.summary(final=True)["small"]
+    assert s["paper"]["100ms"]["attempts"] == 1  # main (₹500) track only
+    assert s["paper_research"]["100"]["100ms"]["attempts"] == 1
+    assert s["paper_research"]["1000"]["100ms"]["attempts"] == 0
+
+
+def test_trade_list_filters_by_track_and_defaults_to_main(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "DATA_DIR", tmp_path)
+    arb = tmp_path / "arb"
+    arb.mkdir()
+    rows = [{"seen": "a", "latency_ms": 300, "track": 500.0, "net": 600.0},
+            {"seen": "b", "latency_ms": 300, "track": 100.0, "net": 120.0},
+            {"seen": "c", "latency_ms": 300, "track": 100.0, "net": -40.0}]
+    (arb / "paper-2026-11-02.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    main_out = asyncio.run(main.api_arb_trades(latency_ms=300, limit=300, day=None, track=None))
+    assert main_out["track"] == 500.0 and main_out["count"] == 1 and main_out["net"] == 600.0
+    research = asyncio.run(main.api_arb_trades(latency_ms=300, limit=300, day=None, track=100.0))
+    assert research["count"] == 2 and research["net"] == 80.0

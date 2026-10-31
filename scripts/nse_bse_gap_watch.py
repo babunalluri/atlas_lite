@@ -1,5 +1,5 @@
 """Usage: python3 scripts/nse_bse_gap_watch.py [--universe data/arb_universe.json] [--out data/arb] [--min-net 500]
-       [--start 09:15] [--end 15:30]
+       [--research-nets 1,100,200,300,1000] [--days 5] [--until YYYY-MM-DD] [--start 09:15] [--end 15:30]
 
 Watch NSE vs BSE best bid/ask for liquid stocks and record every moment one exchange's
 bid is above the other's ask. Read-only: never places an order.
@@ -18,8 +18,12 @@ fees, GST, stamp duty). Episodes (same stock and direction, back to back) get a 
 ...} (matched by ISIN; ranked by NSE traded value; BSE groups A/B/X only). The summary is reported
 per group, small caps first. Without the file, STOCKS below is watched as "large".
 
-Paper trading (no real orders): a crossing whose estimated net after all costs is at least --min-net
-(₹500 by default) at the moment it is seen fires
+Paper trading (no real orders), in independent tracks: the main track (--min-net, ₹500) and research
+tracks (--research-nets, ₹1/100/200/300/1000; ₹1 = anything that beats costs) kept for later study.
+Runs --days trading days in a row (5 = a week), skipping weekends and NSE holidays, one set of files
+per day; --until stops after that date (scripts/arb_watch_guard.sh restarts it with --until, so a
+restart mid-week never runs past the planned last day). A crossing whose estimated net after all
+costs reaches a track's threshold at the moment it is seen fires, in that track,
 two IOC limit orders, buy at the cheaper exchange's ask and sell at the dearer one's bid, for the
 shares shown at both best prices (capped at ₹1 lakh). Each order "arrives" after a delay, simulated
 at 100, 300 and 600 ms in parallel; it fills only if its price is still at or better than the
@@ -52,6 +56,7 @@ from zoneinfo import ZoneInfo
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from atlas_lite.agent_gates import _is_nse_trading_day  # noqa: E402
 from atlas_lite.config import load_settings  # noqa: E402
 from atlas_lite.kite_charges import order_charges as kite_order_charges  # noqa: E402
 from atlas_lite.kite_ws import KITE_WS_URL, WS_MODE_FULL, parse_binary_ticks  # noqa: E402
@@ -68,7 +73,13 @@ LATENCIES_MS = (100, 300, 600)
 NEXT_QUOTE_WAIT_S = 2.0
 MAX_NOTIONAL = 100_000.0
 PAPER_COOLDOWN_S = 2.0
-MIN_PAPER_NET = 500.0  # estimated net after costs a crossing needs before a paper trade (--min-net)
+MIN_PAPER_NET = 500.0  # main track: estimated net after costs a crossing needs (--min-net)
+RESEARCH_NETS: tuple[float, ...] = (1.0, 100.0, 200.0, 300.0, 1000.0)  # research tracks (--research-nets)
+
+
+def paper_tracks() -> tuple[float, ...]:
+    """Thresholds, main first. Each track has its own locks, so research trades never block main ones."""
+    return tuple(dict.fromkeys((MIN_PAPER_NET, *sorted(RESEARCH_NETS))))
 TXN_RATE = {"NSE": 0.0000297, "BSE": 0.0000375}
 
 
@@ -141,8 +152,8 @@ class Watch:
         self._last_sample: dict[str, float] = {}
         self.paper: list[dict] = []
         self.paper_path = out / f"paper-{day}.jsonl"
-        self._paper_last: dict[tuple[str, int], float] = {}
-        self._paper_busy: set[tuple[str, int]] = set()
+        self._paper_last: dict[tuple[str, int, float], float] = {}
+        self._paper_busy: set[tuple[str, int, float]] = set()
         self._tasks: set[asyncio.Task] = set()
         self.paper_errors = 0
         self.day = day
@@ -201,22 +212,24 @@ class Watch:
         if qty < 1:
             return
         est_net = (sell_q["bid"] - buy_q["ask"]) * qty - intraday_cost(buy_q["ask"], sell_q["bid"], qty, buy_exch)
-        if est_net < MIN_PAPER_NET:
+        tracks = [t for t in paper_tracks() if est_net >= t]
+        if not tracks:
             return
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        for lat in LATENCIES_MS:
-            key = (stock, lat)
-            if key in self._paper_busy or now - self._paper_last.get(key, 0.0) < PAPER_COOLDOWN_S:
-                continue
-            self._paper_busy.add(key)
-            self._paper_last[key] = now
-            task = loop.create_task(
-                self.paper_attempt(stock, buy_exch, sell_exch, buy_q["ask"], sell_q["bid"], qty, lat, est_net))
-            self._tasks.add(task)
-            task.add_done_callback(self._paper_done)
+        for track in tracks:
+            for lat in LATENCIES_MS:
+                key = (stock, lat, track)
+                if key in self._paper_busy or now - self._paper_last.get(key, 0.0) < PAPER_COOLDOWN_S:
+                    continue
+                self._paper_busy.add(key)
+                self._paper_last[key] = now
+                task = loop.create_task(self.paper_attempt(
+                    stock, buy_exch, sell_exch, buy_q["ask"], sell_q["bid"], qty, lat, est_net, track))
+                self._tasks.add(task)
+                task.add_done_callback(self._paper_done)
 
     def _paper_done(self, task: asyncio.Task) -> None:
         self._tasks.discard(task)
@@ -236,7 +249,8 @@ class Watch:
             await asyncio.sleep(0.02)
 
     async def paper_attempt(self, stock: str, buy_exch: str, sell_exch: str, buy_lim: float, sell_lim: float,
-                            qty: int, lat: int, est_net: float = 0.0) -> None:
+                            qty: int, lat: int, est_net: float = 0.0, track: float | None = None) -> None:
+        track = MIN_PAPER_NET if track is None else track
         try:
             seen = time.time()
             arrive = seen + lat / 1000
@@ -248,7 +262,7 @@ class Watch:
             base = {"stock": stock, "group": self.groups.get(stock, "large"), "latency_ms": lat,
                     "seen": datetime.fromtimestamp(seen, IST).isoformat(timespec="milliseconds"),
                     "direction": f"buy {buy_exch} sell {sell_exch}", "buy_limit": buy_lim, "sell_limit": sell_lim,
-                    "qty": qty, "est_net": round(est_net, 2)}
+                    "qty": qty, "est_net": round(est_net, 2), "track": track}
             if bq is None or sq is None or not (b_fresh and s_fresh):
                 # No price seen after the orders arrived: the fill is a guess either way, so no P&L.
                 self._record({**base, "bought": 0, "sold": 0, "outcome": "unknown", "quotes_updated": False,
@@ -290,7 +304,7 @@ class Watch:
                           "unwind_quote_updated": unwind_updated,
                           "gross": round(gross, 2), "unwind_pnl": round(unwind_pnl, 2), "net": round(net, 2)})
         finally:
-            self._paper_busy.discard((stock, lat))
+            self._paper_busy.discard((stock, lat, track))
 
     def _record(self, rec: dict) -> None:
         self.paper.append(rec)
@@ -365,13 +379,24 @@ class Watch:
                 }
             return out_b
 
-        out: dict = {"ticks": self.ticks, "paper_errors": self.paper_errors, "min_net": MIN_PAPER_NET}
+        out: dict = {"ticks": self.ticks, "paper_errors": self.paper_errors, "min_net": MIN_PAPER_NET,
+                     "research_nets": sorted(RESEARCH_NETS)}
+
+        def main_track(recs: list[dict]) -> list[dict]:
+            return [x for x in recs if x.get("track", MIN_PAPER_NET) == MIN_PAPER_NET]
+
+        def research(recs: list[dict]) -> dict:
+            """₹ threshold -> paper results, every research track."""
+            return {f"{t:g}": paper_block([x for x in recs if x.get("track") == t]) for t in sorted(RESEARCH_NETS)}
         present = set(self.groups.values()) or {"large"}
         for g in [x for x in GROUP_ORDER if x in present]:  # small caps first
             out[g] = block([e for e in self.episodes if e.get("group") == g], g)
-            out[g]["paper"] = paper_block([x for x in self.paper if x["group"] == g])
+            in_group = [x for x in self.paper if x["group"] == g]
+            out[g]["paper"] = paper_block(main_track(in_group))
+            out[g]["paper_research"] = research(in_group)
         out["all"] = block(self.episodes, None)
-        out["all"]["paper"] = paper_block(self.paper)
+        out["all"]["paper"] = paper_block(main_track(self.paper))
+        out["all"]["paper_research"] = research(self.paper)
         return out
 
 
@@ -402,23 +427,43 @@ async def session(watch: Watch, end: str) -> None:
 
 
 async def main() -> None:
-    global MIN_PAPER_NET
+    global MIN_PAPER_NET, RESEARCH_NETS
     ap = argparse.ArgumentParser()
     ap.add_argument("--universe", default=str(ROOT / "data" / "arb_universe.json"))
-    ap.add_argument("--min-net", type=float, default=MIN_PAPER_NET, help="₹ estimated net a paper trade needs")
+    ap.add_argument("--min-net", type=float, default=MIN_PAPER_NET, help="₹ estimated net, main paper track")
+    ap.add_argument("--research-nets", default=",".join(f"{t:g}" for t in RESEARCH_NETS),
+                    help="comma-separated ₹ thresholds for research tracks")
     ap.add_argument("--out", default=str(ROOT / "data" / "arb"))
+    ap.add_argument("--days", type=int, default=5, help="trading days to record (5 = a week)")
+    ap.add_argument("--until", default=None, help="YYYY-MM-DD: last day to record")
     ap.add_argument("--start", default="09:15")
     ap.add_argument("--end", default="15:30")
     args = ap.parse_args()
     MIN_PAPER_NET = args.min_net
+    RESEARCH_NETS = tuple(float(x) for x in args.research_nets.split(",") if x.strip())
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    while datetime.now(IST).weekday() >= 5 or hm_now() < args.start or hm_now() >= args.end:
+    for n in range(1, args.days + 1):
+        if args.until and datetime.now(IST).strftime("%Y-%m-%d") > args.until:
+            break
+        day = await run_day(args, out, n)
+        if args.until and day >= args.until:
+            break
+    print(f"{datetime.now(IST):%Y-%m-%d %H:%M}: recording finished; stopping", flush=True)
+
+
+async def run_day(args: argparse.Namespace, out: Path, n: int) -> str:
+    """Wait for the next trading session (weekdays, not NSE holidays), record it, write the final report."""
+    while (not _is_nse_trading_day(datetime.now(IST).date()) or hm_now() < args.start or hm_now() >= args.end
+           or (out / f"summary-{datetime.now(IST):%Y-%m-%d}.json").is_file()):  # a finished day is not redone
+        if args.until and datetime.now(IST).strftime("%Y-%m-%d") > args.until:
+            return datetime.now(IST).strftime("%Y-%m-%d")
         await asyncio.sleep(20)
     day = datetime.now(IST).strftime("%Y-%m-%d")
     universe = load_universe(Path(args.universe))
     watch = Watch(load_tokens(universe), out, day, universe)
-    print(f"{day}: watching {len(watch.tokens) // 2} stocks on NSE and BSE until {args.end}", flush=True)
+    print(f"{day} (day {n} of {args.days}): watching {len(watch.tokens) // 2} stocks on NSE and BSE until {args.end}; "
+          f"paper tracks ₹{', ₹'.join(f'{t:g}' for t in paper_tracks())}", flush=True)
     backoff = 5.0
     while hm_now() < args.end:
         try:
@@ -431,6 +476,7 @@ async def main() -> None:
         await asyncio.wait(set(watch._tasks), timeout=15)
     report = watch.write_report(final=True)
     print(json.dumps(report, indent=2), flush=True)
+    return day
 
 
 if __name__ == "__main__":

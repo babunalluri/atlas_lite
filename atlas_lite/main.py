@@ -309,6 +309,7 @@ async def api_arb_trades(
     latency_ms: int = Query(default=300, description="simulated order delay: 100, 300 or 600"),
     limit: int = Query(default=300, ge=1, le=2000),
     day: Optional[str] = Query(default=None, description="YYYY-MM-DD; default: the same day /api/arb shows"),
+    track: Optional[float] = Query(default=None, description="₹ threshold track; default: the main track"),
 ) -> dict[str, Any]:
     """The gap watcher's paper trades for one day, newest first (paper only, no orders)."""
 
@@ -316,7 +317,8 @@ async def api_arb_trades(
         want = day or _arb_latest_day()
         path = DATA_DIR / "arb" / f"paper-{want}.jsonl"
         if not want or len(want) != 10 or not path.is_file():
-            return {"ok": True, "day": want, "latency_ms": latency_ms, "count": 0, "shown": 0, "net": 0.0, "trades": []}
+            return {"ok": True, "day": want, "latency_ms": latency_ms, "track": track, "count": 0, "shown": 0,
+                    "net": 0.0, "trades": []}
         rows: list[dict[str, Any]] = []
         for line in path.read_text(encoding="utf-8").splitlines():
             try:
@@ -325,8 +327,13 @@ async def api_arb_trades(
                 continue
             if isinstance(row, dict) and row.get("latency_ms") == latency_ms:
                 rows.append(row)
+        # Rows written before research tracks existed carry no track: they are the main track.
+        tracks = sorted({float(r["track"]) for r in rows if r.get("track") is not None}, reverse=True)
+        want_track = track if track is not None else (tracks[0] if tracks else None)
+        if want_track is not None:
+            rows = [r for r in rows if float(r.get("track") if r.get("track") is not None else tracks[0]) == want_track]
         rows.sort(key=lambda r: str(r.get("seen") or ""), reverse=True)
-        return {"ok": True, "day": want, "latency_ms": latency_ms,
+        return {"ok": True, "day": want, "latency_ms": latency_ms, "track": want_track, "tracks": tracks,
                 "count": len(rows), "shown": min(len(rows), limit),
                 "net": round(sum(float(r.get("net") or 0) for r in rows), 2),
                 "trades": rows[:limit]}

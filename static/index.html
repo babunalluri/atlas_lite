@@ -2387,6 +2387,16 @@
       </div>
       <div class="history-toolbar" style="margin-top:0;">
         <span class="history-meta" id="arbTradesMeta">Paper trades: —</span>
+        <label class="history-meta" for="arbTrack">Track
+          <select id="arbTrack">
+            <option value="">main (₹500+)</option>
+            <option value="1">research ₹1+ (beats costs)</option>
+            <option value="100">research ₹100+</option>
+            <option value="200">research ₹200+</option>
+            <option value="300">research ₹300+</option>
+            <option value="1000">research ₹1,000+</option>
+          </select>
+        </label>
         <label class="history-meta" for="arbLatency">Order delay
           <select id="arbLatency">
             <option value="100">100 ms</option>
@@ -6981,7 +6991,8 @@
         return;
       }
       const shown = data.shown < data.count ? ` · showing latest ${data.shown} of ${data.count}` : ` · ${data.count} attempts`;
-      meta.textContent = `Paper trades ${data.day} · ${data.latency_ms} ms delay${shown} · net ₹${data.net} (all ${data.count})`;
+      const trackText = data.track != null ? ` · track ₹${data.track}+` : "";
+      meta.textContent = `Paper trades ${data.day}${trackText} · ${data.latency_ms} ms delay${shown} · net ₹${data.net} (all ${data.count})`;
       const cell = (v) => escapeTradeHtml(v ?? "—");
       tbody.innerHTML = (data.trades || []).map((t) => {
         const stale = t.unwind_quote_updated === false ? " · unwind at last price" : "";
@@ -7006,12 +7017,15 @@
     function loadArbTrades() {
       const lat = document.getElementById("arbLatency")?.value || "300";
       const dayQ = arbDay ? `&day=${encodeURIComponent(arbDay)}` : "";
-      fetch(`/api/arb/trades?latency_ms=${encodeURIComponent(lat)}${dayQ}`)
+      const track = document.getElementById("arbTrack")?.value || "";
+      const trackQ = track ? `&track=${encodeURIComponent(track)}` : "";
+      fetch(`/api/arb/trades?latency_ms=${encodeURIComponent(lat)}${dayQ}${trackQ}`)
         .then((r) => (r.ok ? r.json() : null))
         .then(renderArbTrades)
         .catch(() => renderArbTrades(null));
     }
     document.getElementById("arbLatency")?.addEventListener("change", loadArbTrades);
+    document.getElementById("arbTrack")?.addEventListener("change", loadArbTrades);
 
     function renderScalperV3(v3) {
       const line = document.getElementById("scalperV3Line");
