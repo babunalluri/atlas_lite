@@ -274,6 +274,13 @@ async def api_paper() -> dict[str, Any]:
     return _engine.paper_snapshot()
 
 
+def _arb_latest_day() -> str | None:
+    """Latest day with any gap-watcher file, shared by /api/arb and /api/arb/trades."""
+    arb = DATA_DIR / "arb"
+    names = [*arb.glob("summary-*.json"), *arb.glob("live-*.json"), *arb.glob("paper-*.jsonl")]
+    return max((p.stem.split("-", 1)[1] for p in names), default=None)
+
+
 @app.get("/api/arb")
 async def api_arb() -> dict[str, Any]:
     """NSE vs BSE gap watcher report (scripts/nse_bse_gap_watch.py; read-only, paper only).
@@ -283,17 +290,16 @@ async def api_arb() -> dict[str, Any]:
 
     def latest() -> dict[str, Any]:
         arb = DATA_DIR / "arb"
-        days = {p.stem.split("-", 1)[1] for p in [*arb.glob("summary-*.json"), *arb.glob("live-*.json")]}
-        if not days:
+        day = _arb_latest_day()
+        if day is None:
             return {"ok": True, "available": False}
-        day = max(days)
         for path in (arb / f"summary-{day}.json", arb / f"live-{day}.json"):  # final first; live if unreadable
             try:
                 report = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
             return {"ok": True, "available": True, **report}
-        return {"ok": True, "available": False}
+        return {"ok": True, "available": False, "day": day}
 
     return await asyncio.to_thread(latest)
 
@@ -302,14 +308,15 @@ async def api_arb() -> dict[str, Any]:
 async def api_arb_trades(
     latency_ms: int = Query(default=300, description="simulated order delay: 100, 300 or 600"),
     limit: int = Query(default=300, ge=1, le=2000),
+    day: Optional[str] = Query(default=None, description="YYYY-MM-DD; default: the same day /api/arb shows"),
 ) -> dict[str, Any]:
-    """The gap watcher's paper trades for the latest day, newest first (paper only, no orders)."""
+    """The gap watcher's paper trades for one day, newest first (paper only, no orders)."""
 
     def read() -> dict[str, Any]:
-        files = sorted((DATA_DIR / "arb").glob("paper-*.jsonl"))
-        if not files:
-            return {"ok": True, "day": None, "latency_ms": latency_ms, "count": 0, "trades": []}
-        path = files[-1]
+        want = day or _arb_latest_day()
+        path = DATA_DIR / "arb" / f"paper-{want}.jsonl"
+        if not want or len(want) != 10 or not path.is_file():
+            return {"ok": True, "day": want, "latency_ms": latency_ms, "count": 0, "shown": 0, "net": 0.0, "trades": []}
         rows: list[dict[str, Any]] = []
         for line in path.read_text(encoding="utf-8").splitlines():
             try:
@@ -319,8 +326,9 @@ async def api_arb_trades(
             if isinstance(row, dict) and row.get("latency_ms") == latency_ms:
                 rows.append(row)
         rows.sort(key=lambda r: str(r.get("seen") or ""), reverse=True)
-        return {"ok": True, "day": path.stem.split("-", 1)[1], "latency_ms": latency_ms,
-                "count": len(rows), "net": round(sum(float(r.get("net") or 0) for r in rows), 2),
+        return {"ok": True, "day": want, "latency_ms": latency_ms,
+                "count": len(rows), "shown": min(len(rows), limit),
+                "net": round(sum(float(r.get("net") or 0) for r in rows), 2),
                 "trades": rows[:limit]}
 
     return await asyncio.to_thread(read)

@@ -2378,10 +2378,10 @@
       <div class="history-table-wrap">
         <table class="history-table" id="arbTable">
           <thead>
-            <tr><th>Group</th><th>Stocks</th><th>Crossings</th><th>Beat costs</th><th>Lasted ≥0.5 s</th><th>₹ (≥0.5 s)</th><th>Paper tries (300 ms)</th><th>Both filled</th><th>One leg</th><th>Paper net ₹</th></tr>
+            <tr><th>Group</th><th>Stocks</th><th>Crossings</th><th>Beat costs</th><th>Est. net ≥ min</th><th>Lasted ≥0.5 s</th><th>₹ (≥0.5 s)</th><th>Paper tries (300 ms)</th><th>Both filled</th><th>One leg</th><th>Paper net ₹</th></tr>
           </thead>
           <tbody id="arbRows">
-            <tr><td colspan="10" class="hist-muted">Waiting for the NSE vs BSE watcher (runs 09:15–15:30)</td></tr>
+            <tr><td colspan="11" class="hist-muted">Waiting for the NSE vs BSE watcher (runs 09:15–15:30)</td></tr>
           </tbody>
         </table>
       </div>
@@ -2398,10 +2398,10 @@
       <div class="history-table-wrap" style="max-height:22rem;overflow:auto;">
         <table class="history-table" id="arbTradesTable">
           <thead>
-            <tr><th>Time</th><th>Stock</th><th>Group</th><th>Direction</th><th>Buy @ / Sell @</th><th>Qty</th><th>Bought</th><th>Sold</th><th>Outcome</th><th>Gross ₹</th><th>Unwind ₹</th><th>Net ₹</th></tr>
+            <tr><th>Time</th><th>Stock</th><th>Group</th><th>Direction</th><th>Buy @ / Sell @</th><th>Qty</th><th>Est. net ₹</th><th>Bought</th><th>Sold</th><th>Outcome</th><th>Gross ₹</th><th>Unwind ₹</th><th>Net ₹</th></tr>
           </thead>
           <tbody id="arbTradesRows">
-            <tr><td colspan="12" class="hist-muted">No paper trades yet</td></tr>
+            <tr><td colspan="13" class="hist-muted">No paper trades yet</td></tr>
           </tbody>
         </table>
       </div>
@@ -6935,12 +6935,14 @@
       const meta = document.getElementById("arbMeta");
       const tbody = document.getElementById("arbRows");
       if (!meta || !tbody) return;
+      arbDay = (arb && arb.day) || null;  // the trade list shows the same day as this summary
       if (!arb || !arb.available) {
         meta.textContent = "NSE vs BSE gaps · no report yet (watcher runs 09:15–15:30 on trading days)";
         return;
       }
       const when = String(arb.updated_at || "").slice(11, 16);
-      meta.textContent = `NSE vs BSE gaps · ${arb.day} · ${arb.final ? "final" : "live, updated " + when} · paper only, no orders`;
+      const minNet = arb.min_net != null ? ` · paper trades need est. net ≥ ₹${arb.min_net}` : "";
+      meta.textContent = `NSE vs BSE gaps · ${arb.day} · ${arb.final ? "final" : "live, updated " + when}${minNet} · paper only, no orders`;
       const rows = ["small", "mid", "large", "all"].filter((g) => arb[g]).map((g) => {
         const r = arb[g];
         const p = (r.paper || {})["300ms"] || {};
@@ -6951,6 +6953,7 @@
           <td>${cell(r.stocks)}</td>
           <td>${cell(r.crossings)}</td>
           <td>${cell(r.crossings_profitable_after_costs)}</td>
+          <td>${cell(r.crossings_meeting_min_net)}</td>
           <td>${cell(r.profitable_lasting_0_5s_or_more)}</td>
           <td>${cell(r.sum_best_net_lasting_0_5s_or_more)}</td>
           <td>${cell(p.attempts)}</td>
@@ -6959,24 +6962,29 @@
           <td>${cell(p.net)}</td>
         </tr>`;
       });
-      tbody.innerHTML = rows.join("") || `<tr><td colspan="10" class="hist-muted">No data yet</td></tr>`;
+      tbody.innerHTML = rows.join("") || `<tr><td colspan="11" class="hist-muted">No data yet</td></tr>`;
     }
 
     // One row per paper attempt (simulated IOC pair), newest first.
-    const ARB_OUTCOME = { both: "both filled", none: "neither filled", one_leg: "one leg (unwound)", partial: "partial (unwound)" };
+    const ARB_OUTCOME = {
+      both: "both filled", none: "neither filled", one_leg: "one leg (unwound)",
+      partial: "partial (unwound)", unknown: "unknown (no price update)",
+    };
+    let arbDay = null;
     function renderArbTrades(data) {
       const meta = document.getElementById("arbTradesMeta");
       const tbody = document.getElementById("arbTradesRows");
       if (!meta || !tbody) return;
-      if (!data || !data.day) {
+      if (!data || !data.day || !data.count) {
         meta.textContent = "Paper trades: none yet";
-        tbody.innerHTML = `<tr><td colspan="12" class="hist-muted">No paper trades yet</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="13" class="hist-muted">No paper trades yet</td></tr>`;
         return;
       }
-      meta.textContent = `Paper trades ${data.day} · ${data.latency_ms} ms delay · ${data.count} attempts · net ₹${data.net}`;
+      const shown = data.shown < data.count ? ` · showing latest ${data.shown} of ${data.count}` : ` · ${data.count} attempts`;
+      meta.textContent = `Paper trades ${data.day} · ${data.latency_ms} ms delay${shown} · net ₹${data.net} (all ${data.count})`;
       const cell = (v) => escapeTradeHtml(v ?? "—");
       tbody.innerHTML = (data.trades || []).map((t) => {
-        const stale = t.quotes_updated === false ? " (no quote update)" : "";
+        const stale = t.unwind_quote_updated === false ? " · unwind at last price" : "";
         return `<tr>
           <td>${cell(String(t.seen || "").slice(11, 23))}</td>
           <td>${cell(t.stock)}</td>
@@ -6984,6 +6992,7 @@
           <td>${cell(t.direction)}</td>
           <td>${cell(t.buy_limit)} / ${cell(t.sell_limit)}</td>
           <td>${cell(t.qty)}</td>
+          <td>${cell(t.est_net)}</td>
           <td>${cell(t.bought)}</td>
           <td>${cell(t.sold)}</td>
           <td>${cell((ARB_OUTCOME[t.outcome] || t.outcome) + stale)}</td>
@@ -6991,12 +7000,13 @@
           <td>${cell(t.unwind_pnl)}</td>
           <td>${cell(t.net)}</td>
         </tr>`;
-      }).join("") || `<tr><td colspan="12" class="hist-muted">No paper trades at this delay</td></tr>`;
+      }).join("") || `<tr><td colspan="13" class="hist-muted">No paper trades at this delay</td></tr>`;
     }
 
     function loadArbTrades() {
       const lat = document.getElementById("arbLatency")?.value || "300";
-      fetch(`/api/arb/trades?latency_ms=${encodeURIComponent(lat)}`)
+      const dayQ = arbDay ? `&day=${encodeURIComponent(arbDay)}` : "";
+      fetch(`/api/arb/trades?latency_ms=${encodeURIComponent(lat)}${dayQ}`)
         .then((r) => (r.ok ? r.json() : null))
         .then(renderArbTrades)
         .catch(() => renderArbTrades(null));
@@ -7223,8 +7233,11 @@
           }
         }
         renderAiAgentBook(paper.ai_agent || {});
-        fetch("/api/arb").then((r) => (r.ok ? r.json() : null)).then(renderArb).catch(() => renderArb(null));
-        loadArbTrades();
+        fetch("/api/arb")
+          .then((r) => (r.ok ? r.json() : null))
+          .then(renderArb)
+          .catch(() => renderArb(null))
+          .finally(loadArbTrades);
         renderFactorPaper(paper.factor_paper || {});
         renderScalperV3(paper.scalper_v3 || {});
         renderWeeklySell("weeklyStrangleLine", paper.weekly_strangle || {});

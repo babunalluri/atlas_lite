@@ -1,4 +1,5 @@
-"""Usage: python3 scripts/nse_bse_gap_watch.py [--universe data/arb_universe.json] [--out data/arb] [--start 09:15] [--end 15:30]
+"""Usage: python3 scripts/nse_bse_gap_watch.py [--universe data/arb_universe.json] [--out data/arb] [--min-net 500]
+       [--start 09:15] [--end 15:30]
 
 Watch NSE vs BSE best bid/ask for liquid stocks and record every moment one exchange's
 bid is above the other's ask. Read-only: never places an order.
@@ -17,14 +18,17 @@ fees, GST, stamp duty). Episodes (same stock and direction, back to back) get a 
 ...} (matched by ISIN; ranked by NSE traded value; BSE groups A/B/X only). The summary is reported
 per group, small caps first. Without the file, STOCKS below is watched as "large".
 
-Paper trading (no real orders): a crossing that clears all costs at the moment it is seen fires
+Paper trading (no real orders): a crossing whose estimated net after all costs is at least --min-net
+(₹500 by default) at the moment it is seen fires
 two IOC limit orders, buy at the cheaper exchange's ask and sell at the dearer one's bid, for the
 shares shown at both best prices (capped at ₹1 lakh). Each order "arrives" after a delay, simulated
 at 100, 300 and 600 ms in parallel; it fills only if its price is still at or better than the
 limit, up to the shares shown at that best price. A leg that filled more than the other is closed
 at market on its exchange after another delay (there is no all-or-none order across NSE and BSE).
 Full Zerodha intraday charges on every order, unwinds included. One attempt per stock per delay
-at a time, 2 s cooldown.
+at a time, 2 s cooldown (both directions share it: they can never be crossed at the same moment,
+since that would need one exchange's bid above its own ask). If either leg gets no quote update
+within NEXT_QUOTE_WAIT_S of arriving, the attempt is "unknown": no fills, no P&L, counted apart.
 
 Writes <out>/gaps-<day>.jsonl (one line per crossing episode), <out>/paper-<day>.jsonl (one line
 per paper attempt), <out>/live-<day>.json every 60 s (crossings still open are left out) and
@@ -64,6 +68,7 @@ LATENCIES_MS = (100, 300, 600)
 NEXT_QUOTE_WAIT_S = 2.0
 MAX_NOTIONAL = 100_000.0
 PAPER_COOLDOWN_S = 2.0
+MIN_PAPER_NET = 500.0  # estimated net after costs a crossing needs before a paper trade (--min-net)
 TXN_RATE = {"NSE": 0.0000297, "BSE": 0.0000375}
 
 
@@ -195,7 +200,8 @@ class Watch:
         qty = tradable_qty(buy_q, sell_q)
         if qty < 1:
             return
-        if (sell_q["bid"] - buy_q["ask"]) * qty - intraday_cost(buy_q["ask"], sell_q["bid"], qty, buy_exch) <= 0:
+        est_net = (sell_q["bid"] - buy_q["ask"]) * qty - intraday_cost(buy_q["ask"], sell_q["bid"], qty, buy_exch)
+        if est_net < MIN_PAPER_NET:
             return
         try:
             loop = asyncio.get_running_loop()
@@ -207,7 +213,8 @@ class Watch:
                 continue
             self._paper_busy.add(key)
             self._paper_last[key] = now
-            task = loop.create_task(self.paper_attempt(stock, buy_exch, sell_exch, buy_q["ask"], sell_q["bid"], qty, lat))
+            task = loop.create_task(
+                self.paper_attempt(stock, buy_exch, sell_exch, buy_q["ask"], sell_q["bid"], qty, lat, est_net))
             self._tasks.add(task)
             task.add_done_callback(self._paper_done)
 
@@ -229,7 +236,7 @@ class Watch:
             await asyncio.sleep(0.02)
 
     async def paper_attempt(self, stock: str, buy_exch: str, sell_exch: str, buy_lim: float, sell_lim: float,
-                            qty: int, lat: int) -> None:
+                            qty: int, lat: int, est_net: float = 0.0) -> None:
         try:
             seen = time.time()
             arrive = seen + lat / 1000
@@ -238,7 +245,14 @@ class Watch:
             # after its arrival, not the quote that triggered it.
             (bq, b_fresh), (sq, s_fresh) = await asyncio.gather(
                 self._quote_after((buy_exch, stock), arrive), self._quote_after((sell_exch, stock), arrive))
-            if bq is None or sq is None:
+            base = {"stock": stock, "group": self.groups.get(stock, "large"), "latency_ms": lat,
+                    "seen": datetime.fromtimestamp(seen, IST).isoformat(timespec="milliseconds"),
+                    "direction": f"buy {buy_exch} sell {sell_exch}", "buy_limit": buy_lim, "sell_limit": sell_lim,
+                    "qty": qty, "est_net": round(est_net, 2)}
+            if bq is None or sq is None or not (b_fresh and s_fresh):
+                # No price seen after the orders arrived: the fill is a guess either way, so no P&L.
+                self._record({**base, "bought": 0, "sold": 0, "outcome": "unknown", "quotes_updated": False,
+                              "gross": None, "unwind_pnl": None, "net": None})
                 return
             bought = int(min(qty, bq["ask_qty"])) if bq["ask"] and bq["ask"] <= buy_lim else 0
             sold = int(min(qty, sq["bid_qty"])) if sq["bid"] and sq["bid"] >= sell_lim else 0
@@ -251,17 +265,18 @@ class Watch:
             matched = min(bought, sold)
             gross = matched * (sell_px - buy_px) if matched else 0.0
             unwind_pnl = 0.0
+            unwind_updated = None
             if bought != sold:  # one leg filled more: close the extra at market after another delay
                 t_unwind = time.time() + lat / 1000
                 await asyncio.sleep(lat / 1000)
                 if bought > sold:
-                    q, _ = await self._quote_after((buy_exch, stock), t_unwind)
+                    q, unwind_updated = await self._quote_after((buy_exch, stock), t_unwind)
                     px = (q or {}).get("bid") or buy_px * 0.995  # no bid: assume a 0.5% hit
                     extra = bought - sold
                     unwind_pnl = extra * (px - buy_px)
                     fills.append((buy_exch, "sell", px, extra))
                 else:
-                    q, _ = await self._quote_after((sell_exch, stock), t_unwind)
+                    q, unwind_updated = await self._quote_after((sell_exch, stock), t_unwind)
                     px = (q or {}).get("ask") or sell_px * 1.005
                     extra = sold - bought
                     unwind_pnl = extra * (sell_px - px)
@@ -269,17 +284,18 @@ class Watch:
             outcome = ("none" if not bought and not sold else "both" if bought == sold
                        else "one_leg" if not bought or not sold else "partial")
             net = gross + unwind_pnl - order_charges(fills)
-            rec = {"stock": stock, "group": self.groups.get(stock, "large"), "latency_ms": lat,
-                   "seen": datetime.fromtimestamp(seen, IST).isoformat(timespec="milliseconds"),
-                   "direction": f"buy {buy_exch} sell {sell_exch}", "buy_limit": buy_lim, "sell_limit": sell_lim,
-                   "qty": qty, "bought": bought, "sold": sold, "outcome": outcome,
-                   "quotes_updated": b_fresh and s_fresh,
-                   "gross": round(gross, 2), "unwind_pnl": round(unwind_pnl, 2), "net": round(net, 2)}
-            self.paper.append(rec)
-            with self.paper_path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(rec) + "\n")
+            # unwind_quote_updated: False means the unwind used the last price seen (a market order hits
+            # whatever is standing); None means no unwind was needed.
+            self._record({**base, "bought": bought, "sold": sold, "outcome": outcome, "quotes_updated": True,
+                          "unwind_quote_updated": unwind_updated,
+                          "gross": round(gross, 2), "unwind_pnl": round(unwind_pnl, 2), "net": round(net, 2)})
         finally:
             self._paper_busy.discard((stock, lat))
+
+    def _record(self, rec: dict) -> None:
+        self.paper.append(rec)
+        with self.paper_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec) + "\n")
 
     def close(self, k: tuple[str, str]) -> None:
         ep = self.open_eps.pop(k)
@@ -323,6 +339,7 @@ class Watch:
                 "stocks": len({s for _, s in self.tokens.values() if group in (None, self.groups.get(s, "large"))}),
                 "crossings": len(eps),
                 "crossings_profitable_after_costs": len(profitable),
+                "crossings_meeting_min_net": sum(e["best_net"] >= MIN_PAPER_NET for e in eps),
                 "profitable_lasting_0_5s_or_more": len(lasting),
                 "sum_best_net_if_every_profitable_one_were_caught": round(sum(e["best_net"] for e in profitable), 2),
                 "sum_best_net_lasting_0_5s_or_more": round(sum(e["best_net"] for e in lasting), 2),
@@ -339,17 +356,16 @@ class Watch:
             out_b = {}
             for lat in LATENCIES_MS:
                 r = [x for x in recs if x["latency_ms"] == lat]
-                counts = {o: sum(x["outcome"] == o for x in r) for o in ("both", "none", "one_leg", "partial")}
+                counts = {o: sum(x["outcome"] == o for x in r) for o in ("both", "none", "one_leg", "partial", "unknown")}
                 out_b[f"{lat}ms"] = {
                     "attempts": len(r), **counts,
-                    "no_quote_update": sum(not x.get("quotes_updated", True) for x in r),
-                    "net": round(sum(x["net"] for x in r), 2),
+                    "net": round(sum(x["net"] or 0 for x in r), 2),  # unknown attempts carry no P&L
                     "net_both_filled": round(sum(x["net"] for x in r if x["outcome"] == "both"), 2),
                     "net_failed_legs": round(sum(x["net"] for x in r if x["outcome"] in ("one_leg", "partial")), 2),
                 }
             return out_b
 
-        out: dict = {"ticks": self.ticks, "paper_errors": self.paper_errors}
+        out: dict = {"ticks": self.ticks, "paper_errors": self.paper_errors, "min_net": MIN_PAPER_NET}
         present = set(self.groups.values()) or {"large"}
         for g in [x for x in GROUP_ORDER if x in present]:  # small caps first
             out[g] = block([e for e in self.episodes if e.get("group") == g], g)
@@ -386,12 +402,15 @@ async def session(watch: Watch, end: str) -> None:
 
 
 async def main() -> None:
+    global MIN_PAPER_NET
     ap = argparse.ArgumentParser()
     ap.add_argument("--universe", default=str(ROOT / "data" / "arb_universe.json"))
+    ap.add_argument("--min-net", type=float, default=MIN_PAPER_NET, help="₹ estimated net a paper trade needs")
     ap.add_argument("--out", default=str(ROOT / "data" / "arb"))
     ap.add_argument("--start", default="09:15")
     ap.add_argument("--end", default="15:30")
     args = ap.parse_args()
+    MIN_PAPER_NET = args.min_net
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     while datetime.now(IST).weekday() >= 5 or hm_now() < args.start or hm_now() >= args.end:
@@ -408,8 +427,8 @@ async def main() -> None:
             print(f"{datetime.now(IST):%H:%M:%S} websocket: {exc}; retrying in {backoff:.0f}s", flush=True)
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 60.0)
-    if watch._tasks:  # let paper attempts in flight finish (the longest is 2 x 600 ms)
-        await asyncio.wait(set(watch._tasks), timeout=5)
+    if watch._tasks:  # let paper attempts in flight finish: worst case 2 x (600 ms + 2 s quote wait)
+        await asyncio.wait(set(watch._tasks), timeout=15)
     report = watch.write_report(final=True)
     print(json.dumps(report, indent=2), flush=True)
 

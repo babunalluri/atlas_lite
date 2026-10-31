@@ -53,6 +53,7 @@ def test_watcher_writes_live_then_final_reports(tmp_path) -> None:
 def _watch(tmp_path, monkeypatch):
     monkeypatch.setattr(W, "LATENCIES_MS", (100,))
     monkeypatch.setattr(W, "NEXT_QUOTE_WAIT_S", 0.3)
+    monkeypatch.setattr(W, "MIN_PAPER_NET", 0.0)  # mechanics tests; the ₹500 rule has its own tests
     universe = {"AAA": ("small", "AAA")}
     w = W.Watch({1: ("NSE", "AAA"), 2: ("BSE", "AAA")}, tmp_path, "2026-11-02", universe)
 
@@ -111,6 +112,7 @@ def test_one_leg_is_unwound_at_market_and_loses(tmp_path, monkeypatch) -> None:
     (rec,) = w.paper
     assert rec["outcome"] == "one_leg" and rec["bought"] == 100 and rec["sold"] == 0
     assert rec["unwind_pnl"] == round(100 * (497.5 - 498.0), 2) and rec["net"] < 0
+    assert rec["unwind_quote_updated"] is True
 
 
 def test_no_quote_update_after_arrival_is_flagged(tmp_path, monkeypatch) -> None:
@@ -123,8 +125,10 @@ def test_no_quote_update_after_arrival_is_flagged(tmp_path, monkeypatch) -> None
 
     asyncio.run(go())
     (rec,) = w.paper
-    assert rec["quotes_updated"] is False
-    assert w.summary()["small"]["paper"]["100ms"]["no_quote_update"] == 1
+    assert rec["outcome"] == "unknown" and rec["quotes_updated"] is False
+    assert rec["bought"] == rec["sold"] == 0 and rec["net"] is None  # a guess either way: no fills, no P&L
+    paper = w.summary()["small"]["paper"]["100ms"]
+    assert paper["unknown"] == 1 and paper["net"] == 0
 
 
 def test_a_cross_that_does_not_clear_costs_is_not_paper_traded(tmp_path, monkeypatch) -> None:
@@ -173,7 +177,7 @@ def test_api_arb_falls_back_to_live_when_the_summary_is_unreadable(tmp_path, mon
 
 def test_api_arb_trades_lists_the_latest_day_newest_first_by_delay(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(main, "DATA_DIR", tmp_path)
-    assert asyncio.run(main.api_arb_trades(latency_ms=300, limit=300))["count"] == 0
+    assert asyncio.run(main.api_arb_trades(latency_ms=300, limit=300, day=None))["count"] == 0
     arb = tmp_path / "arb"
     arb.mkdir()
     rows = [
@@ -183,6 +187,55 @@ def test_api_arb_trades_lists_the_latest_day_newest_first_by_delay(tmp_path, mon
     ]
     (arb / "paper-2026-11-02.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n{bad line\n")
     (arb / "paper-2026-10-30.jsonl").write_text(json.dumps(rows[0]) + "\n")
-    out = asyncio.run(main.api_arb_trades(latency_ms=300, limit=300))
+    out = asyncio.run(main.api_arb_trades(latency_ms=300, limit=300, day=None))
     assert out["day"] == "2026-11-02" and out["count"] == 2 and out["net"] == 140.0
     assert [t["stock"] for t in out["trades"]] == ["BBB", "AAA"]
+
+
+def test_summary_and_trade_list_use_the_same_day(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "DATA_DIR", tmp_path)
+    arb = tmp_path / "arb"
+    arb.mkdir()
+    (arb / "summary-2026-10-30.json").write_text(json.dumps({"day": "2026-10-30", "final": True}))
+    (arb / "paper-2026-10-30.jsonl").write_text(json.dumps({"seen": "x", "latency_ms": 300, "net": 5.0}) + "\n")
+    (arb / "paper-2026-11-02.jsonl").write_text(json.dumps({"seen": "y", "latency_ms": 300, "net": 7.0}) + "\n")
+    summary = asyncio.run(main.api_arb())
+    trades = asyncio.run(main.api_arb_trades(latency_ms=300, limit=300, day=None))
+    assert summary["day"] == trades["day"] == "2026-11-02"  # newest paper day; no summary for it yet
+    assert summary["available"] is False
+    older = asyncio.run(main.api_arb_trades(latency_ms=300, limit=300, day="2026-10-30"))
+    assert older["count"] == 1 and older["net"] == 5.0
+
+
+def test_trade_list_says_how_many_are_shown(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "DATA_DIR", tmp_path)
+    arb = tmp_path / "arb"
+    arb.mkdir()
+    rows = [{"seen": f"2026-11-02T10:00:{i:02d}", "latency_ms": 300, "net": 1.0} for i in range(5)]
+    (arb / "paper-2026-11-02.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    out = asyncio.run(main.api_arb_trades(latency_ms=300, limit=2, day=None))
+    assert out["count"] == 5 and out["shown"] == 2 and len(out["trades"]) == 2 and out["net"] == 5.0
+
+
+def test_paper_trades_need_the_minimum_estimated_net(tmp_path, monkeypatch) -> None:
+    w, tick = _watch(tmp_path, monkeypatch)
+    monkeypatch.setattr(W, "MIN_PAPER_NET", 500.0)
+
+    async def go():
+        # ₹2.50 cross on 200 shares (₹1 lakh cap): ₹500 gross, under ₹500 after costs -> no paper trade
+        tick(1, 500.5, 500.7, bq=1000, aq=1000)
+        tick(2, 497.8, 498.0, bq=1000, aq=1000)
+        await _settle(w)
+        assert w.paper == []
+        # ₹4 cross on 200 shares: ₹800 gross, about ₹717 after costs -> paper trade
+        tick(1, 502.0, 502.2, bq=1000, aq=1000)
+        await asyncio.sleep(0.15)
+        tick(1, 502.0, 502.2, bq=1000, aq=1000)
+        tick(2, 497.8, 498.0, bq=1000, aq=1000)
+        await _settle(w)
+
+    asyncio.run(go())
+    (rec,) = w.paper
+    assert rec["est_net"] >= 500 and rec["outcome"] == "both" and rec["qty"] == 200
+    s = w.summary(final=True)
+    assert s["min_net"] == 500.0 and s["small"]["crossings_meeting_min_net"] >= 1
