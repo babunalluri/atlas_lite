@@ -451,3 +451,229 @@ def test_a_mangled_crossing_line_is_skipped(tmp_path) -> None:
          "max_gap_pct": 0.2, "max_qty": 10, "best_net": 50.0}) + "\n")
     w = W.Watch({1: ("NSE", "AAA"), 2: ("BSE", "AAA")}, tmp_path, "2026-11-02", {"AAA": ("small", "AAA")})
     assert w.summary(final=False)["small"]["crossings"] == 1
+
+
+def test_one_paper_attempt_per_crossing_even_if_it_stays_open(tmp_path, monkeypatch) -> None:
+    w, tick = _watch(tmp_path, monkeypatch)
+    monkeypatch.setattr(W, "PAPER_COOLDOWN_S", 0.05)
+
+    async def go():
+        for _ in range(6):  # the same crossing stays open well past the cooldown
+            tick(1, 500.0, 500.2)
+            tick(2, 497.8, 498.0)
+            await asyncio.sleep(0.1)
+        await _settle(w)
+        assert len(w.paper) == 1
+        tick(2, 500.0, 500.2)  # closes
+        tick(2, 497.8, 498.0)  # a new crossing: one new attempt
+        await asyncio.sleep(0.15)
+        tick(1, 500.0, 500.2)
+        tick(2, 497.8, 498.0)
+        await _settle(w)
+
+    asyncio.run(go())
+    assert len(w.paper) == 2
+
+
+def test_open_marker_is_refreshed_so_a_crash_keeps_the_latest_values(tmp_path, monkeypatch) -> None:
+    import time as _t
+
+    w = W.Watch({1: ("NSE", "AAA"), 2: ("BSE", "AAA")}, tmp_path, "2026-11-02", {"AAA": ("small", "AAA")})
+
+    def tick(tok, bid, ask):
+        w.on_tick({"instrument_token": tok, "bid": bid, "ask": ask, "depth": {"buy": [{"quantity": 100}], "sell": [{"quantity": 100}]}})
+
+    tick(1, 500.0, 500.2)
+    tick(2, 498.8, 499.0)  # opens: ₹1 cross
+    _t.sleep(1.05)
+    tick(1, 500.0, 500.2)  # both quotes fresh again (a pair older than 1 s is ignored)
+    tick(2, 496.8, 497.0)  # widens to ₹3 after a second: marker refreshed
+    assert len(w.open_eps) == 1 and not w.episodes  # then the process dies
+    again = W.Watch({1: ("NSE", "AAA"), 2: ("BSE", "AAA")}, tmp_path, "2026-11-02", {"AAA": ("small", "AAA")})
+    (ep,) = again.episodes
+    assert ep["closed_by"] == "restart" and ep["duration_s"] >= 1.0 and ep["max_gap_pct"] > 0.5
+
+
+def test_reload_keeps_the_freshest_copy_of_an_open_crossing(tmp_path) -> None:
+    base = {"stock": "AAA", "group": "small", "direction": "buy BSE sell NSE", "start": "2026-11-02T10:00:00.000+05:30",
+            "ticks": 1, "max_qty": 100}
+    stale = {**base, "end": "2026-11-02T10:00:05.000+05:30", "duration_s": 5.0, "max_gap_pct": 0.2, "best_net": 100.0}
+    fresh = {**base, "end": "2026-11-02T10:00:50.000+05:30", "duration_s": 50.0, "max_gap_pct": 0.6, "best_net": 900.0}
+    (tmp_path / "live-2026-11-02.json").write_text(json.dumps({"day": "2026-11-02", "final": False, "open_crossings": [stale]}))
+    (tmp_path / "gaps-2026-11-02.jsonl").write_text(json.dumps({"event": "open", **fresh}) + "\n")
+    w = W.Watch({}, tmp_path, "2026-11-02", {})
+    (ep,) = w.episodes
+    assert ep["best_net"] == 900.0 and ep["duration_s"] == 50.0
+
+
+def test_restarts_do_not_repeat_attempts_on_a_crossing_that_never_closed(tmp_path, monkeypatch) -> None:
+    # Cooldowns off: only the carried root and attempts can stop a repeat.
+    monkeypatch.setattr(W, "LATENCIES_MS", (100,))
+    monkeypatch.setattr(W, "NEXT_QUOTE_WAIT_S", 0.3)
+    monkeypatch.setattr(W, "MIN_PAPER_NET", 0.0)
+    monkeypatch.setattr(W, "RESEARCH_NETS", ())
+    monkeypatch.setattr(W, "PAPER_COOLDOWN_S", 0.0)
+    toks, uni = {1: ("NSE", "AAA"), 2: ("BSE", "AAA")}, {"AAA": ("small", "AAA")}
+
+    def tick(w, tok, bid, ask):
+        w.on_tick({"instrument_token": tok, "bid": bid, "ask": ask, "depth": {"buy": [{"quantity": 100}], "sell": [{"quantity": 100}]}})
+
+    async def run(first: bool):
+        w = W.Watch(toks, tmp_path, "2026-11-02", uni)
+        w._resume_until = 0.0
+        w._paper_last.clear()  # no cooldown either
+        tick(w, 1, 500.0, 500.2)
+        tick(w, 2, 497.8, 498.0)  # the gap is open at the first look after every start
+        await asyncio.sleep(0.15)
+        tick(w, 1, 500.0, 500.2)
+        tick(w, 2, 497.8, 498.0)
+        await _settle(w)
+        w.write_report(final=False)  # its open crossing reaches the snapshot, then the process "dies"
+        return w
+
+    asyncio.run(run(True))
+    roots = set()
+    for _ in range(3):  # three restarts while the gap stays open
+        w = asyncio.run(run(False))
+        roots |= {ep.get("root") for ep in w.open_eps.values()}
+    lines = [json.loads(x) for x in (tmp_path / "paper-2026-11-02.jsonl").read_text().splitlines()]
+    assert len(lines) == 1  # without the carried root this is 4
+    assert roots == {lines[0]["crossing_root"]}  # every continuation kept the first crossing's root
+
+
+def test_a_gap_that_closed_after_the_restart_starts_a_new_root(tmp_path, monkeypatch) -> None:
+    w, tick = _watch(tmp_path, monkeypatch)
+    w._carry[("AAA", "buy BSE sell NSE")] = ("2026-11-02T10:00:00.000+05:30", {(0.0, 100)})
+    tick(1, 500.0, 500.2)
+    tick(2, 500.0, 500.2)  # first look: no gap -> the carry is dropped
+    assert not w._carry
+    tick(2, 497.8, 498.0)  # later crossing: its own root
+    (ep,) = w.open_eps.values()
+    assert ep["root"] != "2026-11-02T10:00:00.000+05:30"
+
+
+def test_no_tradable_size_does_not_end_a_crossing_or_drop_its_carry(tmp_path, monkeypatch) -> None:
+    w, tick = _watch(tmp_path, monkeypatch)
+    root = "2026-11-02T10:00:00.000+05:30"
+    w._carry[("AAA", "buy BSE sell NSE")] = (root, {(0.0, 100)})  # attempted before the restart
+    monkeypatch.setattr(W, "MAX_NOTIONAL", 100.0)  # under one share at ₹498: no tradable size
+    tick(1, 500.0, 500.2)
+    tick(2, 497.8, 498.0)  # first look: crossed, size 0
+    assert ("AAA", "buy BSE sell NSE") in w._carry and not w.open_eps
+    monkeypatch.setattr(W, "MAX_NOTIONAL", 100_000.0)  # size returns
+    tick(2, 497.8, 498.0)
+    (ep,) = w.open_eps.values()
+    assert ep["root"] == root  # same crossing: carried attempts apply
+    assert (0.0, 100) in w._attempted[("AAA", "buy BSE sell NSE", ep["start"])]
+
+
+def test_a_running_crossing_survives_a_moment_without_size(tmp_path, monkeypatch) -> None:
+    w, tick = _watch(tmp_path, monkeypatch)
+    tick(1, 500.0, 500.2)
+    tick(2, 497.8, 498.0)
+    (first,) = w.open_eps.values()
+    monkeypatch.setattr(W, "MAX_NOTIONAL", 100.0)
+    tick(2, 497.8, 498.0)  # still crossed, no size
+    monkeypatch.setattr(W, "MAX_NOTIONAL", 100_000.0)
+    tick(2, 497.8, 498.0)
+    (again,) = w.open_eps.values()
+    assert again is first and not w.episodes  # one crossing, not closed and reopened
+
+
+def test_carry_survives_a_restart_that_died_before_seeing_the_gap_again(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(W, "LATENCIES_MS", (100,))
+    monkeypatch.setattr(W, "NEXT_QUOTE_WAIT_S", 0.3)
+    monkeypatch.setattr(W, "MIN_PAPER_NET", 0.0)
+    monkeypatch.setattr(W, "RESEARCH_NETS", ())
+    monkeypatch.setattr(W, "PAPER_COOLDOWN_S", 0.0)
+    toks, uni = {1: ("NSE", "AAA"), 2: ("BSE", "AAA")}, {"AAA": ("small", "AAA")}
+
+    def tick(w, tok, bid, ask):
+        w.on_tick({"instrument_token": tok, "bid": bid, "ask": ask, "depth": {"buy": [{"quantity": 100}], "sell": [{"quantity": 100}]}})
+
+    async def first_session():
+        w = W.Watch(toks, tmp_path, "2026-11-02", uni)
+        w._resume_until = 0.0
+        tick(w, 1, 500.0, 500.2)
+        tick(w, 2, 497.8, 498.0)
+        await asyncio.sleep(0.15)
+        tick(w, 1, 500.0, 500.2)
+        tick(w, 2, 497.8, 498.0)
+        await _settle(w)
+        w.write_report(final=False)
+
+    asyncio.run(first_session())
+    W.Watch(toks, tmp_path, "2026-11-02", uni)  # restart 1: dies before any tick
+
+    async def restart_2():
+        w = W.Watch(toks, tmp_path, "2026-11-02", uni)
+        w._resume_until = 0.0
+        w._paper_last.clear()
+        tick(w, 1, 500.0, 500.2)
+        tick(w, 2, 497.8, 498.0)  # gap still open
+        await asyncio.sleep(0.15)
+        await _settle(w)
+
+    asyncio.run(restart_2())
+    assert len((tmp_path / "paper-2026-11-02.jsonl").read_text().splitlines()) == 1
+
+
+def test_a_carry_ended_by_a_closed_gap_is_not_carried_again(tmp_path) -> None:
+    toks, uni = {1: ("NSE", "AAA"), 2: ("BSE", "AAA")}, {"AAA": ("small", "AAA")}
+    root = "2026-11-02T10:00:00.000+05:30"
+    (tmp_path / "gaps-2026-11-02.jsonl").write_text(json.dumps(
+        {"stock": "AAA", "group": "small", "direction": "buy BSE sell NSE", "start": root, "end": root, "root": root,
+         "duration_s": 0.0, "max_gap_pct": 0.4, "max_qty": 100, "best_net": 300.0, "closed_by": "restart"}) + "\n")
+    w = W.Watch(toks, tmp_path, "2026-11-02", uni)
+    assert w._carry[("AAA", "buy BSE sell NSE")][0] == root  # rebuilt from disk
+    for tok, bid, ask in ((1, 500.0, 500.2), (2, 500.0, 500.2)):  # first look: the gap is closed
+        w.on_tick({"instrument_token": tok, "bid": bid, "ask": ask, "depth": {"buy": [{"quantity": 100}], "sell": [{"quantity": 100}]}})
+    assert not w._carry
+    assert not W.Watch(toks, tmp_path, "2026-11-02", uni)._carry  # the carry_end marker stops a re-carry
+
+
+def _restart_closed(tmp_path, end_iso: str, root: str = "2026-11-02T10:00:00.000+05:30") -> None:
+    (tmp_path / "gaps-2026-11-02.jsonl").write_text(json.dumps(
+        {"stock": "AAA", "group": "small", "direction": "buy BSE sell NSE", "start": root, "end": end_iso, "root": root,
+         "duration_s": 1.0, "max_gap_pct": 0.4, "max_qty": 100, "best_net": 300.0, "closed_by": "restart"}) + "\n")
+
+
+def test_carry_only_after_a_quick_restart(tmp_path) -> None:
+    from datetime import datetime, timedelta
+
+    toks, uni = {1: ("NSE", "AAA"), 2: ("BSE", "AAA")}, {"AAA": ("small", "AAA")}
+    recent = (datetime.now(W.IST) - timedelta(seconds=20)).isoformat(timespec="milliseconds")
+    _restart_closed(tmp_path, recent)
+    assert ("AAA", "buy BSE sell NSE") in W.Watch(toks, tmp_path, "2026-11-02", uni)._carry
+    old = (datetime.now(W.IST) - timedelta(minutes=10)).isoformat(timespec="milliseconds")
+    _restart_closed(tmp_path, old)
+    assert not W.Watch(toks, tmp_path, "2026-11-02", uni)._carry  # a long outage: the gap may have closed
+
+
+def test_carry_matches_attempts_by_the_crossings_own_start_too(tmp_path) -> None:
+    from datetime import datetime, timedelta
+
+    toks, uni = {1: ("NSE", "AAA"), 2: ("BSE", "AAA")}, {"AAA": ("small", "AAA")}
+    start = "2026-11-02T10:00:00.000+05:30"
+    _restart_closed(tmp_path, (datetime.now(W.IST) - timedelta(seconds=5)).isoformat(timespec="milliseconds"), root=start)
+    (tmp_path / "paper-2026-11-02.jsonl").write_text(json.dumps(  # older row format: crossing_start only
+        {"stock": "AAA", "direction": "buy BSE sell NSE", "latency_ms": 100, "track": 500.0, "crossing_start": start,
+         "seen": start, "net": 1.0}) + "\n")
+    root, done = W.Watch(toks, tmp_path, "2026-11-02", uni)._carry[("AAA", "buy BSE sell NSE")]
+    assert (500.0, 100) in done
+
+
+def test_close_writes_before_forgetting(tmp_path, monkeypatch) -> None:
+    w = W.Watch({1: ("NSE", "AAA"), 2: ("BSE", "AAA")}, tmp_path, "2026-11-02", {"AAA": ("small", "AAA")})
+    w.on_tick({"instrument_token": 1, "bid": 500.0, "ask": 500.2, "depth": {"buy": [{"quantity": 100}], "sell": [{"quantity": 100}]}})
+    w.on_tick({"instrument_token": 2, "bid": 497.8, "ask": 498.0, "depth": {"buy": [{"quantity": 100}], "sell": [{"quantity": 100}]}})
+
+    def crash(ep):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(w, "_append_episode", crash)
+    try:
+        w.close(("AAA", "buy BSE sell NSE"))
+    except RuntimeError:
+        pass
+    assert ("AAA", "buy BSE sell NSE") in w.open_eps  # not forgotten when the write failed

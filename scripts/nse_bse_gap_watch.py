@@ -146,6 +146,8 @@ def unwind_price(q: dict | None, side: str, fresh: bool, ref_px: float) -> float
     return ask if fresh else round(ask + ((ask - bid) if bid else 0.0), 2)
 
 
+CARRY_MAX_GAP_S = 60.0  # a crossing continues across a restart only if seen this recently
+
 EPISODE_KEYS = frozenset({"stock", "direction", "start", "duration_s", "max_gap_pct", "best_net"})
 
 
@@ -182,6 +184,10 @@ class Watch:
         self.live_path = out / f"live-{day}.json"
         self._live_at = 0.0
         self.ticks_base = 0
+        self._marked_at: dict[tuple[str, str], float] = {}
+        self._attempted: dict[tuple, set[tuple[float, int]]] = {}
+        # (stock, direction) -> (root, attempts) carried from a crossing open at the last restart
+        self._carry: dict[tuple[str, str], tuple[str, set[tuple[float, int]]]] = {}
         # Any start: no paper trade until every cooldown has passed (an attempt in flight at a crash
         # was never written, so its cooldown is not in the files).
         self._resume_until = time.time() + PAPER_COOLDOWN_S
@@ -192,6 +198,7 @@ class Watch:
         reports keep covering the whole day, and restores each track's cooldown from the last attempt.
         Quote samples (typical gap, spreads) restart empty: the report says when they start."""
         opened: dict[tuple, dict] = {}
+        carry_ended: set[tuple] = set()  # (stock, direction, root) whose gap closed after a restart
         for path, bucket in ((self.path, self.episodes), (self.paper_path, self.paper)):
             if not path.is_file():
                 continue
@@ -207,6 +214,9 @@ class Watch:
                     if row.get("event") == "open":  # marker written when a crossing opened
                         opened[key] = row
                         continue
+                    if row.get("event") == "carry_end":
+                        carry_ended.add((row.get("stock"), row.get("direction"), row.get("root")))
+                        continue
                     if not EPISODE_KEYS <= row.keys():  # a mangled line must not break the report
                         continue
                 bucket.append(row)
@@ -218,12 +228,45 @@ class Watch:
         # Crossings open when the last process stopped: the live snapshot has their fullest data, an open
         # marker covers any opened since that snapshot. Each is closed once, at its last-seen time.
         for ep in live.get("open_crossings") or []:
-            opened[(ep.get("stock"), ep.get("direction"), ep.get("start"))] = ep
+            key = (ep.get("stock"), ep.get("direction"), ep.get("start"))
+            if key not in opened or str(ep.get("end") or "") > str(opened[key].get("end") or ""):
+                opened[key] = ep  # the snapshot or the 1 s marker, whichever was seen last
         known = {(e.get("stock"), e.get("direction"), e.get("start")) for e in self.episodes}
         for key, ep in opened.items():
             if key not in known and EPISODE_KEYS <= ep.keys():
                 self._append_episode({k: v for k, v in ep.items() if k != "event"} | {"closed_by": "restart"})
                 known.add(key)
+        # Carry, rebuilt from disk on every start: if the latest crossing on a stock and direction was closed
+        # by a restart (not by its gap closing), its root and the attempts made under it carry to the first
+        # crossing after this start, if the gap is still open at the first look. This holds through any
+        # number of restarts, including one that died before seeing the gap again; a carry_end marker
+        # (written when the gap is seen closed) ends it.
+        latest: dict[tuple[str, str], dict] = {}
+        for ep in self.episodes:
+            sd = (ep.get("stock"), ep.get("direction"))
+            if sd not in latest or str(ep.get("end") or "") >= str(latest[sd].get("end") or ""):
+                latest[sd] = ep
+        now = time.time()
+        reopened: dict[tuple[str, str], tuple[str, str]] = {}  # (stock, direction) -> (root, start)
+        for sd, ep in latest.items():
+            if ep.get("closed_by") != "restart":
+                continue
+            try:  # only a quick restart continues a crossing; after a longer outage the gap may have closed
+                if now - datetime.fromisoformat(str(ep.get("end"))).timestamp() > CARRY_MAX_GAP_S:
+                    continue
+            except ValueError:
+                continue
+            root = str(ep.get("root") or ep.get("start"))
+            if (*sd, root) not in carry_ended:
+                reopened[sd] = (root, str(ep.get("start")))
+        for sd, (root, start) in reopened.items():
+            done = set()
+            for rec in self.paper:
+                rec_ids = {rec.get("crossing_root"), rec.get("crossing_start")} - {None}
+                if (rec.get("stock"), rec.get("direction")) == sd and rec_ids & {root, start} \
+                        and rec.get("track") is not None and rec.get("latency_ms") is not None:
+                    done.add((float(rec["track"]), int(rec["latency_ms"])))
+            self._carry[sd] = (root, done)
         for rec in self.paper:
             try:
                 at = datetime.fromisoformat(str(rec["seen"])).timestamp()
@@ -270,19 +313,40 @@ class Watch:
                     ep = self.open_eps[k] = {"stock": stock, "group": self.groups.get(stock, "large"),
                                              "direction": direction, "start": now, "ticks": 0,
                                              "max_gap_pct": 0.0, "max_qty": 0, "best_net": float("-inf")}
+                    if k in self._carry:  # continues a crossing open at the restart: same root, no repeats
+                        ep["root"], self._attempted[(stock, direction, now)] = self._carry.pop(k)
+                    else:
+                        ep["root"] = datetime.fromtimestamp(now, IST).isoformat(timespec="milliseconds")
                 ep["ticks"] += 1
                 ep["end"] = now
                 ep["max_gap_pct"] = max(ep["max_gap_pct"], gap / mid * 100)
                 ep["max_qty"] = max(ep["max_qty"], qty)
                 ep["best_net"] = max(ep["best_net"], net)
-                if ep["ticks"] == 1:  # durable marker, so a crash before the next snapshot cannot lose it
+                # Durable marker, refreshed at most once a second while open, so a crash before the next
+                # live snapshot loses under a second of the crossing (reload keeps the latest marker).
+                if now - self._marked_at.get(k, 0.0) >= 1.0:
+                    self._marked_at[k] = now
                     with self.path.open("a", encoding="utf-8") as fh:
                         fh.write(json.dumps({"event": "open", **self._serialized(ep)}) + "\n")
-                self.maybe_paper(stock, buy_exch, "NSE" if buy_exch == "BSE" else "BSE", buy_q, sell_q, now)
-            elif k in self.open_eps:
-                self.close(k)
+                self.maybe_paper(stock, buy_exch, "NSE" if buy_exch == "BSE" else "BSE", buy_q, sell_q, now,
+                                 (stock, direction, ep["start"], ep["root"]))
+            elif gap > 0:
+                pass  # still crossed but no tradable size this moment: the crossing and any carry stay as is
+            else:  # the gap closed: the crossing ends, and a carry from a restart no longer applies
+                carried = self._carry.get(k)
+                if carried is not None:  # marker first, then drop: a later restart does not carry it again
+                    with self.path.open("a", encoding="utf-8") as fh:
+                        fh.write(json.dumps({"event": "carry_end", "stock": stock, "direction": direction,
+                                             "root": carried[0]}) + "\n")
+                    del self._carry[k]
+                if k in self.open_eps:
+                    self.close(k)
 
-    def maybe_paper(self, stock: str, buy_exch: str, sell_exch: str, buy_q: dict, sell_q: dict, now: float) -> None:
+    def maybe_paper(self, stock: str, buy_exch: str, sell_exch: str, buy_q: dict, sell_q: dict, now: float,
+                    crossing: tuple | None = None) -> None:
+        """One paper attempt per crossing, per track and delay: a crossing that stays open is not
+        re-attempted against the same shares (a first fill would have taken them). crossing is
+        (stock, direction, start, root)."""
         if now < self._resume_until:  # just restarted: an attempt lost in flight may still be cooling down
             return
         qty = tradable_qty(buy_q, sell_q)
@@ -301,10 +365,15 @@ class Watch:
                 key = (stock, lat, track)
                 if key in self._paper_busy or now - self._paper_last.get(key, 0.0) < PAPER_COOLDOWN_S:
                     continue
+                done = self._attempted.setdefault(crossing[:3], set()) if crossing else set()
+                if (track, lat) in done:
+                    continue
+                done.add((track, lat))
                 self._paper_busy.add(key)
                 self._paper_last[key] = now
                 task = loop.create_task(self.paper_attempt(
-                    stock, buy_exch, sell_exch, buy_q["ask"], sell_q["bid"], qty, lat, est_net, track))
+                    stock, buy_exch, sell_exch, buy_q["ask"], sell_q["bid"], qty, lat, est_net, track,
+                    crossing[3] if crossing else None))
                 self._tasks.add(task)
                 task.add_done_callback(self._paper_done)
 
@@ -326,7 +395,8 @@ class Watch:
             await asyncio.sleep(0.02)
 
     async def paper_attempt(self, stock: str, buy_exch: str, sell_exch: str, buy_lim: float, sell_lim: float,
-                            qty: int, lat: int, est_net: float = 0.0, track: float | None = None) -> None:
+                            qty: int, lat: int, est_net: float = 0.0, track: float | None = None,
+                            crossing_root: str | None = None) -> None:
         track = MIN_PAPER_NET if track is None else track
         try:
             seen = time.time()
@@ -339,7 +409,8 @@ class Watch:
             base = {"stock": stock, "group": self.groups.get(stock, "large"), "latency_ms": lat,
                     "seen": datetime.fromtimestamp(seen, IST).isoformat(timespec="milliseconds"),
                     "direction": f"buy {buy_exch} sell {sell_exch}", "buy_limit": buy_lim, "sell_limit": sell_lim,
-                    "qty": qty, "est_net": round(est_net, 2), "track": track}
+                    "qty": qty, "est_net": round(est_net, 2), "track": track,
+                    "crossing_root": crossing_root}
             if bq is None or sq is None or not (b_fresh and s_fresh):
                 # No price seen after the orders arrived: the fill is a guess either way, so no P&L.
                 self._record({**base, "bought": 0, "sold": 0, "outcome": "unknown", "quotes_updated": False,
@@ -399,7 +470,11 @@ class Watch:
         return out
 
     def close(self, k: tuple[str, str]) -> None:
-        self._append_episode(self._serialized(self.open_eps.pop(k)))
+        ep = self.open_eps[k]
+        self._append_episode(self._serialized(ep))  # on disk first: a crash before forgetting it is harmless
+        del self.open_eps[k]
+        self._marked_at.pop(k, None)
+        self._attempted.pop((ep["stock"], ep["direction"], ep["start"]), None)
 
     def _append_episode(self, ep: dict) -> None:
         self.episodes.append(ep)
