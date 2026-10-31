@@ -21,8 +21,10 @@ per group, small caps first. Without the file, STOCKS below is watched as "large
 Paper trading (no real orders), in independent tracks: the main track (--min-net, ₹500) and research
 tracks (--research-nets, ₹1/100/200/300/1000; ₹1 = anything that beats costs) kept for later study.
 Runs --days trading days in a row (5 = a week), skipping weekends and NSE holidays, one set of files
-per day; --until stops after that date (scripts/arb_watch_guard.sh restarts it with --until, so a
-restart mid-week never runs past the planned last day). A crossing whose estimated net after all
+per day; --until is the last day. It runs as the `arb-watch` service in docker-compose.yml
+(restart: unless-stopped), so Docker restarts it after crashes, reboots and deploys; a restart
+reloads the day's files. When the run is over, or ATLAS_LITE_ARB_WATCH=0, it idles instead of
+exiting, so Docker does not restart it in a loop. If another watcher holds the lock, it waits. A crossing whose estimated net after all
 costs reaches a track's threshold at the moment it is seen fires, in that track,
 two IOC limit orders, buy at the cheaper exchange's ask and sell at the dearer one's bid, for the
 shares shown at both best prices (capped at ₹1 lakh). Each order "arrives" after a delay, simulated
@@ -475,10 +477,14 @@ async def main() -> None:
     RESEARCH_NETS = tuple(float(x) for x in args.research_nets.split(",") if x.strip())
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    if os.environ.get("ATLAS_LITE_ARB_WATCH", "1").strip().lower() in ("0", "false", "no", "off"):
+        print(f"{datetime.now(IST):%Y-%m-%d %H:%M}: ATLAS_LITE_ARB_WATCH is off; idling", flush=True)
+        await idle()
     lock = acquire_lock(out)  # held for the process lifetime
-    if lock is None:
-        print(f"{datetime.now(IST):%H:%M:%S} another gap watcher holds {out / LOCK_NAME}; exiting", flush=True)
-        return
+    while lock is None:  # another watcher (a manual run) has it: wait rather than exit and be restarted
+        print(f"{datetime.now(IST):%H:%M:%S} another gap watcher holds {out / LOCK_NAME}; waiting", flush=True)
+        await asyncio.sleep(60)
+        lock = acquire_lock(out)
     if not args.until:  # the last of --days trading sessions, so a long run never spills past it
         args.until = planned_until(datetime.now(IST), args.days, args.end).isoformat()
     print(f"{datetime.now(IST):%Y-%m-%d %H:%M}: recording up to {args.days} trading day(s), last {args.until}", flush=True)
@@ -488,7 +494,13 @@ async def main() -> None:
         day = await run_day(args, out, n)
         if args.until and day >= args.until:
             break
-    print(f"{datetime.now(IST):%Y-%m-%d %H:%M}: recording finished; stopping", flush=True)
+    print(f"{datetime.now(IST):%Y-%m-%d %H:%M}: recording finished (last day {args.until}); idling", flush=True)
+    await idle()
+
+
+async def idle() -> None:
+    """Stay up doing nothing, so a restart: unless-stopped service does not loop. Stop the service to end it."""
+    await asyncio.Event().wait()
 
 
 LOCK_NAME = "watcher.lock"

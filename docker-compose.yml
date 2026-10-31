@@ -70,3 +70,20 @@ services:
       timeout: 5s
       retries: 3
       start_period: 45s
+
+  # NSE vs BSE gap watcher (scripts/nse_bse_gap_watch.py): read-only research, paper trades only, never
+  # places an order. Its own Kite websocket. Restarts with the stack (crash, reboot, deploy); a restart
+  # reloads the day's files. Idles after ATLAS_LITE_ARB_UNTIL, or when ATLAS_LITE_ARB_WATCH=0.
+  arb-watch:
+    build: .
+    container_name: atlas-lite-arb
+    restart: unless-stopped
+    command: ["python", "scripts/nse_bse_gap_watch.py", "--until", "${ATLAS_LITE_ARB_UNTIL:-2026-11-06}"]
+    environment:
+      KITE_CREDENTIALS_PATH: /secrets/kite_credentials
+      ATLAS_LITE_ARB_WATCH: ${ATLAS_LITE_ARB_WATCH:-1}
+    volumes:
+      - ./kite_credentials:/secrets/kite_credentials:ro
+      - ./data:/app/data
+    healthcheck:
+      disable: true  # the image's check calls the dashboard on 8090, which this service does not serve

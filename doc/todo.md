@@ -10,17 +10,14 @@ Checked every trading day. Tick items as done (`[x]`), add new ones with a date.
 - [ ] **ai_agent (shadow):** today's shadow trades and P&L.
 - [ ] **Paper vs backtest:** `.venv/bin/python scripts/paper_vs_backtest.py --fetch`. A gap above ~₹300/trade, or an exit that differs from the backtest, gets investigated.
 - [ ] **Server health:** dashboard loads; no repeated warnings.
-- [ ] **NSE vs BSE gap watcher (research week, 2 – 6 Nov):** dashboard "NSE vs BSE gaps" line says live/final for today. If the container restarted (deploy), start it again:
-  `docker exec -d atlas-lite sh -c "python scripts/nse_bse_gap_watch.py --until 2026-11-06 >> /app/data/arb/watch.log 2>&1"`
-  (Optional guard: `scripts/arb_watch_guard.sh` from cron, `*/10 9-15 * * 1-5`; not installed, needs the owner's OK.)
+- [ ] **NSE vs BSE gap watcher (research week, 2 – 6 Nov):** dashboard "NSE vs BSE gaps" line says live/final for today. It is the `arb-watch` service (`docker compose ps`; logs: `docker logs atlas-lite-arb`), restarted by Docker like the engine. Turn off with `ATLAS_LITE_ARB_WATCH=0` in the server `.env`, or remove the service when the research is done.
 
 ## Dated
 
 ### Mon 2 Nov 2026
 - [ ] v3 trades at 13:00: **first entry with a gamma reading** (check the open event has `gamma`, not null).
 - [ ] 15:40: ai_agent refit with the fixed learner. Expect `promoted: false` (`side_no_better_than_random`).
-- [ ] **NSE vs BSE gap watcher** (read-only): after 09:15, `data/arb/watch.log` on the server should say `connected` (needs Monday's fresh Kite token). If the container restarted since Saturday, start it again:
-  `docker exec -d atlas-lite sh -c "python scripts/nse_bse_gap_watch.py >> /app/data/arb/watch.log 2>&1"`
+- [ ] **NSE vs BSE gap watcher** (read-only, `arb-watch` service): after 09:15, `docker logs atlas-lite-arb` should say `connected` (needs Monday's fresh Kite token).
 - [ ] After 15:30: read `data/arb/summary-2026-11-02.json`, **small caps first, then mid, then large** (658 stocks: 515 small, 98 mid, 45 large; BSE groups A/B/X only): crossings, how many beat the ~0.083% cost, how long they lasted, shares available. Decide whether NSE–BSE arbitrage is worth anything, starting with small caps. Also `data/arb/paper-2026-11-02.jsonl` and the `paper` section per group: simulated IOC orders at 100/300/600 ms delay, both-filled vs one-leg (unwound at market) vs none, net paper P&L. The 300 ms row is the realistic one for Kite. Paper trades fire only when estimated net after costs is ≥ ₹500 (`--min-net`); with the ₹1 lakh size cap that needs a gap of about 0.58%. If none fire, check the "Est. net ≥ min" column before changing the cap or threshold.
 
 ### Tue 3 Nov 2026 (weekly expiry)
