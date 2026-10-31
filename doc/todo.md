@@ -1,0 +1,52 @@
+# Trading to-do
+
+Checked every trading day. Tick items as done (`[x]`), add new ones with a date. Paper only until an explicit live decision; ₹2.5 lakh margin fits one selling book live.
+
+## Every trading day (after 15:20)
+
+- [ ] **Scalper v3:** traded at 13:00 on a non-expiry day? Exit reason and P&L on the dashboard.
+- [ ] **Gamma reading** logged with today's v3 entry (dashboard: "last entry gamma long/short").
+- [ ] **Weekly strangle / condor:** 15:25 stop check logged; open P&L sensible.
+- [ ] **ai_agent (shadow):** today's shadow trades and P&L.
+- [ ] **Paper vs backtest:** `.venv/bin/python scripts/paper_vs_backtest.py --fetch`. A gap above ~₹300/trade, or an exit that differs from the backtest, gets investigated.
+- [ ] **Server health:** dashboard loads; no repeated warnings.
+
+## Dated
+
+### Mon 2 Nov 2026
+- [ ] v3 trades at 13:00: **first entry with a gamma reading** (check the open event has `gamma`, not null).
+- [ ] 15:40: ai_agent refit with the fixed learner. Expect `promoted: false` (`side_no_better_than_random`).
+
+### Tue 3 Nov 2026 (weekly expiry)
+- [ ] 15:29: weekly strangle and condor close at expiry. v3 skips the day.
+- [ ] Evening: download the NSE files, then compare:
+  ```
+  .venv/bin/python scripts/nse_nifty_options_history.py --start 2026-10-29
+  .venv/bin/python scripts/paper_vs_backtest.py --fetch
+  ```
+  First weekly paper-vs-backtest: same strikes? credit within ~2 pts? P&L gap?
+
+### Thu 5 Nov 2026
+- [ ] 15:25: weekly books open the next week (expiry 10 Nov). No stop check on the entry evening.
+
+### Fri 6 Nov 2026
+- [ ] **ai_agent decision:** its shadow trades vs Scalper v3 for the week. Retire (`ATLAS_LITE_PAPER_AI_AGENT=0`) unless it clearly beat v3.
+
+### ~Fri 27 Nov 2026 (about 55 real days)
+- [ ] Rebuild real prices (`paper_vs_backtest.py --fetch` does it) and recheck v3 on real premiums only: per-trade range should exclude zero before going live.
+- [ ] **Gamma filter decision:** split v3's real trades by regime. Adopt only if positive-gamma days beat negative by a clear margin over 20+ trades each way.
+- [ ] **Entry time:** 13:00 vs 14:30 on real prices (14:30 earned less, +₹256 vs +₹340, but its worst day was −₹277 vs −₹3,681).
+- [ ] **Weekly condor live decision:** after 3–4 weekly paper cycles matching the backtest.
+
+## Open / optional
+
+- [ ] Optional: paper book "v3 at 14:30" (same rules, 14:30 entry) to compare with 13:00 on real fills.
+- [ ] Before any live book: build the live order path for that one book: Kite basket-margin and funds check before every entry, partial-fill handling, kill rule (back to paper after 3 stop-outs in a row or a loss beyond the backtest's worst day), and an explicit go-ahead.
+- [ ] Delete `~/.cache/huggingface` (1.1 GB of Kronos weights) if the space is wanted.
+
+## Reference
+
+- **Running:** Scalper v3 (13:00 straddle sale), weekly strangle, weekly condor (5% wings), short iron condor, iron fly, agent (Scalper v2, paper), ai_agent (shadow).
+- **Retired (flags off, ledgers kept):** 14:30 short straddle, theta cliff, ICT, combo, impulse fade, skew fade, long iron condor, VWAP long, factor paper.
+- **Scalping research summary:** buying-side scalps all lost after costs (ML, Kronos, ICT, engulfing, 2-min EMA, v2, long straddles); intraday selling only pays when held into the last hour (Scalper v3). Details in `doc/scalper-v3.md` and `doc/weekly-option-selling.md`.
+- **Live switch:** `ATLAS_LITE_AGENT_LIVE_ALLOWED=0` on the server. Nothing goes live without an explicit decision.
