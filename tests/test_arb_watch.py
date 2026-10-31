@@ -57,6 +57,7 @@ def _watch(tmp_path, monkeypatch):
     monkeypatch.setattr(W, "RESEARCH_NETS", ())  # one track: research tracks have their own test
     universe = {"AAA": ("small", "AAA")}
     w = W.Watch({1: ("NSE", "AAA"), 2: ("BSE", "AAA")}, tmp_path, "2026-11-02", universe)
+    w._resume_until = 0.0  # mechanics tests trade at once; the start cooldown has its own test
 
     def tick(tok, bid, ask, bq=100, aq=100):
         w.on_tick({"instrument_token": tok, "bid": bid, "ask": ask, "depth": {"buy": [{"quantity": bq}], "sell": [{"quantity": aq}]}})
@@ -290,8 +291,8 @@ def test_trade_list_default_is_the_main_track_even_without_main_rows(tmp_path, m
 
 def test_restart_mid_day_reloads_the_days_records(tmp_path) -> None:
     (tmp_path / "gaps-2026-11-02.jsonl").write_text(json.dumps(
-        {"stock": "AAA", "group": "small", "direction": "buy BSE sell NSE", "duration_s": 0.7,
-         "max_gap_pct": 0.3, "max_qty": 100, "best_net": 300.0}) + "\n")
+        {"stock": "AAA", "group": "small", "direction": "buy BSE sell NSE", "start": "2026-11-02T10:00:00.000+05:30",
+         "duration_s": 0.7, "max_gap_pct": 0.3, "max_qty": 100, "best_net": 300.0}) + "\n")
     (tmp_path / "paper-2026-11-02.jsonl").write_text(json.dumps(
         {"stock": "AAA", "group": "small", "latency_ms": 300, "track": 500.0, "outcome": "both", "net": 250.0}) + "\n")
     w = W.Watch({1: ("NSE", "AAA"), 2: ("BSE", "AAA")}, tmp_path, "2026-11-02", {"AAA": ("small", "AAA")})
@@ -425,3 +426,28 @@ def test_recovery_respects_a_custom_session_end(tmp_path, monkeypatch) -> None:
     assert not (tmp_path / "summary-2026-11-02.json").exists()
     W.finalize_missing(tmp_path, uni, end="13:30")  # 14:00 >= 13:30: over, rebuild
     assert (tmp_path / "summary-2026-11-02.json").exists()
+
+
+def test_every_start_waits_out_the_cooldown(tmp_path) -> None:
+    import time as _t
+
+    w = W.Watch({1: ("NSE", "AAA"), 2: ("BSE", "AAA")}, tmp_path, "2026-11-02", {"AAA": ("small", "AAA")})
+    assert w._resume_until > _t.time()  # no files at all: still guarded
+
+
+def test_a_crossing_opened_after_the_last_snapshot_survives_a_crash(tmp_path) -> None:
+    w = W.Watch({1: ("NSE", "AAA"), 2: ("BSE", "AAA")}, tmp_path, "2026-11-02", {"AAA": ("small", "AAA")})
+    w.on_tick({"instrument_token": 1, "bid": 500.0, "ask": 500.2, "depth": {"buy": [{"quantity": 100}], "sell": [{"quantity": 100}]}})
+    w.on_tick({"instrument_token": 2, "bid": 497.8, "ask": 498.0, "depth": {"buy": [{"quantity": 100}], "sell": [{"quantity": 100}]}})
+    assert w.open_eps and not w.episodes  # open, no live snapshot written: then the process dies
+    again = W.Watch({1: ("NSE", "AAA"), 2: ("BSE", "AAA")}, tmp_path, "2026-11-02", {"AAA": ("small", "AAA")})
+    assert len(again.episodes) == 1 and again.episodes[0]["closed_by"] == "restart"
+    assert len(W.Watch({}, tmp_path, "2026-11-02", {}).episodes) == 1  # not added twice
+
+
+def test_a_mangled_crossing_line_is_skipped(tmp_path) -> None:
+    (tmp_path / "gaps-2026-11-02.jsonl").write_text(json.dumps({"stock": "AAA"}) + "\n" + json.dumps(
+        {"stock": "AAA", "group": "small", "direction": "buy BSE sell NSE", "start": "s", "duration_s": 0.4,
+         "max_gap_pct": 0.2, "max_qty": 10, "best_net": 50.0}) + "\n")
+    w = W.Watch({1: ("NSE", "AAA"), 2: ("BSE", "AAA")}, tmp_path, "2026-11-02", {"AAA": ("small", "AAA")})
+    assert w.summary(final=False)["small"]["crossings"] == 1

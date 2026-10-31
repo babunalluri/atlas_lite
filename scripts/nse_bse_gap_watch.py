@@ -146,6 +146,9 @@ def unwind_price(q: dict | None, side: str, fresh: bool, ref_px: float) -> float
     return ask if fresh else round(ask + ((ask - bid) if bid else 0.0), 2)
 
 
+EPISODE_KEYS = frozenset({"stock", "direction", "start", "duration_s", "max_gap_pct", "best_net"})
+
+
 def tradable_qty(buy_q: dict, sell_q: dict) -> int:
     """Shares at both best prices, capped at MAX_NOTIONAL: the same size for crossing stats and paper."""
     if not buy_q.get("ask") or not sell_q.get("bid"):
@@ -179,13 +182,16 @@ class Watch:
         self.live_path = out / f"live-{day}.json"
         self._live_at = 0.0
         self.ticks_base = 0
-        self._resume_until = 0.0
+        # Any start: no paper trade until every cooldown has passed (an attempt in flight at a crash
+        # was never written, so its cooldown is not in the files).
+        self._resume_until = time.time() + PAPER_COOLDOWN_S
         self._reload()
 
     def _reload(self) -> None:
         """A restart mid-day picks up the day's crossings and paper trades already written, so the
         reports keep covering the whole day, and restores each track's cooldown from the last attempt.
         Quote samples (typical gap, spreads) restart empty: the report says when they start."""
+        opened: dict[tuple, dict] = {}
         for path, bucket in ((self.path, self.episodes), (self.paper_path, self.paper)):
             if not path.is_file():
                 continue
@@ -194,19 +200,30 @@ class Watch:
                     row = json.loads(line)
                 except ValueError:
                     continue
-                if isinstance(row, dict):
-                    bucket.append(row)
+                if not isinstance(row, dict):
+                    continue
+                if bucket is self.episodes:
+                    key = (row.get("stock"), row.get("direction"), row.get("start"))
+                    if row.get("event") == "open":  # marker written when a crossing opened
+                        opened[key] = row
+                        continue
+                    if not EPISODE_KEYS <= row.keys():  # a mangled line must not break the report
+                        continue
+                bucket.append(row)
         try:
             live = json.loads(self.live_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             live = {}
         self.ticks_base = int(live.get("ticks") or 0)
+        # Crossings open when the last process stopped: the live snapshot has their fullest data, an open
+        # marker covers any opened since that snapshot. Each is closed once, at its last-seen time.
+        for ep in live.get("open_crossings") or []:
+            opened[(ep.get("stock"), ep.get("direction"), ep.get("start"))] = ep
         known = {(e.get("stock"), e.get("direction"), e.get("start")) for e in self.episodes}
-        for ep in live.get("open_crossings") or []:  # open when the last process stopped
-            if (ep.get("stock"), ep.get("direction"), ep.get("start")) not in known:
-                self._append_episode({**ep, "closed_by": "restart"})
-        if self.paper or live:  # a restart: no paper trade until every cooldown has passed
-            self._resume_until = time.time() + PAPER_COOLDOWN_S
+        for key, ep in opened.items():
+            if key not in known and EPISODE_KEYS <= ep.keys():
+                self._append_episode({k: v for k, v in ep.items() if k != "event"} | {"closed_by": "restart"})
+                known.add(key)
         for rec in self.paper:
             try:
                 at = datetime.fromisoformat(str(rec["seen"])).timestamp()
@@ -258,6 +275,9 @@ class Watch:
                 ep["max_gap_pct"] = max(ep["max_gap_pct"], gap / mid * 100)
                 ep["max_qty"] = max(ep["max_qty"], qty)
                 ep["best_net"] = max(ep["best_net"], net)
+                if ep["ticks"] == 1:  # durable marker, so a crash before the next snapshot cannot lose it
+                    with self.path.open("a", encoding="utf-8") as fh:
+                        fh.write(json.dumps({"event": "open", **self._serialized(ep)}) + "\n")
                 self.maybe_paper(stock, buy_exch, "NSE" if buy_exch == "BSE" else "BSE", buy_q, sell_q, now)
             elif k in self.open_eps:
                 self.close(k)
@@ -598,6 +618,7 @@ async def run_day(args: argparse.Namespace, out: Path, n: int) -> str:
     day = datetime.now(IST).strftime("%Y-%m-%d")
     universe = load_universe(Path(args.universe))
     watch = Watch(load_tokens(universe), out, day, universe)
+    watch.write_report(final=False)  # a file exists from the first second, so a restart always resumes
     print(f"{day} (day {n}, last {args.until}): watching {len(watch.tokens) // 2} stocks on NSE and BSE until {args.end}; "
           f"paper tracks ₹{', ₹'.join(f'{t:g}' for t in paper_tracks())}", flush=True)
     backoff = 5.0
