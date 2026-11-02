@@ -2397,6 +2397,12 @@
             <option value="1000">research ₹1,000+</option>
           </select>
         </label>
+        <label class="history-meta" for="arbConfirm">Fires on
+          <select id="arbConfirm">
+            <option value="">first sighting</option>
+            <option value="1">confirmed (seen twice)</option>
+          </select>
+        </label>
         <label class="history-meta" for="arbLatency">Order delay
           <select id="arbLatency">
             <option value="100">100 ms</option>
@@ -6956,14 +6962,17 @@
       // The paper columns follow the Track and Order delay selectors below the table.
       const lat = `${document.getElementById("arbLatency")?.value || "300"}ms`;
       const trackSel = document.getElementById("arbTrack")?.value || "";
+      const conf = document.getElementById("arbConfirm")?.value === "1";
       const head = document.getElementById("arbPaperHead");
-      if (head) head.textContent = `Paper tries (${trackSel ? "₹" + trackSel + "+" : "main"}, ${lat})`;
+      if (head) head.textContent = `Paper tries (${trackSel ? "₹" + trackSel + "+" : "main"}, ${lat}${conf ? ", confirmed" : ""})`;
       const when = String(arb.updated_at || "").slice(11, 16);
       const minNet = arb.min_net != null ? ` · paper trades need est. net ≥ ₹${arb.min_net}` : "";
       meta.textContent = `NSE vs BSE gaps · ${arb.day} · ${arb.final ? "final" : "live, updated " + when}${minNet} · paper only, no orders`;
       const rows = ["small", "mid", "large", "all"].filter((g) => arb[g]).map((g) => {
         const r = arb[g];
-        const block = trackSel ? ((r.paper_research || {})[trackSel] || {}) : (r.paper || {});
+        const block = conf
+          ? (trackSel ? ((r.paper_research_confirmed || {})[trackSel] || {}) : (r.paper_confirmed || {}))
+          : (trackSel ? ((r.paper_research || {})[trackSel] || {}) : (r.paper || {}));
         const p = block[lat] || {};
         const top = Object.keys(r.top_profitable_stocks || {}).slice(0, 3).join(", ");
         const cell = (v) => escapeTradeHtml(v ?? "—");
@@ -7002,7 +7011,7 @@
         return;
       }
       const shown = data.shown < data.count ? ` · showing latest ${data.shown} of ${data.count}` : ` · ${data.count} attempts`;
-      const trackText = data.track != null ? ` · track ₹${data.track}+` : "";
+      const trackText = (data.track != null ? ` · track ₹${data.track}+` : "") + (data.confirmed ? " · confirmed" : "");
       meta.textContent = `Paper trades ${data.day}${trackText} · ${data.latency_ms} ms delay${shown} · net ₹${data.net} (all ${data.count})`;
       const cell = (v) => escapeTradeHtml(v ?? "—");
       tbody.innerHTML = (data.trades || []).map((t) => {
@@ -7030,12 +7039,13 @@
       const dayQ = arbDay ? `&day=${encodeURIComponent(arbDay)}` : "";
       const track = document.getElementById("arbTrack")?.value || "";
       const trackQ = track ? `&track=${encodeURIComponent(track)}` : "";
-      fetch(`/api/arb/trades?latency_ms=${encodeURIComponent(lat)}${dayQ}${trackQ}`)
+      const confQ = document.getElementById("arbConfirm")?.value === "1" ? "&confirmed=true" : "";
+      fetch(`/api/arb/trades?latency_ms=${encodeURIComponent(lat)}${dayQ}${trackQ}${confQ}`)
         .then((r) => (r.ok ? r.json() : null))
         .then(renderArbTrades)
         .catch(() => renderArbTrades(null));
     }
-    for (const id of ["arbLatency", "arbTrack"]) {
+    for (const id of ["arbLatency", "arbTrack", "arbConfirm"]) {
       document.getElementById(id)?.addEventListener("change", () => {
         renderArb(arbLast);  // summary columns follow the selectors too
         loadArbTrades();

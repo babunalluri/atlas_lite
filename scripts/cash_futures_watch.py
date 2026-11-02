@@ -9,7 +9,9 @@ baseline is the mean of its per-minute mid spread over the last 60 minutes.
 
 Entry ("short the spread"): sell the future at its bid and buy the stock at its ask, when that
 executable spread is more than ENTRY_PCT above the baseline AND the estimated net per lot after
-both legs' costs is at least MIN_NET. 10:15-14:45 only. Exit: buy the future at its ask and sell
+both legs' costs is at least MIN_NET, on two quote updates in a row (CONFIRM_MAX_S apart at most: a
+spread seen on one update is usually a stale quote; on the NSE-BSE watcher, 2 Nov, no one-update gap
+filled both legs). 10:15-14:45 only. Exit: buy the future at its ask and sell
 the stock at its bid, when that executable spread is back at the entry baseline, or at 15:15.
 
 Paper fills: each leg "arrives" after LATENCY_MS and fills against the first quote update after
@@ -17,6 +19,10 @@ that. Entries are IOC limit orders: they fill only if the book levels within the
 lot (average price over those levels). Exits and the unwind of a leg that filled alone are market
 orders that walk the shown book; beyond its 5 levels they assume 0.5% worse. Costs: Zerodha
 equity-intraday and futures charges on every order.
+
+Probes: every first sighting (logged as an unconfirmed signal, once a stock a minute) and every
+confirmed signal also gets an entry-fill check with no position ("probe" events: both / one_leg /
+none / unknown), so the week shows whether confirmation raises the both-legs rate.
 
 Capital: one paper position at a time, and only stocks whose estimated margin for one lot (cash
 MIS ~20% plus futures ~18% of the lot value) fits --capital. Every qualifying signal is logged for
@@ -57,6 +63,7 @@ BASELINE_MIN = 60
 BASELINE_MIN_POINTS = 30
 FRESH_S = 1.0
 LATENCY_MS = 300
+CONFIRM_MAX_S = 5.0  # the confirming update must come this soon after the first sighting
 NEXT_QUOTE_WAIT_S = 2.0
 ENTRY_FROM, ENTRY_UNTIL, FORCE_EXIT = "10:15", "14:45", "15:15"
 MARGIN_FRACTION = 0.38  # cash MIS ~20% + futures ~18% of one lot's value
@@ -156,6 +163,8 @@ class CF:
         self.position: dict | None = None  # the one paper position
         self.busy = False  # an entry or exit is in flight
         self.last_signal: dict[str, float] = {}  # before _replay(), which restores it
+        self.first_seen: dict[str, float] = {}  # stock -> time of an unconfirmed sighting
+        self.last_first_log: dict[str, float] = {}
         self.ticks = 0
         self._live_at = 0.0
         self._tasks: set[asyncio.Task] = set()
@@ -184,7 +193,7 @@ class CF:
                 self.position = ev
             elif ev.get("event") == "close":
                 self.position = None
-            elif ev.get("event") == "signal":  # one signal per stock a minute, across restarts too
+            elif ev.get("event") == "signal" and ev.get("confirmed") is not False:  # one a stock a minute
                 try:
                     self.last_signal[ev["stock"]] = datetime.fromisoformat(ev["ts"]).timestamp()
                 except (KeyError, TypeError, ValueError):
@@ -217,11 +226,13 @@ class CF:
             return None
         return c, f
 
-    def baseline(self, stock: str) -> float | None:
-        pts = self.minute_mid.get(stock)
-        if not pts or len(pts) < BASELINE_MIN_POINTS:
+    def baseline(self, stock: str, minute: str | None = None) -> float | None:
+        """Mean mid spread of the finished minutes; minute (the current one) is left out, so a spike
+        does not leak into the baseline it is measured against."""
+        pts = [v for m, v in self.minute_mid.get(stock) or () if m != minute]
+        if len(pts) < BASELINE_MIN_POINTS:
             return None
-        return sum(v for _, v in pts) / len(pts)
+        return sum(pts) / len(pts)
 
     def _note_minute(self, stock: str, minute: str, mid_spread: float) -> None:
         pts = self.minute_mid.setdefault(stock, deque())
@@ -240,7 +251,7 @@ class CF:
         cash_mid = (c["bid"] + c["ask"]) / 2
         mid_spread = ((f["bid"] + f["ask"]) / 2 - cash_mid) / cash_mid * 100
         hm = datetime.fromtimestamp(now, IST).strftime("%H:%M")
-        base = self.baseline(stock)
+        base = self.baseline(stock, hm)
         self._note_minute(stock, hm, mid_spread)  # after reading: the baseline is the past 60 minutes only
         if self.position is not None and self.position["stock"] == stock:
             self.manage_position(hm)
@@ -250,25 +261,41 @@ class CF:
         entry_spread = (f["bid"] - c["ask"]) / cash_mid * 100
         dev = entry_spread - base
         if dev <= ENTRY_PCT:
+            self.first_seen.pop(stock, None)
             return
         u = self.universe[stock]
         lot = u["lot"]
         est_net = dev / 100 * cash_mid * lot - round_trip_cost(c["ask"], f["bid"], lot)
-        if est_net < MIN_NET or now - self.last_signal.get(stock, 0.0) < 60:  # one signal per stock a minute
+        if est_net < MIN_NET:
+            self.first_seen.pop(stock, None)
             return
-        self.last_signal[stock] = now
+        if now - self.last_signal.get(stock, 0.0) < 60:  # one signal per stock a minute
+            return
         lot_value = cash_mid * lot
         fits = lot_value * MARGIN_FRACTION <= self.capital
+        sig = {"event": "signal", "stock": stock, "entry_spread_pct": round(entry_spread, 4),
+               "baseline_pct": round(base, 4), "dev_pct": round(dev, 4), "est_net": round(est_net, 2),
+               "lot": lot, "lot_value": round(lot_value), "fits_capital": fits,
+               "cash_ask": c["ask"], "fut_bid": f["bid"]}
+        first = self.first_seen.get(stock)
+        if first is None or now - first > CONFIRM_MAX_S:  # each check() is its own quote update
+            # First sighting: wait for the next update. Logged and probed once a stock a minute.
+            self.first_seen[stock] = now
+            if now - self.last_first_log.get(stock, 0.0) >= 60:
+                self.last_first_log[stock] = now
+                self._log({**sig, "confirmed": False, "traded": False, "skip_reason": "unconfirmed"})
+                self._probe(stock, c["ask"], f["bid"], confirmed=False)
+            return
+        del self.first_seen[stock]
+        self.last_signal[stock] = now
         skip_reason = ("capital" if not fits else "position_open" if self.position is not None
                        else "order_in_flight" if self.busy else None)
         traded = skip_reason is None
-        self._log({"event": "signal", "stock": stock, "entry_spread_pct": round(entry_spread, 4),
-                   "baseline_pct": round(base, 4), "dev_pct": round(dev, 4), "est_net": round(est_net, 2),
-                   "lot": lot, "lot_value": round(lot_value), "fits_capital": fits, "traded": traded,
-                   "skip_reason": skip_reason,
-                   "cash_ask": c["ask"], "fut_bid": f["bid"]})
-        if traded:
+        self._log({**sig, "confirmed": True, "traded": traded, "skip_reason": skip_reason})
+        if traded:  # the entry logs its own fill as the probe, so the two always agree
             self._spawn(self.enter(stock, c["ask"], f["bid"], base, est_net))
+        else:
+            self._probe(stock, c["ask"], f["bid"], confirmed=True)
 
     def manage_position(self, hm: str) -> None:
         """Exit the open position at 15:15, or when its spread is back at the entry baseline. Uses the last
@@ -312,16 +339,49 @@ class CF:
                 return None
             await asyncio.sleep(0.02)
 
-    async def enter(self, stock: str, cash_lim: float, fut_lim: float, base: float, est_net: float) -> None:
+    async def _entry_fill(self, stock: str, cash_lim: float, fut_lim: float) -> tuple[float | None, float | None] | None:
+        """The two IOC entry legs after LATENCY_MS: (cash buy price, futures sell price), None for a leg
+        that missed; None overall if either book had no update after the orders arrived."""
         lot = self.universe[stock]["lot"]
         arrive = time.time() + LATENCY_MS / 1000
         await asyncio.sleep(LATENCY_MS / 1000)
         c, f = await asyncio.gather(self._quote_after(("cash", stock), arrive), self._quote_after(("fut", stock), arrive))
         if c is None or f is None:
+            return None
+        return (limit_fill(c.get("asks") or [], lot, cash_lim, buying=True),
+                limit_fill(f.get("bids") or [], lot, fut_lim, buying=False))
+
+    def _probe(self, stock: str, cash_lim: float, fut_lim: float, confirmed: bool) -> None:
+        """Entry-fill check with no position, so it never blocks or changes the real paper flow."""
+        task = asyncio.get_running_loop().create_task(self.probe(stock, cash_lim, fut_lim, confirmed))
+        self._tasks.add(task)
+        task.add_done_callback(self._probe_done)
+
+    def _probe_done(self, task: asyncio.Task) -> None:
+        self._tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            self.errors += 1
+            print(f"{datetime.now(IST):%H:%M:%S} probe failed: {task.exception()!r}", flush=True)
+
+    async def probe(self, stock: str, cash_lim: float, fut_lim: float, confirmed: bool) -> None:
+        self._log_probe(stock, confirmed, await self._entry_fill(stock, cash_lim, fut_lim))
+
+    def _log_probe(self, stock: str, confirmed: bool, fill: tuple[float | None, float | None] | None) -> None:
+        if fill is None:
+            outcome = "unknown"
+        else:
+            bought, sold = fill[0] is not None, fill[1] is not None
+            outcome = "both" if bought and sold else "none" if not bought and not sold else "one_leg"
+        self._log({"event": "probe", "stock": stock, "confirmed": confirmed, "outcome": outcome})
+
+    async def enter(self, stock: str, cash_lim: float, fut_lim: float, base: float, est_net: float) -> None:
+        lot = self.universe[stock]["lot"]
+        fill = await self._entry_fill(stock, cash_lim, fut_lim)
+        self._log_probe(stock, True, fill)
+        if fill is None:
             self._log({"event": "skip", "stock": stock, "why": "no quote update after the orders arrived"})
             return
-        cash_px = limit_fill(c.get("asks") or [], lot, cash_lim, buying=True)
-        fut_px = limit_fill(f.get("bids") or [], lot, fut_lim, buying=False)
+        cash_px, fut_px = fill
         bought, sold = cash_px is not None, fut_px is not None
         if bought and sold:
             self._log({"event": "open", "stock": stock, "lot": lot, "cash_buy": cash_px, "fut_sell": fut_px,
@@ -390,7 +450,11 @@ class CF:
     # ---- reports, derived from the log ----
     def report(self, final: bool) -> dict:
         ev = self.events
-        signals = [e for e in ev if e.get("event") == "signal"]
+        signals = [e for e in ev if e.get("event") == "signal" and e.get("confirmed") is not False]
+        probes = {
+            name: {o: sum(1 for e in ev if e.get("event") == "probe" and e.get("confirmed") is conf
+                          and e.get("outcome") == o) for o in ("both", "one_leg", "none", "unknown")}
+            for name, conf in (("first_sighting", False), ("confirmed", True))}
         closes = [e for e in ev if e.get("event") == "close"]
         unwinds = [e for e in ev if e.get("event") == "unwind"]
         by_stock: dict[str, int] = {}
@@ -400,7 +464,10 @@ class CF:
         return {
             "day": self.day, "final": final, "updated_at": datetime.now(IST).isoformat(timespec="seconds"),
             "stocks": len(self.universe), "ticks": self.ticks, "errors": self.errors,
-            "rules": {"entry_pct": ENTRY_PCT, "min_net": MIN_NET, "latency_ms": LATENCY_MS, "capital": self.capital},
+            "rules": {"entry_pct": ENTRY_PCT, "min_net": MIN_NET, "latency_ms": LATENCY_MS, "capital": self.capital,
+                      "confirm_max_s": CONFIRM_MAX_S},
+            "unconfirmed_sightings": sum(1 for e in ev if e.get("event") == "signal" and e.get("confirmed") is False),
+            "entry_probes": probes,
             "signals": len(signals), "signals_fit_capital": sum(1 for s in signals if s.get("fits_capital")),
             "signals_est_net_sum": round(sum(s.get("est_net") or 0 for s in signals), 2),
             "trades": len(closes), "wins": sum(1 for e in closes if (e.get("pnl") or 0) > 0),

@@ -36,6 +36,13 @@ at a time, 2 s cooldown (both directions share it: they can never be crossed at 
 since that would need one exchange's bid above its own ask). If either leg gets no quote update
 within NEXT_QUOTE_WAIT_S of arriving, the attempt is "unknown": no fills, no P&L, counted apart.
 
+Confirmed attempts ("confirmed": true), alongside every track and delay above, with their own one
+attempt per crossing, locks and cooldown: they fire only once the crossing has been seen on a later
+quote update too (2+ ticks), at that update's prices. Every attempt records crossing_ticks, the
+crossing's update count when it fired: a first-sighting attempt blocked on tick 1 (cooldown, or the
+gap still under its threshold) fires on a later tick, so "first sighting" proper is crossing_ticks 1. On 2 Nov no one-tick crossing filled both legs
+(2 of 1,576 attempts), while 11-20% of longer ones did: a gap seen once is usually a stale quote.
+
 Writes <out>/gaps-<day>.jsonl (one line per crossing episode), <out>/paper-<day>.jsonl (one line
 per paper attempt), <out>/live-<day>.json every 60 s (crossings still open are left out) and
 <out>/summary-<day>.json at --end, which it also prints. The dashboard reads them via /api/arb.
@@ -175,8 +182,9 @@ class Watch:
         self._last_sample: dict[str, float] = {}
         self.paper: list[dict] = []
         self.paper_path = out / f"paper-{day}.jsonl"
-        self._paper_last: dict[tuple[str, int, float], float] = {}
-        self._paper_busy: set[tuple[str, int, float]] = set()
+        # (stock, delay, track), plus True for a confirmed attempt
+        self._paper_last: dict[tuple, float] = {}
+        self._paper_busy: set[tuple] = set()
         self._tasks: set[asyncio.Task] = set()
         self.paper_errors = 0
         self.cancelled_at_close = 0
@@ -185,9 +193,9 @@ class Watch:
         self._live_at = 0.0
         self.ticks_base = 0
         self._marked_at: dict[tuple[str, str], float] = {}
-        self._attempted: dict[tuple, set[tuple[float, int]]] = {}
+        self._attempted: dict[tuple, set[tuple]] = {}  # (track, delay), plus True for a confirmed attempt
         # (stock, direction) -> (root, attempts) carried from a crossing open at the last restart
-        self._carry: dict[tuple[str, str], tuple[str, set[tuple[float, int]]]] = {}
+        self._carry: dict[tuple[str, str], tuple[str, set[tuple]]] = {}
         # Any start: no paper trade until every cooldown has passed (an attempt in flight at a crash
         # was never written, so its cooldown is not in the files).
         self._resume_until = time.time() + PAPER_COOLDOWN_S
@@ -265,12 +273,13 @@ class Watch:
                 rec_ids = {rec.get("crossing_root"), rec.get("crossing_start")} - {None}
                 if (rec.get("stock"), rec.get("direction")) == sd and rec_ids & {root, start} \
                         and rec.get("track") is not None and rec.get("latency_ms") is not None:
-                    done.add((float(rec["track"]), int(rec["latency_ms"])))
+                    done.add((float(rec["track"]), int(rec["latency_ms"])) + ((True,) if rec.get("confirmed") else ()))
             self._carry[sd] = (root, done)
         for rec in self.paper:
             try:
                 at = datetime.fromisoformat(str(rec["seen"])).timestamp()
-                key = (rec["stock"], int(rec["latency_ms"]), float(rec.get("track", MIN_PAPER_NET)))
+                key = (rec["stock"], int(rec["latency_ms"]), float(rec.get("track", MIN_PAPER_NET))) \
+                    + ((True,) if rec.get("confirmed") else ())
             except (KeyError, TypeError, ValueError):
                 continue
             self._paper_last[key] = max(self._paper_last.get(key, 0.0), at)
@@ -329,7 +338,7 @@ class Watch:
                     with self.path.open("a", encoding="utf-8") as fh:
                         fh.write(json.dumps({"event": "open", **self._serialized(ep)}) + "\n")
                 self.maybe_paper(stock, buy_exch, "NSE" if buy_exch == "BSE" else "BSE", buy_q, sell_q, now,
-                                 (stock, direction, ep["start"], ep["root"]))
+                                 (stock, direction, ep["start"], ep["root"]), ticks=ep["ticks"])
             elif gap > 0:
                 pass  # still crossed but no tradable size this moment: the crossing and any carry stay as is
             else:  # the gap closed: the crossing ends, and a carry from a restart no longer applies
@@ -343,10 +352,11 @@ class Watch:
                     self.close(k)
 
     def maybe_paper(self, stock: str, buy_exch: str, sell_exch: str, buy_q: dict, sell_q: dict, now: float,
-                    crossing: tuple | None = None) -> None:
+                    crossing: tuple | None = None, ticks: int = 1) -> None:
         """One paper attempt per crossing, per track and delay: a crossing that stays open is not
         re-attempted against the same shares (a first fill would have taken them). crossing is
-        (stock, direction, start, root)."""
+        (stock, direction, start, root). ticks: updates the crossing has been seen on; from 2, the
+        confirmed attempts may fire too (each kind once per crossing)."""
         if now < self._resume_until:  # just restarted: an attempt lost in flight may still be cooling down
             return
         qty = tradable_qty(buy_q, sell_q)
@@ -360,22 +370,24 @@ class Watch:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
+        kinds = ((), (True,)) if ticks >= 2 else ((),)
         for track in tracks:
             for lat in LATENCIES_MS:
-                key = (stock, lat, track)
-                if key in self._paper_busy or now - self._paper_last.get(key, 0.0) < PAPER_COOLDOWN_S:
-                    continue
-                done = self._attempted.setdefault(crossing[:3], set()) if crossing else set()
-                if (track, lat) in done:
-                    continue
-                done.add((track, lat))
-                self._paper_busy.add(key)
-                self._paper_last[key] = now
-                task = loop.create_task(self.paper_attempt(
-                    stock, buy_exch, sell_exch, buy_q["ask"], sell_q["bid"], qty, lat, est_net, track,
-                    crossing[3] if crossing else None))
-                self._tasks.add(task)
-                task.add_done_callback(self._paper_done)
+                for kind in kinds:
+                    key = (stock, lat, track) + kind
+                    if key in self._paper_busy or now - self._paper_last.get(key, 0.0) < PAPER_COOLDOWN_S:
+                        continue
+                    done = self._attempted.setdefault(crossing[:3], set()) if crossing else set()
+                    if (track, lat) + kind in done:
+                        continue
+                    done.add((track, lat) + kind)
+                    self._paper_busy.add(key)
+                    self._paper_last[key] = now
+                    task = loop.create_task(self.paper_attempt(
+                        stock, buy_exch, sell_exch, buy_q["ask"], sell_q["bid"], qty, lat, est_net, track,
+                        crossing[3] if crossing else None, confirmed=bool(kind), crossing_ticks=ticks))
+                    self._tasks.add(task)
+                    task.add_done_callback(self._paper_done)
 
     def _paper_done(self, task: asyncio.Task) -> None:
         self._tasks.discard(task)
@@ -396,7 +408,8 @@ class Watch:
 
     async def paper_attempt(self, stock: str, buy_exch: str, sell_exch: str, buy_lim: float, sell_lim: float,
                             qty: int, lat: int, est_net: float = 0.0, track: float | None = None,
-                            crossing_root: str | None = None) -> None:
+                            crossing_root: str | None = None, confirmed: bool = False,
+                            crossing_ticks: int | None = None) -> None:
         track = MIN_PAPER_NET if track is None else track
         try:
             seen = time.time()
@@ -410,7 +423,7 @@ class Watch:
                     "seen": datetime.fromtimestamp(seen, IST).isoformat(timespec="milliseconds"),
                     "direction": f"buy {buy_exch} sell {sell_exch}", "buy_limit": buy_lim, "sell_limit": sell_lim,
                     "qty": qty, "est_net": round(est_net, 2), "track": track,
-                    "crossing_root": crossing_root}
+                    "crossing_root": crossing_root, "confirmed": confirmed, "crossing_ticks": crossing_ticks}
             if bq is None or sq is None or not (b_fresh and s_fresh):
                 # No price seen after the orders arrived: the fill is a guess either way, so no P&L.
                 self._record({**base, "bought": 0, "sold": 0, "outcome": "unknown", "quotes_updated": False,
@@ -452,7 +465,7 @@ class Watch:
                           "unwind_quote_updated": unwind_updated,
                           "gross": round(gross, 2), "unwind_pnl": round(unwind_pnl, 2), "net": round(net, 2)})
         finally:
-            self._paper_busy.discard((stock, lat, track))
+            self._paper_busy.discard((stock, lat, track) + ((True,) if confirmed else ()))
 
     def _record(self, rec: dict) -> None:
         self.paper.append(rec)
@@ -550,15 +563,22 @@ class Watch:
         def research(recs: list[dict]) -> dict:
             """₹ threshold -> paper results, every research track."""
             return {f"{t:g}": paper_block([x for x in recs if x.get("track") == t]) for t in sorted(RESEARCH_NETS)}
+
+        def kind(recs: list[dict], confirmed: bool) -> list[dict]:
+            return [x for x in recs if bool(x.get("confirmed")) == confirmed]
         present = set(self.groups.values()) or {"large"}
         for g in [x for x in GROUP_ORDER if x in present]:  # small caps first
             out[g] = block([e for e in self.episodes if e.get("group") == g], g)
             in_group = [x for x in self.paper if x.get("group") == g]  # reloaded rows may be partial
-            out[g]["paper"] = paper_block(main_track(in_group))
-            out[g]["paper_research"] = research(in_group)
+            out[g]["paper"] = paper_block(main_track(kind(in_group, False)))
+            out[g]["paper_research"] = research(kind(in_group, False))
+            out[g]["paper_confirmed"] = paper_block(main_track(kind(in_group, True)))
+            out[g]["paper_research_confirmed"] = research(kind(in_group, True))
         out["all"] = block(self.episodes, None)
-        out["all"]["paper"] = paper_block(main_track(self.paper))
-        out["all"]["paper_research"] = research(self.paper)
+        out["all"]["paper"] = paper_block(main_track(kind(self.paper, False)))
+        out["all"]["paper_research"] = research(kind(self.paper, False))
+        out["all"]["paper_confirmed"] = paper_block(main_track(kind(self.paper, True)))
+        out["all"]["paper_research_confirmed"] = research(kind(self.paper, True))
         return out
 
 

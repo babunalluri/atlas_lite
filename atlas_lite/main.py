@@ -310,6 +310,7 @@ async def api_arb_trades(
     limit: int = Query(default=300, ge=1, le=2000),
     day: Optional[str] = Query(default=None, description="YYYY-MM-DD; default: the same day /api/arb shows"),
     track: Optional[float] = Query(default=None, description="₹ threshold track; default: the main (₹500) track"),
+    confirmed: bool = Query(default=False, description="attempts fired once the crossing was seen twice"),
 ) -> dict[str, Any]:
     """The gap watcher's paper trades for one day, newest first (paper only, no orders)."""
 
@@ -317,15 +318,16 @@ async def api_arb_trades(
         want = day or _arb_latest_day()
         path = DATA_DIR / "arb" / f"paper-{want}.jsonl"
         if not want or len(want) != 10 or not path.is_file():
-            return {"ok": True, "day": want, "latency_ms": latency_ms, "track": track, "count": 0, "shown": 0,
-                    "net": 0.0, "trades": []}
+            return {"ok": True, "day": want, "latency_ms": latency_ms, "track": track, "confirmed": confirmed,
+                    "count": 0, "shown": 0, "net": 0.0, "trades": []}
         rows: list[dict[str, Any]] = []
         for line in path.read_text(encoding="utf-8").splitlines():
             try:
                 row = json.loads(line)
             except ValueError:
                 continue
-            if isinstance(row, dict) and row.get("latency_ms") == latency_ms:
+            if isinstance(row, dict) and row.get("latency_ms") == latency_ms \
+                    and bool(row.get("confirmed")) == confirmed:
                 rows.append(row)
         # The main track is the day's min_net (from its summary or live report), else ₹500. Rows written
         # before research tracks existed carry no track: they belong to the main track.
@@ -341,6 +343,7 @@ async def api_arb_trades(
         rows = [r for r in rows if (float(r["track"]) if r.get("track") is not None else main_track) == want_track]
         rows.sort(key=lambda r: str(r.get("seen") or ""), reverse=True)
         return {"ok": True, "day": want, "latency_ms": latency_ms, "track": want_track, "tracks": tracks,
+                "confirmed": confirmed,
                 "count": len(rows), "shown": min(len(rows), limit),
                 "net": round(sum(float(r.get("net") or 0) for r in rows), 2),
                 "trades": rows[:limit]}

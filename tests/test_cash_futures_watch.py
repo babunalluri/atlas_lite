@@ -27,6 +27,12 @@ def tick(w, tok, bid, ask, bq=1000, aq=1000):
                "depth": {"buy": [{"price": bid, "quantity": bq}], "sell": [{"price": ask, "quantity": aq}]}})
 
 
+async def confirm(w, tok=2, bid=1010.0, ask=1010.1):
+    """The next update shows the same wide spread: the signal is confirmed."""
+    await asyncio.sleep(0.01)
+    tick(w, tok, bid, ask)
+
+
 async def settle(w):
     while w._tasks:
         await asyncio.sleep(0.02)
@@ -57,6 +63,7 @@ def test_wide_spread_opens_and_reversion_closes_with_bid_ask_fills(tmp_path, mon
     async def go():
         tick(w, 1, 999.9, 1000.0)
         tick(w, 2, 1010.0, 1010.1)  # executable spread (1010.0 - 1000.0)/1000 = 1.0% vs 0.40%: +0.60%
+        await confirm(w)
         await asyncio.sleep(0.1)
         tick(w, 1, 999.9, 1000.0)
         tick(w, 2, 1010.0, 1010.1)  # still there when the orders arrive: both legs fill
@@ -88,6 +95,8 @@ def test_a_lot_larger_than_the_shown_size_does_not_fill(tmp_path, monkeypatch) -
     async def go():
         tick(w, 1, 999.9, 1000.0, aq=100)  # only 100 shares on the ask, lot is 500
         tick(w, 2, 1010.0, 1010.1, bq=100)
+        await asyncio.sleep(0.01)
+        tick(w, 2, 1010.0, 1010.1, bq=100)
         await asyncio.sleep(0.1)
         tick(w, 1, 999.9, 1000.0, aq=100)
         tick(w, 2, 1010.0, 1010.1, bq=100)
@@ -104,6 +113,7 @@ def test_one_leg_is_unwound_at_market(tmp_path, monkeypatch) -> None:
     async def go():
         tick(w, 1, 999.9, 1000.0)
         tick(w, 2, 1010.0, 1010.1)
+        await confirm(w)
         await asyncio.sleep(0.1)
         tick(w, 1, 999.9, 1000.0)  # cash ask still there: buy fills
         tick(w, 2, 1008.0, 1008.1)  # futures bid fell below 1010: sell misses
@@ -123,10 +133,11 @@ def test_signals_outside_capital_are_logged_but_not_traded(tmp_path, monkeypatch
     async def go():
         tick(w, 1, 999.9, 1000.0)
         tick(w, 2, 1010.0, 1010.1)
+        await confirm(w)
         await settle(w)
 
     asyncio.run(go())
-    (s,) = [e for e in w.events if e["event"] == "signal"]
+    (s,) = [e for e in w.events if e["event"] == "signal" and e["confirmed"]]
     assert s["fits_capital"] is False and s["traded"] is False and w.position is None
 
 
@@ -285,10 +296,11 @@ def test_skip_reason_says_why_a_signal_was_not_traded(tmp_path, monkeypatch) -> 
     async def go():
         tick(w, 3, 999.9, 1000.0)
         tick(w, 4, 1010.0, 1010.1)
+        await confirm(w, tok=4)
         await settle(w)
 
     asyncio.run(go())
-    (sig,) = [e for e in w.events if e["event"] == "signal"]
+    (sig,) = [e for e in w.events if e["event"] == "signal" and e["confirmed"]]
     assert sig["traded"] is False and sig["skip_reason"] == "position_open" and sig["fits_capital"] is True
 
 
@@ -315,3 +327,111 @@ def test_no_reversion_exit_while_the_spread_is_still_wide(tmp_path, monkeypatch)
     w.quotes[("fut", "ABC")] = {"bid": 1012.0, "ask": 1012.1, "bids": [(1012.0, 500)], "asks": [(1012.1, 500)], "at": 0.0}
     w.manage_position("11:30")
     assert not w._tasks and w.position is not None
+
+
+def test_a_spread_seen_on_one_update_only_is_not_traded(tmp_path, monkeypatch) -> None:
+    w = mk(tmp_path, monkeypatch)
+    at(monkeypatch, "11:00")
+
+    async def go():
+        tick(w, 1, 999.9, 1000.0)
+        tick(w, 2, 1010.0, 1010.1)  # wide once
+        await asyncio.sleep(0.01)
+        tick(w, 2, 1004.0, 1004.1)  # gone on the next update
+        await asyncio.sleep(0.1)
+        tick(w, 1, 999.9, 1000.0)
+        tick(w, 2, 1004.0, 1004.1)
+        await settle(w)
+
+    asyncio.run(go())
+    (sig,) = [e for e in w.events if e["event"] == "signal"]
+    assert sig["confirmed"] is False and sig["traded"] is False and sig["skip_reason"] == "unconfirmed"
+    assert w.position is None and not w.last_signal  # no cooldown: a real signal may follow at once
+    (probe,) = [e for e in w.events if e["event"] == "probe"]
+    assert probe["confirmed"] is False and probe["outcome"] == "one_leg"  # cash ask held, futures bid gone
+    rep = w.report(final=True)
+    assert rep["signals"] == 0 and rep["unconfirmed_sightings"] == 1
+    assert rep["entry_probes"]["first_sighting"]["one_leg"] == 1
+
+
+def test_a_confirmation_too_late_counts_as_a_new_first_sighting(tmp_path, monkeypatch) -> None:
+    w = mk(tmp_path, monkeypatch)
+    monkeypatch.setattr(C, "CONFIRM_MAX_S", 0.05)
+    at(monkeypatch, "11:00")
+
+    async def go():
+        tick(w, 1, 999.9, 1000.0)
+        tick(w, 2, 1010.0, 1010.1)
+        await asyncio.sleep(0.1)  # longer than CONFIRM_MAX_S
+        tick(w, 2, 1010.0, 1010.1)
+        await settle(w)
+
+    asyncio.run(go())
+    assert not [e for e in w.events if e["event"] == "signal" and e["confirmed"]] and w.position is None
+
+
+def test_confirmed_signal_is_probed_and_traded(tmp_path, monkeypatch) -> None:
+    w = mk(tmp_path, monkeypatch)
+    at(monkeypatch, "11:00")
+
+    async def go():
+        tick(w, 1, 999.9, 1000.0)
+        tick(w, 2, 1010.0, 1010.1)
+        await confirm(w)
+        await asyncio.sleep(0.1)
+        tick(w, 1, 999.9, 1000.0)
+        tick(w, 2, 1010.0, 1010.1)
+        await settle(w)
+
+    asyncio.run(go())
+    probes = {e["confirmed"]: e["outcome"] for e in w.events if e["event"] == "probe"}
+    assert probes == {False: "both", True: "both"} and w.position is not None
+
+
+def test_unconfirmed_sightings_do_not_restore_the_signal_cooldown(tmp_path, monkeypatch) -> None:
+    w = mk(tmp_path, monkeypatch)
+    w._log({"event": "signal", "stock": "ABC", "confirmed": False})
+    assert "ABC" not in C.CF(UNI, tmp_path, "2026-11-02").last_signal
+
+
+def test_the_current_minute_is_not_part_of_the_baseline(tmp_path, monkeypatch) -> None:
+    w = mk(tmp_path, monkeypatch)
+    w._note_minute("ABC", "11:00", 1.0)  # a spike this minute
+    assert w.baseline("ABC", "11:00") == 0.40 and w.baseline("ABC") > 0.40
+
+
+def test_a_second_update_with_the_same_timestamp_still_confirms(tmp_path, monkeypatch) -> None:
+    w = mk(tmp_path, monkeypatch)
+    at(monkeypatch, "11:00")
+    monkeypatch.setattr(C.time, "time", lambda: 1_800_000_000.0)  # both updates at one instant
+    w.quotes[("cash", "ABC")] = {"bid": 999.9, "ask": 1000.0, "bids": [(999.9, 1000)], "asks": [(1000.0, 1000)], "at": 1_800_000_000.0}
+    w.quotes[("fut", "ABC")] = {"bid": 1010.0, "ask": 1010.1, "bids": [(1010.0, 1000)], "asks": [(1010.1, 1000)], "at": 1_800_000_000.0}
+
+    async def go():
+        w.check("ABC", 1_800_000_000.0)
+        w.check("ABC", 1_800_000_000.0)
+        for t in list(w._tasks):
+            t.cancel()
+
+    asyncio.run(go())
+    assert [e["confirmed"] for e in w.events if e["event"] == "signal"] == [False, True]
+
+
+def test_a_traded_signal_logs_its_own_fill_as_the_probe(tmp_path, monkeypatch) -> None:
+    w = mk(tmp_path, monkeypatch)
+    at(monkeypatch, "11:00")
+
+    async def go():
+        tick(w, 1, 999.9, 1000.0)
+        tick(w, 2, 1010.0, 1010.1)
+        await confirm(w)
+        await asyncio.sleep(0.1)
+        tick(w, 1, 999.9, 1000.0)  # cash fills
+        tick(w, 2, 1008.0, 1008.1)  # futures miss
+        await asyncio.sleep(0.1)
+        tick(w, 1, 999.5, 999.7)
+        await settle(w)
+
+    asyncio.run(go())
+    (probe,) = [e for e in w.events if e["event"] == "probe" and e["confirmed"]]
+    assert probe["outcome"] == "one_leg" and [e["leg"] for e in w.events if e["event"] == "unwind"] == ["cash"]

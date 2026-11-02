@@ -70,6 +70,11 @@ async def _settle(w):
         await asyncio.sleep(0.02)
 
 
+def _first(rows):
+    """First-tick attempts only (not the confirmed ones a repeated tick also fires)."""
+    return [r for r in rows if not r.get("confirmed")]
+
+
 def test_charges_for_the_crossing_test_equal_the_paper_fills() -> None:
     assert W.intraday_cost(1000.0, 1001.0, 100, "BSE") == W.order_charges(
         [("BSE", "buy", 1000.0, 100), ("NSE", "sell", 1001.0, 100)])
@@ -92,7 +97,7 @@ def test_both_legs_fill_on_the_next_quote_update(tmp_path, monkeypatch) -> None:
         await _settle(w)
 
     asyncio.run(go())
-    (rec,) = w.paper
+    (rec,) = _first(w.paper)
     assert rec["outcome"] == "both" and rec["quotes_updated"] is True and rec["bought"] == rec["sold"] == 100
     assert rec["net"] == round(200.0 - W.order_charges([("BSE", "buy", 498.0, 100), ("NSE", "sell", 500.0, 100)]), 2)
 
@@ -111,7 +116,7 @@ def test_one_leg_is_unwound_at_market_and_loses(tmp_path, monkeypatch) -> None:
         await _settle(w)
 
     asyncio.run(go())
-    (rec,) = w.paper
+    (rec,) = _first(w.paper)
     assert rec["outcome"] == "one_leg" and rec["bought"] == 100 and rec["sold"] == 0
     assert rec["unwind_pnl"] == round(100 * (497.5 - 498.0), 2) and rec["net"] < 0
     assert rec["unwind_quote_updated"] is True
@@ -179,7 +184,7 @@ def test_api_arb_falls_back_to_live_when_the_summary_is_unreadable(tmp_path, mon
 
 def test_api_arb_trades_lists_the_latest_day_newest_first_by_delay(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(main, "DATA_DIR", tmp_path)
-    assert asyncio.run(main.api_arb_trades(latency_ms=300, limit=300, day=None, track=None))["count"] == 0
+    assert asyncio.run(main.api_arb_trades(latency_ms=300, limit=300, day=None, track=None, confirmed=False))["count"] == 0
     arb = tmp_path / "arb"
     arb.mkdir()
     rows = [
@@ -189,7 +194,7 @@ def test_api_arb_trades_lists_the_latest_day_newest_first_by_delay(tmp_path, mon
     ]
     (arb / "paper-2026-11-02.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n{bad line\n")
     (arb / "paper-2026-10-30.jsonl").write_text(json.dumps(rows[0]) + "\n")
-    out = asyncio.run(main.api_arb_trades(latency_ms=300, limit=300, day=None, track=None))
+    out = asyncio.run(main.api_arb_trades(latency_ms=300, limit=300, day=None, track=None, confirmed=False))
     assert out["day"] == "2026-11-02" and out["count"] == 2 and out["net"] == 140.0
     assert [t["stock"] for t in out["trades"]] == ["BBB", "AAA"]
 
@@ -202,10 +207,10 @@ def test_summary_and_trade_list_use_the_same_day(tmp_path, monkeypatch) -> None:
     (arb / "paper-2026-10-30.jsonl").write_text(json.dumps({"seen": "x", "latency_ms": 300, "net": 5.0}) + "\n")
     (arb / "paper-2026-11-02.jsonl").write_text(json.dumps({"seen": "y", "latency_ms": 300, "net": 7.0}) + "\n")
     summary = asyncio.run(main.api_arb())
-    trades = asyncio.run(main.api_arb_trades(latency_ms=300, limit=300, day=None, track=None))
+    trades = asyncio.run(main.api_arb_trades(latency_ms=300, limit=300, day=None, track=None, confirmed=False))
     assert summary["day"] == trades["day"] == "2026-11-02"  # newest paper day; no summary for it yet
     assert summary["available"] is False
-    older = asyncio.run(main.api_arb_trades(latency_ms=300, limit=300, day="2026-10-30", track=None))
+    older = asyncio.run(main.api_arb_trades(latency_ms=300, limit=300, day="2026-10-30", track=None, confirmed=False))
     assert older["count"] == 1 and older["net"] == 5.0
 
 
@@ -215,7 +220,7 @@ def test_trade_list_says_how_many_are_shown(tmp_path, monkeypatch) -> None:
     arb.mkdir()
     rows = [{"seen": f"2026-11-02T10:00:{i:02d}", "latency_ms": 300, "net": 1.0} for i in range(5)]
     (arb / "paper-2026-11-02.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
-    out = asyncio.run(main.api_arb_trades(latency_ms=300, limit=2, day=None, track=None))
+    out = asyncio.run(main.api_arb_trades(latency_ms=300, limit=2, day=None, track=None, confirmed=False))
     assert out["count"] == 5 and out["shown"] == 2 and len(out["trades"]) == 2 and out["net"] == 5.0
 
 
@@ -237,7 +242,7 @@ def test_paper_trades_need_the_minimum_estimated_net(tmp_path, monkeypatch) -> N
         await _settle(w)
 
     asyncio.run(go())
-    (rec,) = w.paper
+    (rec,) = _first(w.paper)
     assert rec["est_net"] >= 500 and rec["outcome"] == "both" and rec["qty"] == 200
     s = w.summary(final=True)
     assert s["min_net"] == 500.0 and s["small"]["crossings_meeting_min_net"] >= 1
@@ -258,7 +263,7 @@ def test_research_tracks_run_beside_the_main_track(tmp_path, monkeypatch) -> Non
         await _settle(w)
 
     asyncio.run(go())
-    assert sorted(r["track"] for r in w.paper) == [100.0, 200.0, 300.0, 500.0]
+    assert sorted(r["track"] for r in _first(w.paper)) == [100.0, 200.0, 300.0, 500.0]
     s = w.summary(final=True)["small"]
     assert s["paper"]["100ms"]["attempts"] == 1  # main (₹500) track only
     assert s["paper_research"]["100"]["100ms"]["attempts"] == 1
@@ -273,9 +278,9 @@ def test_trade_list_filters_by_track_and_defaults_to_main(tmp_path, monkeypatch)
             {"seen": "b", "latency_ms": 300, "track": 100.0, "net": 120.0},
             {"seen": "c", "latency_ms": 300, "track": 100.0, "net": -40.0}]
     (arb / "paper-2026-11-02.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
-    main_out = asyncio.run(main.api_arb_trades(latency_ms=300, limit=300, day=None, track=None))
+    main_out = asyncio.run(main.api_arb_trades(latency_ms=300, limit=300, day=None, track=None, confirmed=False))
     assert main_out["track"] == 500.0 and main_out["count"] == 1 and main_out["net"] == 600.0
-    research = asyncio.run(main.api_arb_trades(latency_ms=300, limit=300, day=None, track=100.0))
+    research = asyncio.run(main.api_arb_trades(latency_ms=300, limit=300, day=None, track=100.0, confirmed=False))
     assert research["count"] == 2 and research["net"] == 80.0
 
 
@@ -285,7 +290,7 @@ def test_trade_list_default_is_the_main_track_even_without_main_rows(tmp_path, m
     arb.mkdir()
     (arb / "live-2026-11-02.json").write_text(json.dumps({"day": "2026-11-02", "final": False, "min_net": 500.0}))
     (arb / "paper-2026-11-02.jsonl").write_text(json.dumps({"seen": "a", "latency_ms": 300, "track": 1000.0, "net": 900.0}) + "\n")
-    out = asyncio.run(main.api_arb_trades(latency_ms=300, limit=300, day=None, track=None))
+    out = asyncio.run(main.api_arb_trades(latency_ms=300, limit=300, day=None, track=None, confirmed=False))
     assert out["track"] == 500.0 and out["count"] == 0  # not the ₹1,000 research track
 
 
@@ -463,7 +468,7 @@ def test_one_paper_attempt_per_crossing_even_if_it_stays_open(tmp_path, monkeypa
             tick(2, 497.8, 498.0)
             await asyncio.sleep(0.1)
         await _settle(w)
-        assert len(w.paper) == 1
+        assert len(_first(w.paper)) == 1 and len(w.paper) == 2  # one first-tick and one confirmed attempt
         tick(2, 500.0, 500.2)  # closes
         tick(2, 497.8, 498.0)  # a new crossing: one new attempt
         await asyncio.sleep(0.15)
@@ -472,7 +477,7 @@ def test_one_paper_attempt_per_crossing_even_if_it_stays_open(tmp_path, monkeypa
         await _settle(w)
 
     asyncio.run(go())
-    assert len(w.paper) == 2
+    assert len(_first(w.paper)) == 2
 
 
 def test_open_marker_is_refreshed_so_a_crash_keeps_the_latest_values(tmp_path, monkeypatch) -> None:
@@ -536,7 +541,7 @@ def test_restarts_do_not_repeat_attempts_on_a_crossing_that_never_closed(tmp_pat
     for _ in range(3):  # three restarts while the gap stays open
         w = asyncio.run(run(False))
         roots |= {ep.get("root") for ep in w.open_eps.values()}
-    lines = [json.loads(x) for x in (tmp_path / "paper-2026-11-02.jsonl").read_text().splitlines()]
+    lines = _first([json.loads(x) for x in (tmp_path / "paper-2026-11-02.jsonl").read_text().splitlines()])
     assert len(lines) == 1  # without the carried root this is 4
     assert roots == {lines[0]["crossing_root"]}  # every continuation kept the first crossing's root
 
@@ -615,12 +620,15 @@ def test_carry_survives_a_restart_that_died_before_seeing_the_gap_again(tmp_path
         await _settle(w)
 
     asyncio.run(restart_2())
-    assert len((tmp_path / "paper-2026-11-02.jsonl").read_text().splitlines()) == 1
+    rows = [json.loads(x) for x in (tmp_path / "paper-2026-11-02.jsonl").read_text().splitlines()]
+    assert len(_first(rows)) == 1 and len(rows) == 2  # the confirmed attempt is not repeated either
 
 
 def test_a_carry_ended_by_a_closed_gap_is_not_carried_again(tmp_path) -> None:
+    from datetime import datetime, timedelta
+
     toks, uni = {1: ("NSE", "AAA"), 2: ("BSE", "AAA")}, {"AAA": ("small", "AAA")}
-    root = "2026-11-02T10:00:00.000+05:30"
+    root = (datetime.now(W.IST) - timedelta(seconds=5)).isoformat(timespec="milliseconds")  # within the carry limit
     (tmp_path / "gaps-2026-11-02.jsonl").write_text(json.dumps(
         {"stock": "AAA", "group": "small", "direction": "buy BSE sell NSE", "start": root, "end": root, "root": root,
          "duration_s": 0.0, "max_gap_pct": 0.4, "max_qty": 100, "best_net": 300.0, "closed_by": "restart"}) + "\n")
@@ -677,3 +685,84 @@ def test_close_writes_before_forgetting(tmp_path, monkeypatch) -> None:
     except RuntimeError:
         pass
     assert ("AAA", "buy BSE sell NSE") in w.open_eps  # not forgotten when the write failed
+
+
+def test_confirmed_attempt_fires_only_on_a_later_update_of_the_crossing(tmp_path, monkeypatch) -> None:
+    w, tick = _watch(tmp_path, monkeypatch)
+
+    async def go():
+        tick(1, 500.0, 500.2)
+        tick(2, 497.8, 498.0)  # first sighting: first-tick attempt only
+        assert not [t for t in w._paper_busy if len(t) == 4]
+        await asyncio.sleep(0.15)
+        tick(1, 500.0, 500.2)  # seen again: the confirmed attempt fires at these prices
+        tick(2, 497.8, 498.0)
+        await asyncio.sleep(0.15)
+        tick(1, 500.0, 500.2)
+        tick(2, 497.8, 498.0)
+        await _settle(w)
+
+    asyncio.run(go())
+    conf = [r for r in w.paper if r["confirmed"]]
+    assert len(conf) == 1 and conf[0]["outcome"] == "both"
+    s = w.summary(final=True)["small"]
+    assert s["paper_confirmed"]["100ms"]["attempts"] == 1 and s["paper"]["100ms"]["attempts"] == 1
+
+
+def test_a_one_tick_crossing_gets_no_confirmed_attempt(tmp_path, monkeypatch) -> None:
+    w, tick = _watch(tmp_path, monkeypatch)
+
+    async def go():
+        tick(1, 500.0, 500.2)
+        tick(2, 497.8, 498.0)  # crossed once
+        tick(2, 500.0, 500.2)  # gone on the next update
+        await asyncio.sleep(0.15)
+        tick(1, 500.0, 500.2)
+        tick(2, 500.0, 500.2)
+        await _settle(w)
+
+    asyncio.run(go())
+    assert w.paper and not [r for r in w.paper if r["confirmed"]]
+
+
+def test_a_restart_keeps_confirmed_cooldowns_apart(tmp_path) -> None:
+    (tmp_path / "paper-2026-11-02.jsonl").write_text("\n".join(json.dumps(
+        {"stock": "AAA", "group": "small", "latency_ms": 300, "track": 500.0, "outcome": "both", "net": 1.0,
+         "seen": seen, "confirmed": conf}) for seen, conf in (("2026-11-02T10:00:00.000+05:30", False),
+                                                               ("2026-11-02T10:00:01.000+05:30", True))) + "\n")
+    w = W.Watch({}, tmp_path, "2026-11-02", {})
+    assert set(w._paper_last) == {("AAA", 300, 500.0), ("AAA", 300, 500.0, True)}
+    s = w.summary(final=False)["all"]
+    assert s["paper"]["300ms"]["attempts"] == 1 and s["paper_confirmed"]["300ms"]["attempts"] == 1
+
+
+def test_trade_list_shows_confirmed_attempts_apart(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "DATA_DIR", tmp_path)
+    arb = tmp_path / "arb"
+    arb.mkdir()
+    rows = [{"seen": "a", "latency_ms": 300, "track": 500.0, "net": -200.0},  # older rows have no flag
+            {"seen": "b", "latency_ms": 300, "track": 500.0, "net": 600.0, "confirmed": True}]
+    (arb / "paper-2026-11-02.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    first = asyncio.run(main.api_arb_trades(latency_ms=300, limit=300, day=None, track=None, confirmed=False))
+    conf = asyncio.run(main.api_arb_trades(latency_ms=300, limit=300, day=None, track=None, confirmed=True))
+    assert (first["count"], first["net"]) == (1, -200.0) and (conf["count"], conf["net"]) == (1, 600.0)
+
+
+def test_attempts_record_how_many_updates_the_crossing_had(tmp_path, monkeypatch) -> None:
+    w, tick = _watch(tmp_path, monkeypatch)
+    monkeypatch.setattr(W, "MIN_PAPER_NET", 150.0)
+    monkeypatch.setattr(W, "RESEARCH_NETS", ())
+
+    async def go():
+        tick(1, 497.0, 497.2)
+        tick(2, 495.8, 496.0)  # ₹1 cross: under the threshold, crossing open with 1 tick
+        tick(1, 500.0, 500.2)  # widens to ₹4: the first-sighting attempt fires on tick 2
+        await asyncio.sleep(0.15)
+        tick(1, 500.0, 500.2)
+        tick(2, 495.8, 496.0)
+        await _settle(w)
+
+    asyncio.run(go())
+    (first,) = _first(w.paper)
+    assert first["crossing_ticks"] == 2  # not a true first sighting: the analysis can tell
+    assert all(r["crossing_ticks"] >= 2 for r in w.paper if r["confirmed"])
