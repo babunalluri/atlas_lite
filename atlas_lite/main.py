@@ -304,6 +304,34 @@ async def api_arb() -> dict[str, Any]:
     return await asyncio.to_thread(latest)
 
 
+def _latest_watcher_report(folder: str, log_prefix: str) -> dict[str, Any]:
+    """A watcher's latest day: its final summary when written, else the live snapshot."""
+    root = DATA_DIR / folder
+    names = [*root.glob("summary-*.json"), *root.glob("live-*.json"), *root.glob(f"{log_prefix}-*.jsonl")]
+    day = max((p.stem.split("-", 1)[1] for p in names), default=None)
+    if day is None:
+        return {"ok": True, "available": False}
+    for path in (root / f"summary-{day}.json", root / f"live-{day}.json"):  # final first; live if unreadable
+        try:
+            report = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        return {"ok": True, "available": True, **report}
+    return {"ok": True, "available": False, "day": day}
+
+
+@app.get("/api/pob")
+async def api_pob() -> dict[str, Any]:
+    """Pre-open cash–futures dislocation report (hosted by cf-watch; paper only)."""
+    return await asyncio.to_thread(_latest_watcher_report, "pob", "pob")
+
+
+@app.get("/api/cf")
+async def api_cf() -> dict[str, Any]:
+    """Cash–futures spread watcher report (scripts/cash_futures_watch.py; paper only)."""
+    return await asyncio.to_thread(_latest_watcher_report, "cf", "cf")
+
+
 @app.get("/api/arb/trades")
 async def api_arb_trades(
     latency_ms: int = Query(default=300, description="simulated order delay: 100, 300 or 600"),

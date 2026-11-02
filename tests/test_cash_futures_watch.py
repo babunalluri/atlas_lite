@@ -88,7 +88,8 @@ def test_wide_spread_opens_and_reversion_closes_with_bid_ask_fills(tmp_path, mon
     assert rep["signals"] == 1 and rep["trades"] == 1 and rep["wins"] == 1 and rep["net"] == close["pnl"]
 
 
-def test_a_lot_larger_than_the_shown_size_does_not_fill(tmp_path, monkeypatch) -> None:
+def test_a_lot_larger_than_the_shown_size_does_not_signal(tmp_path, monkeypatch) -> None:
+    """Thin top-of-book used to phantom-signal; full-lot pricing skips when the book can't hold a lot."""
     w = mk(tmp_path, monkeypatch)
     at(monkeypatch, "11:00")
 
@@ -97,13 +98,51 @@ def test_a_lot_larger_than_the_shown_size_does_not_fill(tmp_path, monkeypatch) -
         tick(w, 2, 1010.0, 1010.1, bq=100)
         await asyncio.sleep(0.01)
         tick(w, 2, 1010.0, 1010.1, bq=100)
-        await asyncio.sleep(0.1)
-        tick(w, 1, 999.9, 1000.0, aq=100)
-        tick(w, 2, 1010.0, 1010.1, bq=100)
         await settle(w)
 
     asyncio.run(go())
-    assert w.position is None and [e["why"] for e in w.events if e["event"] == "skip"] == ["neither leg filled"]
+    assert w.position is None and not [e for e in w.events if e["event"] == "signal"]
+
+
+def test_full_lot_walk_sets_deeper_limits_and_vwap(tmp_path, monkeypatch) -> None:
+    w = mk(tmp_path, monkeypatch)
+    at(monkeypatch, "11:00")
+    # Best ask holds only 200 of 500; next level fills the rest — limit must be the deeper price.
+    w.quotes[("cash", "ABC")] = {
+        "bid": 999.9, "ask": 1000.0,
+        "bids": [(999.9, 1000)], "asks": [(1000.0, 200), (1000.2, 400)], "at": __import__("time").time(),
+    }
+    w.quotes[("fut", "ABC")] = {
+        "bid": 1010.0, "ask": 1010.1,
+        "bids": [(1010.0, 200), (1009.8, 400)], "asks": [(1010.1, 1000)], "at": __import__("time").time(),
+    }
+
+    async def go():
+        w.check("ABC", __import__("time").time())
+        await asyncio.sleep(0.01)
+        w.check("ABC", __import__("time").time())
+        await asyncio.sleep(0.1)
+        # Arrival books still hold the full lot within the deeper limits.
+        w.quotes[("cash", "ABC")]["at"] = __import__("time").time()
+        w.quotes[("fut", "ABC")]["at"] = __import__("time").time()
+        await settle(w)
+
+    asyncio.run(go())
+    (sig,) = [e for e in w.events if e["event"] == "signal" and e["confirmed"]]
+    assert sig["cash_limit"] == 1000.2 and sig["fut_limit"] == 1009.8
+    assert sig["cash_ask"] == round((200 * 1000.0 + 300 * 1000.2) / 500, 4)
+    assert sig["fut_bid"] == round((200 * 1010.0 + 300 * 1009.8) / 500, 4)
+    assert w.position is not None
+    assert w.position["cash_buy"] == sig["cash_ask"] and w.position["fut_sell"] == sig["fut_bid"]
+
+
+def test_walk_for_qty_and_full_lot_entry_helpers() -> None:
+    assert C.walk_for_qty([(100.0, 100)], 200) is None
+    assert C.walk_for_qty([(100.0, 100), (100.1, 150)], 200) == (
+        round((100 * 100.0 + 100 * 100.1) / 200, 4), 100.1)
+    assert C.full_lot_entry([(100.0, 100)], [(101.0, 500)], 500) is None
+    got = C.full_lot_entry([(100.0, 300), (100.2, 300)], [(101.0, 200), (100.9, 400)], 500)
+    assert got is not None and got[1] == 100.2 and got[3] == 100.9
 
 
 def test_one_leg_is_unwound_at_market(tmp_path, monkeypatch) -> None:
@@ -435,3 +474,174 @@ def test_a_traded_signal_logs_its_own_fill_as_the_probe(tmp_path, monkeypatch) -
     asyncio.run(go())
     (probe,) = [e for e in w.events if e["event"] == "probe" and e["confirmed"]]
     assert probe["outcome"] == "one_leg" and [e["leg"] for e in w.events if e["event"] == "unwind"] == ["cash"]
+
+
+def test_exit_waits_for_a_full_lot_reversion(tmp_path, monkeypatch) -> None:
+    w = mk(tmp_path, monkeypatch)
+    spawned = []
+    monkeypatch.setattr(w, "_spawn", lambda coro: (spawned.append(coro), coro.close()))
+    w.position = {"stock": "ABC", "lot": 500, "cash_buy": 1000.0, "fut_sell": 1010.0, "baseline": 0.41}
+    now = __import__("time").time()
+    # Top of book: (1003.9 - 999.9)/999.95 = 0.40%, under the baseline; a full lot sells deeper (0.55%).
+    w.quotes[("cash", "ABC")] = {"bid": 999.9, "ask": 1000.0, "bids": [(999.9, 100), (998.0, 1000)],
+                                 "asks": [(1000.0, 1000)], "at": now}
+    w.quotes[("fut", "ABC")] = {"bid": 1003.8, "ask": 1003.9, "bids": [(1003.8, 1000)],
+                                "asks": [(1003.9, 1000)], "at": now}
+    w.manage_position("12:00")
+    assert spawned == []
+    w.quotes[("cash", "ABC")]["bids"] = [(999.9, 1000)]
+    w.manage_position("12:00")
+    assert len(spawned) == 1
+
+
+def test_full_lot_exit_spread_is_priced_as_the_exit_fills() -> None:
+    c = {"bid": 99.9, "ask": 100.0, "bids": [(99.9, 300), (99.8, 300)]}
+    f = {"asks": [(100.5, 1000)]}
+    got = C.full_lot_exit_spread(c, f, 500)
+    assert abs(got - (100.5 - (300 * 99.9 + 200 * 99.8) / 500) / 99.95 * 100) < 1e-9
+    # Thin cash book: the 400 shares past the shown 600 fill 0.5% worse, as the market exit would.
+    thin = C.full_lot_exit_spread(c, f, 1000)
+    cash = (300 * 99.9 + 300 * 99.8 + 400 * 99.8 * 0.995) / 1000
+    assert abs(thin - (100.5 - cash) / 99.95 * 100) < 1e-6
+    assert C.full_lot_exit_spread({"bid": 99.9, "ask": 100.0, "bids": []}, f, 500) is None
+
+
+def test_limit_fill_is_the_book_walk_within_the_limit() -> None:
+    book = [(100.0, 100), (100.1, 100), (100.3, 500)]
+    assert C.limit_fill(book, 200, 100.1, buying=True) == C.walk_for_qty(book, 200)[0]
+    assert C.limit_fill(book, 300, 100.1, buying=True) is None  # the 100.3 level is past the limit
+    assert C.walk_for_qty(book, 300) == (round((100 * 100.0 + 100 * 100.1 + 100 * 100.3) / 300, 4), 100.3)
+
+
+def test_a_preopen_book_failure_never_reaches_the_feed(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("ATLAS_LITE_POB_WATCH", "1")
+    w = mk(tmp_path, monkeypatch)
+    at(monkeypatch, "09:30")  # before the cash-futures entry window: only the pre-open book acts on ticks
+    assert w.pob is not None
+
+    def boom(*_a):
+        raise RuntimeError("pob bug")
+
+    monkeypatch.setattr(w.pob, "on_host_tick", boom)
+    tick(w, 1, 999.9, 1000.0)
+    tick(w, 2, 1010.0, 1010.1)  # no exception out of on_tick
+    assert w.pob_errors == 2 and w.quotes[("fut", "ABC")]["bid"] == 1010.0
+    assert capsys.readouterr().out.count("pre-open book tick failed") == 1  # one line a minute
+    assert w.report(final=False)["preopen_book_errors"] == 2
+
+
+def test_a_preopen_book_that_cannot_start_is_left_out(tmp_path, monkeypatch) -> None:
+    import preopen_basis_watch as P
+
+    monkeypatch.setenv("ATLAS_LITE_POB_WATCH", "1")
+
+    def boom(*_a, **_k):
+        raise OSError("disk")
+
+    monkeypatch.setattr(P, "POB", boom)
+    w = C.CF(UNI, tmp_path, "2026-11-02")
+    assert w.pob is None and w.pob_errors == 1
+
+
+def test_preopen_live_report_stops_once_its_summary_exists(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("ATLAS_LITE_POB_WATCH", "1")
+    w = mk(tmp_path, monkeypatch)
+    w.pob.summary_path.write_text("{}")
+    w.pob.live_path.unlink(missing_ok=True)
+    w.pob_report()
+    assert not w.pob.live_path.exists() and w.pob.summary_path.read_text() == "{}"
+
+
+def test_a_thin_book_still_exits_once_reversion_pays_for_the_walk(tmp_path, monkeypatch) -> None:
+    w = mk(tmp_path, monkeypatch)
+    spawned = []
+    monkeypatch.setattr(w, "_spawn", lambda coro: (spawned.append(coro), coro.close()))
+    w.position = {"stock": "ABC", "lot": 500, "cash_buy": 1000.0, "fut_sell": 1010.0, "baseline": 0.41}
+    now = __import__("time").time()
+    w.quotes[("cash", "ABC")] = {"bid": 999.9, "ask": 1000.0, "bids": [(999.9, 100)], "asks": [(1000.0, 1000)], "at": now}
+    # Cash exit: 100 at 999.9 and 400 past the book at 0.5% worse = 995.90 average.
+    w.quotes[("fut", "ABC")] = {"bid": 1000.1, "ask": 1000.2, "bids": [(1000.1, 1000)], "asks": [(1000.2, 1000)], "at": now}
+    w.manage_position("12:00")  # (1000.2 - 995.90)/999.95 = 0.43%: not yet
+    assert spawned == []
+    w.quotes[("fut", "ABC")]["asks"] = [(999.9, 1000)]
+    w.manage_position("12:00")  # (999.9 - 995.90)/999.95 = 0.40%: reverted even after the walk
+    assert len(spawned) == 1
+
+
+def test_a_stale_pair_ends_an_unconfirmed_sighting(tmp_path, monkeypatch) -> None:
+    w = mk(tmp_path, monkeypatch)
+    w.first_seen["ABC"] = __import__("time").time()
+    w.quotes[("cash", "ABC")] = {"bid": 999.9, "ask": 1000.0, "bids": [], "asks": [], "at": 0.0}  # stale
+    w.quotes[("fut", "ABC")] = {"bid": 1010.0, "ask": 1010.1, "bids": [], "asks": [], "at": __import__("time").time()}
+    w.check("ABC", __import__("time").time())
+    assert "ABC" not in w.first_seen
+
+
+def test_one_capital_pool_across_both_books(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("ATLAS_LITE_POB_WATCH", "1")
+    w = mk(tmp_path, monkeypatch)
+    at(monkeypatch, "11:00")
+    w.pob.position = {"stock": "XYZ", "lot": 100}  # the pre-open book still holds one
+
+    async def go():
+        tick(w, 1, 999.9, 1000.0)
+        tick(w, 2, 1010.0, 1010.1)
+        await confirm(w)
+        await settle(w)
+
+    asyncio.run(go())
+    (sig,) = [e for e in w.events if e["event"] == "signal" and e["confirmed"]]
+    assert sig["traded"] is False and sig["skip_reason"] == "preopen_position_open"
+    w.pob.position = None
+    w.position = {"stock": "ABC"}
+    assert w.pob.capital_busy() is True  # and the pre-open book sees this one's position
+
+
+def test_hosted_preopen_book_respects_the_standalone_lock(tmp_path, monkeypatch) -> None:
+    import preopen_basis_watch as P
+
+    monkeypatch.setenv("ATLAS_LITE_POB_WATCH", "1")
+    (tmp_path / "pob").mkdir()
+    held = P.acquire_lock(tmp_path / "pob")
+    assert held is not None  # a standalone runner holds it
+    w = C.CF(UNI, tmp_path, "2026-11-02")
+    assert w.pob is None
+    held.close()
+    assert C.CF(UNI, tmp_path / "x", "2026-11-02").pob is not None
+
+
+def test_recovery_does_not_start_a_preopen_book(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("ATLAS_LITE_POB_WATCH", "1")
+    assert C.CF({}, tmp_path, "2026-10-30", with_pob=False).pob is None
+
+
+def test_preopen_summary_waits_for_fills_in_flight(tmp_path, monkeypatch) -> None:
+    import preopen_basis_watch as P
+
+    monkeypatch.setenv("ATLAS_LITE_POB_WATCH", "1")
+    w = mk(tmp_path, monkeypatch)
+    monkeypatch.setattr(C, "hm_now", lambda: "10:01")
+    w.pob._tasks.add(object())  # a probe still waiting for its fill
+    w.pob_report()
+    assert not w.pob.summary_path.exists() and w.pob.live_path.exists()
+    w.pob._tasks.clear()
+    w.pob_report()
+    assert w.pob.summary_path.exists()
+    assert P.FORCE_EXIT == "10:00"
+
+
+def test_dashboard_reads_the_latest_cf_and_pob_reports(tmp_path, monkeypatch) -> None:
+    import atlas_lite.main as main
+
+    monkeypatch.setattr(main, "DATA_DIR", tmp_path)
+    assert asyncio.run(main.api_cf()) == {"ok": True, "available": False}
+    (tmp_path / "cf").mkdir()
+    (tmp_path / "cf" / "live-2026-11-02.json").write_text(json.dumps({"day": "2026-11-02", "final": False, "net": -5.0}))
+    (tmp_path / "cf" / "summary-2026-10-30.json").write_text(json.dumps({"day": "2026-10-30", "final": True}))
+    out = asyncio.run(main.api_cf())
+    assert out["available"] and out["day"] == "2026-11-02" and out["net"] == -5.0  # latest day, live
+    (tmp_path / "cf" / "summary-2026-11-02.json").write_text(json.dumps({"day": "2026-11-02", "final": True, "net": 7.0}))
+    assert asyncio.run(main.api_cf())["net"] == 7.0  # its summary wins once written
+    (tmp_path / "pob").mkdir()
+    (tmp_path / "pob" / "pob-2026-11-02.jsonl").write_text("")
+    assert asyncio.run(main.api_pob()) == {"ok": True, "available": False, "day": "2026-11-02"}

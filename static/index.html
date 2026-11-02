@@ -2371,9 +2371,12 @@
         <span class="history-meta" id="aiAgentMeta">Promoted fit still needs approval before paper opens</span>
       </div>
       <div class="history-detail" id="factorPaperLine">Factor paper: —</div>
+      <div class="history-detail" id="longStraddleLine">Long straddle: —</div>
       <div class="history-detail" id="scalperV3Line">Scalper v3: —</div>
       <div class="history-detail" id="weeklyStrangleLine">Weekly strangle: —</div>
       <div class="history-detail" id="weeklyCondorLine">Weekly condor: —</div>
+      <div class="history-detail" id="cfMeta">Cash–futures (10:15–14:45): —</div>
+      <div class="history-detail" id="pobMeta">Pre-open basis (09:15–10:00): —</div>
       <div class="history-detail" id="arbMeta">NSE vs BSE gaps: —</div>
       <div class="history-table-wrap">
         <table class="history-table" id="arbTable">
@@ -6947,6 +6950,46 @@
     }
 
     // NSE vs BSE gap watcher (paper only): small caps first, paper results at the realistic 300 ms delay.
+    // Cash–futures spread book (cf-watch): full-lot signals, one paper position at a time.
+    function renderCf(cf) {
+      const meta = document.getElementById("cfMeta");
+      if (!meta) return;
+      if (!cf || !cf.available) {
+        meta.textContent = "Cash–futures (10:15–14:45): no report yet · paper only";
+        return;
+      }
+      const when = String(cf.updated_at || "").slice(11, 16);
+      const probes = (cf.entry_probes && cf.entry_probes.confirmed) || {};
+      const open = cf.open_position ? ` · open ${cf.open_position.stock}` : "";
+      const errs = cf.preopen_book_errors ? ` · pre-open book errors ${cf.preopen_book_errors}` : "";
+      meta.textContent =
+        `Cash–futures · ${cf.day} · ${cf.final ? "final" : "live " + when}` +
+        ` · signals ${cf.signals ?? 0} (fit cap ${cf.signals_fit_capital ?? 0})` +
+        ` · confirmed probes both ${probes.both ?? 0} / one-leg ${probes.one_leg ?? 0}` +
+        ` · trades ${cf.trades ?? 0} · unwinds ${cf.unwinds ?? 0} · net ₹${cf.net ?? 0}${open}${errs}` +
+        ` · paper only, no orders`;
+    }
+
+    // Pre-open basis book (hosted by cf-watch): rich futures vs the stock's previous-day closing basis.
+    function renderPob(pob) {
+      const meta = document.getElementById("pobMeta");
+      if (!meta) return;
+      if (!pob || !pob.available) {
+        meta.textContent = "Pre-open basis (09:15–10:00): no report yet · paper only, hosted by cf-watch";
+        return;
+      }
+      const when = String(pob.updated_at || "").slice(11, 16);
+      const probes = (pob.entry_probes && pob.entry_probes.confirmed) || {};
+      const both = probes.both ?? 0;
+      const one = probes.one_leg ?? 0;
+      const open = pob.open_position ? ` · open ${pob.open_position.stock}` : "";
+      meta.textContent =
+        `Pre-open basis · ${pob.day} · ${pob.final ? "final" : "live " + when}` +
+        ` · signals ${pob.signals ?? 0} (fit cap ${pob.signals_fit_capital ?? 0})` +
+        ` · confirmed probes both ${both} / one-leg ${one}` +
+        ` · trades ${pob.trades ?? 0} · net ₹${pob.net ?? 0}${open}` +
+        ` · paper only, no orders`;
+    }
     let arbLast = null;
     function renderArb(arb) {
       const meta = document.getElementById("arbMeta");
@@ -7050,6 +7093,19 @@
         renderArb(arbLast);  // summary columns follow the selectors too
         loadArbTrades();
       });
+    }
+
+    function renderLongStraddle(ls) {
+      const line = document.getElementById("longStraddleLine");
+      if (!line) return;
+      if (!ls.enabled) {
+        line.textContent = "Long straddle · off (ATLAS_LITE_PAPER_LONG_STRADDLE=0)";
+        return;
+      }
+      const pos = ls.position;
+      line.textContent = pos
+        ? `Long straddle · long ${pos.atm} straddle${pos.expiry_day ? " (expiry day)" : ""} · paid ${pos.debit} · worth now ${pos.value_now ?? "—"} · sells 13:00 · open PnL ${pos.open_pnl ?? "—"}`
+        : `Long straddle · FLAT · buys the ATM straddle at 09:16, sells at 13:00` + (ls.last_reject ? ` · ${ls.last_reject}` : "");
     }
 
     function renderScalperV3(v3) {
@@ -7277,7 +7333,16 @@
           .then(renderArb)
           .catch(() => renderArb(null))
           .finally(loadArbTrades);
+        fetch("/api/pob")
+          .then((r) => (r.ok ? r.json() : null))
+          .then(renderPob)
+          .catch(() => renderPob(null));
+        fetch("/api/cf")
+          .then((r) => (r.ok ? r.json() : null))
+          .then(renderCf)
+          .catch(() => renderCf(null));
         renderFactorPaper(paper.factor_paper || {});
+        renderLongStraddle(paper.long_straddle || {});
         renderScalperV3(paper.scalper_v3 || {});
         renderWeeklySell("weeklyStrangleLine", paper.weekly_strangle || {});
         renderWeeklySell("weeklyCondorLine", paper.weekly_condor5 || {});

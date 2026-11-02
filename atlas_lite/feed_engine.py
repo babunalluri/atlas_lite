@@ -38,6 +38,12 @@ from atlas_lite.paper_ai_agent import (
     paper_ai_agent_enabled,
 )
 from atlas_lite.gamma_regime import GammaOi, previous_trading_day
+from atlas_lite.paper_long_straddle import (
+    LEDGER_NAME as LONG_STRADDLE_LEDGER,
+    STRATEGY as LONG_STRADDLE_STRATEGY,
+    PaperLongStraddle,
+    paper_long_straddle_enabled,
+)
 from atlas_lite.paper_scalper_v3 import (
     LEDGER_NAME as SCALPER_V3_LEDGER,
     STRATEGY as SCALPER_V3_STRATEGY,
@@ -247,7 +253,6 @@ RETIRED_PAPER_STRATEGIES = frozenset(
         "combo_confluence",
         "long_iron_condor",
         "nifty_vwap_long",
-        "long_straddle",
         "factor_paper",
     }
 )
@@ -272,8 +277,8 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
         "½ credit target / ½ defined-loss stop on premium PnL · flat 15:14",
     ),
     "long_straddle": (
-        "legacy ledger only · long ATM CE+PE (not opened live)",
-        "target / stop on straddle premium · flat 15:14",
+        "09:16 · buy ATM CE+PE at ask · 1 lot · max 1/day · expiry days included",
+        "sell both at 13:00 at bid · no target / stop",
     ),
     "short_atm_straddle": (
         "14:00–14:15 · sell ATM CE+PE · 1 lot · max 1/day · |NIFTY chg| ≤0.75%",
@@ -394,6 +399,7 @@ class FeedEngine:
     _paper_factor: PaperFactor | None = field(default=None, repr=False)
     _paper_weekly: dict[str, PaperWeeklySell] = field(default_factory=dict, repr=False)
     _paper_v3: PaperScalperV3 | None = field(default=None, repr=False)
+    _paper_long_str: PaperLongStraddle | None = field(default=None, repr=False)
     # Previous day's NIFTY open interest, for the dealer-gamma reading Scalper v3 logs.
     _gamma_oi: GammaOi | None = field(default=None, repr=False)
     _gamma_oi_tried_at: float = field(default=0.0, repr=False)
@@ -667,6 +673,14 @@ class FeedEngine:
             self._paper_v3 = PaperScalperV3(path=self.data_dir / SCALPER_V3_LEDGER, lot_size=self._nifty_option_lot())
             self._gamma_oi = GammaOi(self.data_dir)
             self._log.info("scalper_v3 paper book qty %d (13:00 straddle sale, no live orders)", self._paper_v3.qty)
+        if paper_long_straddle_enabled():
+            self._paper_long_str = PaperLongStraddle(
+                path=self.data_dir / LONG_STRADDLE_LEDGER, lot_size=self._nifty_option_lot()
+            )
+            self._log.info(
+                "long_straddle paper book qty %d (09:16 straddle purchase, sold 13:00, no live orders)",
+                self._paper_long_str.qty,
+            )
         if paper_weekly_sell_enabled():
             lot = self._nifty_option_lot()
             for name, cfg in WEEKLY_SELL_BOOKS.items():
@@ -736,6 +750,8 @@ class FeedEngine:
             self._tasks.append(asyncio.create_task(self._paper_weekly_loop()))
         if self._paper_v3 is not None:
             self._tasks.append(asyncio.create_task(self._paper_v3_loop()))
+        if self._paper_long_str is not None:
+            self._tasks.append(asyncio.create_task(self._paper_long_straddle_loop()))
         if self._agent is not None:
             self._tasks.append(asyncio.create_task(self._agent_loop()))
 
@@ -2907,6 +2923,34 @@ class FeedEngine:
                 self._log.warning("scalper_v3 paper book failed: %s", exc)
                 await asyncio.sleep(1.0)
 
+    async def _paper_long_straddle_loop(self) -> None:
+        """Long straddle: daily 09:16 ATM straddle purchase, sold at 13:00. Paper only."""
+        if self._paper_long_str is None:
+            return
+        interval = max(1.0, STREAM_INTERVAL_MS / 1000.0)
+        while True:
+            try:
+                now = datetime.now(IST)
+                if now.weekday() >= 5 and self._paper_long_str.position is None:
+                    await asyncio.sleep(30.0)
+                    continue
+                nb = self.notebooks.get("nifty")
+                expiry = atm = ce = pe = None
+                if nb and nb.enabled and nb.universe:
+                    expiry = nb.universe.expiry
+                    if nb.atm:
+                        atm, ce, pe = int(nb.atm.strike), nb.atm.ce_symbol, nb.atm.pe_symbol
+                allow = self._agent_gates.entries_allowed(LONG_STRADDLE_STRATEGY, now) if self._agent_gates else True
+                self._paper_long_str.on_frame(
+                    now=now, book=self.book, expiry=expiry, atm=atm, ce_symbol=ce, pe_symbol=pe, allow_entry=allow
+                )
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                self._log.warning("long_straddle paper book failed: %s", exc)
+                await asyncio.sleep(1.0)
+
     async def _refresh_gamma_oi(self, now: datetime) -> None:
         """Load the previous session's open interest once a trading morning; retry every 10 min."""
         gamma = self._gamma_oi
@@ -3571,6 +3615,12 @@ class FeedEngine:
             self._paper_v3.snapshot(self.book)
             if self._paper_v3 is not None
             else {"ok": True, "mode": "paper", "enabled": False, "live_orders": False, "book": SCALPER_V3_STRATEGY, "name": "Scalper v3"}
+        )
+        body[LONG_STRADDLE_STRATEGY] = (
+            self._paper_long_str.snapshot(self.book)
+            if self._paper_long_str is not None
+            else {"ok": True, "mode": "paper", "enabled": False, "live_orders": False, "book": LONG_STRADDLE_STRATEGY,
+                  "name": "Long straddle"}
         )
         for name, cfg in WEEKLY_SELL_BOOKS.items():
             wbook = self._paper_weekly.get(name)

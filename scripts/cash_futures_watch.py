@@ -7,18 +7,21 @@ Watches every F&O stock's cash quote and near-month future (own Kite websocket, 
 bid/ask with quantities). The spread is futures minus cash, as % of the cash price. A stock's
 baseline is the mean of its per-minute mid spread over the last 60 minutes.
 
-Entry ("short the spread"): sell the future at its bid and buy the stock at its ask, when that
-executable spread is more than ENTRY_PCT above the baseline AND the estimated net per lot after
-both legs' costs is at least MIN_NET, on two quote updates in a row (CONFIRM_MAX_S apart at most: a
-spread seen on one update is usually a stale quote; on the NSE-BSE watcher, 2 Nov, no one-update gap
-filled both legs). 10:15-14:45 only. Exit: buy the future at its ask and sell
-the stock at its bid, when that executable spread is back at the entry baseline, or at 15:15.
+Entry ("short the spread"): buy one futures lot of cash walking the ask book and sell the future
+walking the bid book, when that *full-lot* executable spread is more than ENTRY_PCT above the
+baseline AND the estimated net after both legs' costs is at least MIN_NET, on two quote updates in a
+row (CONFIRM_MAX_S apart at most: a spread seen on one update is usually a stale quote; on the
+NSE-BSE watcher, 2 Nov, no one-update gap filled both legs). Top-of-book alone is not enough: many
+cash best-asks hold only a fraction of a lot, so a top-only signal is a phantom that fills the
+futures leg and unwinds at a loss. Stocks whose shown 5-level book cannot hold a full lot on either
+side are skipped. 10:15-14:45 only. Exit: buy the future at its ask and sell the stock at its bid,
+when that executable spread is back at the entry baseline, or at 15:15.
 
 Paper fills: each leg "arrives" after LATENCY_MS and fills against the first quote update after
-that. Entries are IOC limit orders: they fill only if the book levels within the limit hold a full
-lot (average price over those levels). Exits and the unwind of a leg that filled alone are market
-orders that walk the shown book; beyond its 5 levels they assume 0.5% worse. Costs: Zerodha
-equity-intraday and futures charges on every order.
+that. Entries are IOC limit orders at the deepest book level needed for a full lot (average price
+over those levels). Exits and the unwind of a leg that filled alone are market orders that walk the
+shown book; beyond its 5 levels they assume 0.5% worse. Costs: Zerodha equity-intraday and futures
+charges on every order.
 
 Probes: every first sighting (logged as an unconfirmed signal, once a stock a minute) and every
 confirmed signal also gets an entry-fill check with no position ("probe" events: both / one_leg /
@@ -92,18 +95,48 @@ def round_trip_cost(cash_px: float, fut_px: float, qty: int) -> float:
             + leg_charges("fut", "sell", fut_px, qty) + leg_charges("fut", "buy", fut_px, qty))
 
 
-def limit_fill(levels: list[tuple[float, int]], qty: int, limit: float, buying: bool) -> float | None:
-    """IOC limit order for qty: average price over the book levels within the limit, if they hold qty."""
+def walk_for_qty(levels: list[tuple[float, int]], qty: int, limit: float | None = None,
+                 buying: bool = True) -> tuple[float, float] | None:
+    """Take qty from the shown book, stopping at limit if given: (VWAP, worst price touched = the IOC
+    limit a full fill needs), or None if the levels (within the limit) do not hold qty."""
     got, cost = 0, 0.0
     for px, q in levels:
-        if (buying and px > limit) or (not buying and px < limit):
+        if limit is not None and ((buying and px > limit) or (not buying and px < limit)):
             break
         take = min(q, qty - got)
         got += take
         cost += take * px
         if got >= qty:
-            return round(cost / qty, 4)
+            return round(cost / qty, 4), float(px)
     return None
+
+
+def limit_fill(levels: list[tuple[float, int]], qty: int, limit: float, buying: bool) -> float | None:
+    """IOC limit order for qty: average price over the book levels within the limit, if they hold qty."""
+    got = walk_for_qty(levels, qty, limit, buying)
+    return got[0] if got else None
+
+
+def full_lot_entry(cash_asks: list[tuple[float, int]], fut_bids: list[tuple[float, int]], lot: int
+                   ) -> tuple[float, float, float, float] | None:
+    """Full-lot short-spread prices: (cash_vwap, cash_limit, fut_vwap, fut_limit), or None if either
+    side's shown book cannot hold a lot. Limits are the deepest levels touched."""
+    cash = walk_for_qty(cash_asks, lot)
+    fut = walk_for_qty(fut_bids, lot, buying=False)
+    if cash is None or fut is None:
+        return None
+    return cash[0], cash[1], fut[0], fut[1]
+
+
+def full_lot_exit_spread(c: dict, f: dict, lot: int) -> float | None:
+    """Unwind spread of a full lot, % of cash mid, priced exactly as the exit fills: market orders
+    walking the cash bids and futures asks, 0.5% worse beyond the shown levels. A thin book therefore
+    still exits once the spread has reverted far enough to pay for it. None without any book."""
+    if not c.get("bid") or not c.get("ask") or not c.get("bids") or not f.get("asks"):
+        return None
+    cash = market_fill(c["bids"], lot, buying=False, ref=c["bid"])
+    fut = market_fill(f["asks"], lot, buying=True, ref=f["asks"][0][0])
+    return (fut - cash) / ((c["bid"] + c["ask"]) / 2) * 100
 
 
 def market_fill(levels: list[tuple[float, int]], qty: int, buying: bool, ref: float) -> float:
@@ -144,7 +177,8 @@ def load_universe(data_dir: Path, today: date) -> dict[str, dict]:
 
 
 class CF:
-    def __init__(self, universe: dict[str, dict], out: Path, day: str, capital: float = 250_000.0) -> None:
+    def __init__(self, universe: dict[str, dict], out: Path, day: str, capital: float = 250_000.0,
+                 with_pob: bool = True) -> None:
         self.universe = universe
         self.capital = capital
         self.tokens: dict[int, tuple[str, str]] = {}
@@ -170,6 +204,61 @@ class CF:
         self._tasks: set[asyncio.Task] = set()
         self.errors = 0
         self._replay()
+        # 09:15–10:00 cash–futures dislocation paper book (same quotes; own log under data/pob).
+        # Lazy import: preopen_basis_watch reuses this module's fill/cost helpers.
+        # It is isolated: a failure in it is counted and printed, never raised into this watcher's feed.
+        # It takes the standalone runner's lock, so the two never write the same day's files.
+        self.pob = None
+        self._pob_lock = None
+        self.pob_errors = 0
+        self._pob_err_at = 0.0
+        if with_pob and os.environ.get("ATLAS_LITE_POB_WATCH", "1").strip().lower() not in ("0", "false", "no", "off"):
+            try:
+                import preopen_basis_watch as POBW  # noqa: WPS433
+
+                pob_out = out.parent / "pob" if out.name == "cf" else out / "pob"
+                pob_out.mkdir(parents=True, exist_ok=True)
+                self._pob_lock = POBW.acquire_lock(pob_out)
+                if self._pob_lock is None:
+                    print(f"{datetime.now(IST):%H:%M:%S} pre-open book: another watcher holds "
+                          f"{pob_out / POBW.LOCK_NAME}; not hosting it", flush=True)
+                else:
+                    self.pob = POBW.POB(universe, pob_out, day, capital, quotes=self.quotes, tokens=self.tokens,
+                                        ref_dir=out,
+                                        capital_busy=lambda: self.position is not None or self.busy)
+            except Exception as exc:  # noqa: BLE001 - the cash-futures book runs without it
+                self._pob_failed("start", exc)
+                self.pob = None
+
+    def _pob_failed(self, what: str, exc: BaseException) -> None:
+        self.pob_errors += 1
+        if time.time() - self._pob_err_at >= 60:  # at most one line a minute
+            self._pob_err_at = time.time()
+            print(f"{datetime.now(IST):%H:%M:%S} pre-open book {what} failed ({self.pob_errors} so far): {exc!r}",
+                  flush=True)
+
+    def pob_step(self, what: str, fn, *args):
+        """Run one pre-open-book step; its failure never reaches this watcher."""
+        if self.pob is None:
+            return None
+        try:
+            return fn(*args)
+        except Exception as exc:  # noqa: BLE001
+            self._pob_failed(what, exc)
+            return None
+
+    def pob_report(self) -> None:
+        """Live report until the book's final summary exists; the summary once 10:00 has passed with
+        nothing open. Nothing after that, so the live file never outlives the summary."""
+        pob = self.pob
+        if pob is None or pob.summary_path.is_file():
+            return
+        import preopen_basis_watch as POBW  # noqa: WPS433
+
+        # Final only with nothing open and nothing in flight: a probe still waiting for its fill would
+        # log after the summary, which is never rewritten.
+        final = hm_now() >= POBW.FORCE_EXIT and pob.position is None and not pob._tasks and not pob.busy
+        self.pob_step("report", pob.write_report, final)
 
     # ---- the event log: the only state that survives a restart ----
     def _log(self, ev: dict) -> None:
@@ -213,10 +302,13 @@ class CF:
         depth = tick.get("depth") or {}
         levels = {side: [(float(lv["price"]), int(lv["quantity"])) for lv in depth.get(side) or []
                          if lv.get("price") and (lv.get("quantity") or 0) > 0] for side in ("buy", "sell")}
+        now = time.time()
         self.quotes[key] = {"bid": tick.get("bid"), "ask": tick.get("ask"), "bids": levels["buy"],
-                            "asks": levels["sell"], "at": time.time()}
+                            "asks": levels["sell"], "at": now}
         self.ticks += 1
-        self.check(key[1], time.time())
+        self.check(key[1], now)
+        if self.pob is not None:
+            self.pob_step("tick", self.pob.on_host_tick, key[1], now)
 
     def pair(self, stock: str, now: float) -> tuple[dict, dict] | None:
         c, f = self.quotes.get(("cash", stock)), self.quotes.get(("fut", stock))
@@ -245,7 +337,8 @@ class CF:
 
     def check(self, stock: str, now: float) -> None:
         p = self.pair(stock, now)
-        if p is None:
+        if p is None:  # no fresh pair: an unconfirmed sighting cannot be confirmed across the gap
+            self.first_seen.pop(stock, None)
             return
         c, f = p
         cash_mid = (c["bid"] + c["ask"]) / 2
@@ -258,14 +351,20 @@ class CF:
             return
         if base is None or not (ENTRY_FROM <= hm <= ENTRY_UNTIL):
             return
-        entry_spread = (f["bid"] - c["ask"]) / cash_mid * 100
+        u = self.universe[stock]
+        lot = u["lot"]
+        # Price a full lot by walking the shown book (not top-of-book alone).
+        walked = full_lot_entry(c.get("asks") or [], f.get("bids") or [], lot)
+        if walked is None:
+            self.first_seen.pop(stock, None)
+            return
+        cash_vwap, cash_lim, fut_vwap, fut_lim = walked
+        entry_spread = (fut_vwap - cash_vwap) / cash_mid * 100
         dev = entry_spread - base
         if dev <= ENTRY_PCT:
             self.first_seen.pop(stock, None)
             return
-        u = self.universe[stock]
-        lot = u["lot"]
-        est_net = dev / 100 * cash_mid * lot - round_trip_cost(c["ask"], f["bid"], lot)
+        est_net = dev / 100 * cash_mid * lot - round_trip_cost(cash_vwap, fut_vwap, lot)
         if est_net < MIN_NET:
             self.first_seen.pop(stock, None)
             return
@@ -276,7 +375,9 @@ class CF:
         sig = {"event": "signal", "stock": stock, "entry_spread_pct": round(entry_spread, 4),
                "baseline_pct": round(base, 4), "dev_pct": round(dev, 4), "est_net": round(est_net, 2),
                "lot": lot, "lot_value": round(lot_value), "fits_capital": fits,
-               "cash_ask": c["ask"], "fut_bid": f["bid"]}
+               "cash_ask": cash_vwap, "fut_bid": fut_vwap,
+               "cash_limit": cash_lim, "fut_limit": fut_lim,
+               "top_cash_ask": c["ask"], "top_fut_bid": f["bid"]}
         first = self.first_seen.get(stock)
         if first is None or now - first > CONFIRM_MAX_S:  # each check() is its own quote update
             # First sighting: wait for the next update. Logged and probed once a stock a minute.
@@ -284,18 +385,20 @@ class CF:
             if now - self.last_first_log.get(stock, 0.0) >= 60:
                 self.last_first_log[stock] = now
                 self._log({**sig, "confirmed": False, "traded": False, "skip_reason": "unconfirmed"})
-                self._probe(stock, c["ask"], f["bid"], confirmed=False)
+                self._probe(stock, cash_lim, fut_lim, confirmed=False)
             return
         del self.first_seen[stock]
         self.last_signal[stock] = now
+        pob_open = self.pob is not None and (self.pob.position is not None or self.pob.busy)
         skip_reason = ("capital" if not fits else "position_open" if self.position is not None
+                       else "preopen_position_open" if pob_open  # one capital pool for both books
                        else "order_in_flight" if self.busy else None)
         traded = skip_reason is None
         self._log({**sig, "confirmed": True, "traded": traded, "skip_reason": skip_reason})
         if traded:  # the entry logs its own fill as the probe, so the two always agree
-            self._spawn(self.enter(stock, c["ask"], f["bid"], base, est_net))
+            self._spawn(self.enter(stock, cash_lim, fut_lim, base, est_net))
         else:
-            self._probe(stock, c["ask"], f["bid"], confirmed=True)
+            self._probe(stock, cash_lim, fut_lim, confirmed=True)
 
     def manage_position(self, hm: str) -> None:
         """Exit the open position at 15:15, or when its spread is back at the entry baseline. Uses the last
@@ -309,10 +412,11 @@ class CF:
             self._spawn(self.exit(reason="time"))
             return
         c, f = self.quotes.get(("cash", pos["stock"])), self.quotes.get(("fut", pos["stock"]))
-        if not c or not f or not c.get("bid") or not c.get("ask") or not f.get("ask"):
+        if not c or not f:
             return
-        cash_mid = (c["bid"] + c["ask"]) / 2
-        if (f["ask"] - c["bid"]) / cash_mid * 100 <= pos["baseline"]:
+        # Full lot, as the exit fills: a top-of-book reversion a lot cannot get is not an exit.
+        spread = full_lot_exit_spread(c, f, int(pos["lot"]))
+        if spread is not None and spread <= pos["baseline"]:
             self._spawn(self.exit(reason="reverted"))
 
     # ---- paper execution ----
@@ -464,6 +568,7 @@ class CF:
         return {
             "day": self.day, "final": final, "updated_at": datetime.now(IST).isoformat(timespec="seconds"),
             "stocks": len(self.universe), "ticks": self.ticks, "errors": self.errors,
+            "preopen_book_errors": self.pob_errors,
             "rules": {"entry_pct": ENTRY_PCT, "min_net": MIN_NET, "latency_ms": LATENCY_MS, "capital": self.capital,
                       "confirm_max_s": CONFIRM_MAX_S},
             "unconfirmed_sightings": sum(1 for e in ev if e.get("event") == "signal" and e.get("confirmed") is False),
@@ -512,8 +617,11 @@ async def session(cf: CF, end: str) -> None:
                 for tick in parse_binary_ticks(msg):
                     cf.on_tick(tick)
             cf.manage_position(hm_now())  # every pass: a quiet stock still exits on reversion or at 15:15
+            if cf.pob is not None:
+                cf.pob_step("exit check", cf.pob.manage_position, hm_now())
             if time.time() - cf._live_at >= 60:
                 cf.write_report(final=False)
+                cf.pob_report()
 
 
 def acquire_lock(out: Path):
@@ -538,7 +646,7 @@ def finalize_missing(out: Path, end: str) -> None:
         day = log.stem.split("-", 1)[1]
         if (out / f"summary-{day}.json").is_file() or day > today or (day == today and now_hm < end):
             continue
-        cf = CF({}, out, day)
+        cf = CF({}, out, day, with_pob=False)  # the pre-open book recovers its own days
         if cf.position is not None:
             cf._log({"event": "close", "stock": cf.position["stock"], "reason": "no_final_report", "pnl": None})
             cf.position = None
@@ -575,8 +683,14 @@ async def run_day(args: argparse.Namespace, out: Path) -> str:
     today = datetime.now(IST).date()
     cf = CF(load_universe(ROOT / "data", today), out, today.isoformat(), args.capital)
     cf.write_report(final=False)
+    if cf.pob is not None:
+        import preopen_basis_watch as POBW  # noqa: WPS433
+
+        cf.pob_step("recovery", POBW.finalize_missing, cf.pob.live_path.parent)
+        cf.pob_report()
     print(f"{today} : {len(cf.universe)} F&O stocks (cash + near-month future) until {args.end}"
-          + (f"; resumed open position in {cf.position['stock']}" if cf.position else ""), flush=True)
+          + (f"; resumed open position in {cf.position['stock']}" if cf.position else "")
+          + ("; preopen-basis research on" if cf.pob is not None else ""), flush=True)
     backoff = 5.0
     while hm_now() < args.end:
         started = time.time()
@@ -593,6 +707,18 @@ async def run_day(args: argparse.Namespace, out: Path) -> str:
         for t in pending:
             t.cancel()
         await asyncio.gather(*pending, return_exceptions=True)  # stopped before the close below
+    if cf.pob is not None:
+        try:
+            await cf.pob.drain()
+        except Exception as exc:  # noqa: BLE001
+            cf._pob_failed("drain", exc)
+        if cf.pob.position is not None:
+            cf.pob_step("close", cf.pob.close_now, "session_end")
+        # Final pre-open report at the cash session end if the 10:00 summary was not written yet.
+        if not cf.pob.summary_path.is_file():
+            rep_pob = cf.pob_step("final report", cf.pob.write_report, True)
+            if rep_pob is not None:
+                print(json.dumps(rep_pob, indent=2), flush=True)
     if cf.position is not None:  # not exited in time: close at the last known books
         cf.close_now("session_end")
     print(json.dumps(cf.write_report(final=True), indent=2), flush=True)
