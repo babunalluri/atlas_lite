@@ -2520,7 +2520,7 @@ def test_paper_agent_fee_floor_blocks_micro_exit(tmp_path: Path) -> None:
     assert closed["pnl"] is not None and closed["pnl"] >= 140.0
 
 
-def test_paper_agent_short_stop_holds_to_square_off(tmp_path: Path) -> None:
+def test_paper_agent_short_stop_holds_to_square_off(tmp_path: Path, monkeypatch) -> None:
     """Short profile: 20% stop, no target/time exit — only stop or 15:14."""
 
     class _Book:
@@ -2765,7 +2765,7 @@ def test_paper_agent_scalper_v2_20_10_30(monkeypatch, tmp_path: Path) -> None:
     assert hit is not None and hit["reason"] == "target"
 
 
-def test_paper_agent_short_rejects_agent_exit(tmp_path: Path) -> None:
+def test_paper_agent_short_rejects_agent_exit(tmp_path: Path, monkeypatch) -> None:
     from atlas_lite.kite_orders import transaction_for_close
 
     assert transaction_for_close("short") == "BUY"
@@ -3020,3 +3020,64 @@ def test_agent_block_log_persists_shadows(tmp_path: Path) -> None:
     closed = restored.on_marks(now + timedelta(minutes=1), marks={sym: 111.0})
     assert len(closed) == 1
     assert AgentBlockLog(path).open_count() == 0
+
+
+class _QuoteBook:
+    """Option quotes with bid/ask around a last price."""
+
+    def __init__(self, px: float, spread: float = 0.5, quoted: bool = True) -> None:
+        self.px, self.spread, self.quoted = px, spread, quoted
+
+    def get(self, symbol: str):
+        row = {"last_price": self.px}
+        if self.quoted:
+            row.update({"bid": self.px - self.spread, "ask": self.px + self.spread})
+        return row
+
+
+def _open_long(bot, book, now):
+    bot.propose_entry(side="ce", style="long", reason="test", spot=22600.0, now=now)
+    return bot.on_frame(now=now + timedelta(seconds=5), feed={}, book=book, ce_symbol="NFO:XCE",
+                        pe_symbol="NFO:XPE", atm=22600, allow_new_entries=True, spot=22600.0)
+
+
+def test_paper_agent_short_switched_off_after_proposal_does_not_open(tmp_path: Path, monkeypatch) -> None:
+    bot = PaperAgent(path=tmp_path / "paper_agent.jsonl", lot_size=65)
+    now = datetime(2026, 9, 29, 11, 0, tzinfo=IST)
+    assert bot.propose_entry(side="pe", style="short", reason="trend_short", spot=22600.0, now=now)["ok"]
+    monkeypatch.setenv("ATLAS_LITE_AGENT_ALLOW_SHORT", "0")  # the one shorts switch, turned off in between
+    got = bot.on_frame(now=now + timedelta(seconds=5), feed={}, book=_QuoteBook(100.0), ce_symbol="NFO:XCE",
+                       pe_symbol="NFO:XPE", atm=22600, allow_new_entries=True, spot=22600.0)
+    assert got is None and bot.position is None and bot.last_reject == "shorts_disabled"
+    assert bot.propose_entry(side="pe", style="short", reason="again", spot=22600.0, now=now)["rejected"] == "shorts_disabled"
+
+
+def test_paper_agent_long_pays_the_ask_and_sells_at_the_bid(tmp_path: Path) -> None:
+    bot = PaperAgent(path=tmp_path / "paper_agent.jsonl", lot_size=65)
+    now = datetime(2026, 9, 29, 11, 0, tzinfo=IST)
+    book = _QuoteBook(100.0)
+    opened = _open_long(bot, book, now)
+    assert opened and opened["entry"] == 100.5 and bot.position.entry == 100.5  # the ask, not 100.0
+    book.px = 200.0  # far past any target
+    closed = bot.on_frame(now=now + timedelta(minutes=2), feed={}, book=book, ce_symbol="NFO:XCE",
+                          pe_symbol="NFO:XPE", atm=22600, allow_new_entries=True, spot=22600.0)
+    assert closed and closed["event"] == "close" and closed["exit"] == 199.5  # the bid, not 200.0
+    assert closed["pnl_gross"] == pytest.approx((199.5 - 100.5) * 65)
+
+
+def test_paper_agent_without_bid_ask_keeps_the_last_price(tmp_path: Path) -> None:
+    bot = PaperAgent(path=tmp_path / "paper_agent.jsonl", lot_size=65)
+    now = datetime(2026, 9, 29, 11, 0, tzinfo=IST)
+    opened = _open_long(bot, _QuoteBook(100.0, quoted=False), now)
+    assert opened and opened["entry"] == 100.0
+
+
+def test_paper_agent_close_records_the_trigger_price_and_the_fill(tmp_path: Path) -> None:
+    bot = PaperAgent(path=tmp_path / "paper_agent.jsonl", lot_size=65)
+    now = datetime(2026, 9, 29, 11, 0, tzinfo=IST)
+    book = _QuoteBook(100.0)
+    _open_long(bot, book, now)
+    book.px = 200.0
+    closed = bot.on_frame(now=now + timedelta(minutes=2), feed={}, book=book, ce_symbol="NFO:XCE",
+                          pe_symbol="NFO:XPE", atm=22600, allow_new_entries=True, spot=22600.0)
+    assert closed["trigger_px"] == 200.0 and closed["exit"] == 199.5

@@ -30,6 +30,9 @@ services:
       ATLAS_LITE_PAPER_SHORT_STR: ${ATLAS_LITE_PAPER_SHORT_STR:-0}
       ATLAS_LITE_PAPER_THETA_CLIFF: ${ATLAS_LITE_PAPER_THETA_CLIFF:-0}
       ATLAS_LITE_PAPER_ICT: ${ATLAS_LITE_PAPER_ICT:-0}
+      # Retired 2026-11-02: shadow -₹2,450 over 42 trades (all from morning shorts); its side choice
+      # never beat random. Ledger and model kept. Off unless the host sets 1.
+      ATLAS_LITE_PAPER_AI_AGENT: ${ATLAS_LITE_PAPER_AI_AGENT:-0}
       # Agent entry knobs (looser week defaults in code; override here to tighten).
       ATLAS_LITE_AGENT_MORNING_MIN_SCORE: ${ATLAS_LITE_AGENT_MORNING_MIN_SCORE:-3}
       ATLAS_LITE_AGENT_MORNING_SCORE_UNTIL: ${ATLAS_LITE_AGENT_MORNING_SCORE_UNTIL:-10:30}

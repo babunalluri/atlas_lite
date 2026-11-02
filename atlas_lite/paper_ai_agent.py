@@ -56,7 +56,8 @@ APPROVAL_NAME = "ai_agent_approved.txt"
 
 
 def paper_ai_agent_enabled() -> bool:
-    raw = os.environ.get("ATLAS_LITE_PAPER_AI_AGENT", "1").strip().lower()
+    """Retired 2026-11-02: off unless ATLAS_LITE_PAPER_AI_AGENT=1 (the compose default is 0 too)."""
+    raw = os.environ.get("ATLAS_LITE_PAPER_AI_AGENT", "0").strip().lower()
     return raw in ("1", "true", "yes")
 
 

@@ -26,7 +26,7 @@ from atlas_lite.kite_orders import (
     transaction_for_open,
 )
 from atlas_lite.log_util import get_logger, ist_now
-from atlas_lite.metrics import quote_ltp
+from atlas_lite.metrics import quote_ask, quote_bid, quote_ltp
 from atlas_lite.minute_bars import hm_ge, hm_le
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -195,6 +195,16 @@ def agent_scalper_v2_enabled() -> bool:
     """Long book uses +20%/−10%/30m, no trail/agent exit (env ATLAS_LITE_AGENT_SCALPER_V2)."""
     raw = str(os.environ.get("ATLAS_LITE_AGENT_SCALPER_V2", "0") or "0").strip().lower()
     return raw in ("1", "true", "yes", "on")
+
+
+def paper_fill(book: Any, symbol: str, buying: bool) -> float | None:
+    """Executable paper price: the ask when buying, the bid when selling; None without that quote
+    (the caller keeps the last price). Live orders use the broker's fill instead."""
+    if book is None or not symbol:
+        return None
+    row = book.get(symbol)
+    px = quote_ask(row) if buying else quote_bid(row)
+    return float(px) if px and px > 0 else None
 
 
 def agent_min_exit_net() -> float:
@@ -389,6 +399,7 @@ class PendingIntent:
     spot: float | None
     reason: str
     want_exit: bool = False
+    live: bool = False  # the live-orders mode when proposed; an entry never crosses into another mode
 
 
 @dataclass
@@ -1872,6 +1883,7 @@ class PaperAgent:
             spot=_f(spot),
             reason=(reason or "")[:300],
             want_exit=False,
+            live=self.live_orders_enabled,
         )
         self.last_reject = None
         self.last_reject_thesis_key = None
@@ -2259,10 +2271,24 @@ class PaperAgent:
             return None
         qty = int(self.lots) * int(self.lot_size)
         style = intent.style
+        from atlas_lite.agent_scorecard import agent_shorts_enabled
+
+        if style == "short" and not agent_shorts_enabled():  # switched off after the intent was proposed
+            self.last_reject = "shorts_disabled"
+            self.pending = None
+            return None
         symbol = ce_sym if intent.side == "ce" else pe_sym
         live = self.live_orders_enabled
+        if live != intent.live:  # Live ticked (or unticked) after this intent was proposed: drop it
+            self.last_reject = "mode_changed"
+            self.pending = None
+            return None
         order_id = ""
         entry = round(float(px), 2)
+        if not live:  # paper: pay the ask (or receive the bid), as a real order would
+            fill = paper_fill(book, symbol, buying=style != "short")
+            if fill is not None:
+                entry = round(fill, 2)
         if live:
             assert self.order_client is not None
             if self.live_opens_blocked:
@@ -2910,6 +2936,11 @@ class PaperAgent:
         if exit_px is None or exit_px <= 0:
             marked = False
             exit_px = pos.entry
+        trigger_px = round(float(exit_px), 2)  # the price that fired the exit (last print)
+        if marked and not pos.live:  # paper: sell at the bid (buy back at the ask), not the last print
+            fill = paper_fill(book, pos.ce_symbol if pos.side == "ce" else pos.pe_symbol, buying=pos.style == "short")
+            if fill is not None:
+                exit_px = fill
         exit_px = round(float(exit_px), 2)
         close_order_id = ""
         pnl_source: str | None = None
@@ -3017,6 +3048,7 @@ class PaperAgent:
             "qty": pos.qty,
             "entry": pos.entry,
             "exit": exit_px,
+            "trigger_px": trigger_px,  # the exit reason is judged on this; P&L uses exit (bid/ask on paper)
             "target": pos.target,
             "stop": pos.stop,
             "trail_armed": pos.trail_armed,

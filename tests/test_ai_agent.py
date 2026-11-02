@@ -289,8 +289,10 @@ def test_reload_picks_up_the_after_close_fit(tmp_path) -> None:
     assert paper.last_action is None
 
 
-def test_default_is_on(monkeypatch) -> None:
+def test_default_is_off_since_retirement(monkeypatch) -> None:
     monkeypatch.delenv("ATLAS_LITE_PAPER_AI_AGENT", raising=False)
+    assert paper_ai_agent_enabled() is False
+    monkeypatch.setenv("ATLAS_LITE_PAPER_AI_AGENT", "1")
     assert paper_ai_agent_enabled() is True
 
 

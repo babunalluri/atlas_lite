@@ -6905,9 +6905,15 @@
       const canOpen = !!ai.can_open;
       const shadow = !!ai.shadow;
       const pos = ai.position;
+      if (!ai.enabled) {
+        line.textContent = "AI agent · retired 2 Nov (shadow −₹2,450, side choice no better than random) · ledger kept";
+        if (meta) meta.textContent = "";
+        if (btn) btn.hidden = true;
+        return;
+      }
+      if (btn) btn.hidden = false;
       let state = "off";
-      if (!ai.enabled) state = "disabled";
-      else if (canOpen) state = "paper ready";
+      if (canOpen) state = "paper ready";
       else if (promoted && !approved) state = "promoted · needs approval (shadow only)";
       else if (!promoted) state = "not promoted (shadow only)";
       let posText = "FLAT";

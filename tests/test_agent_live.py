@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -1254,3 +1254,17 @@ def test_restore_after_partial_keeps_remain_qty(tmp_path, monkeypatch) -> None:
     assert bot.position is not None
     assert bot.position.qty == 35
     assert bot.day_pnl == 200.0
+
+
+def test_a_paper_intent_never_becomes_a_live_order(tmp_path, monkeypatch) -> None:
+    """Proposed in paper mode, Live ticked before it opens: dropped, no order sent."""
+    orders = FakeOrders()
+    bot, quotes, ce, pe = _live_bot(tmp_path, monkeypatch, orders)
+    bot.live_flag.set_enabled(False, source="test")
+    now = _stamp("2026-10-21", "10:00")
+    assert bot.propose_entry(side="ce", style="long", reason="paper idea", spot=23000.0, now=now)["ok"]
+    bot.live_flag.set_enabled(True, source="test")  # the user ticks Live within the intent's 120 s
+    got = bot.on_frame(now=now + timedelta(seconds=5), feed={}, book=quotes, ce_symbol=ce, pe_symbol=pe,
+                       atm=23000, allow_new_entries=True, spot=23000.0)
+    assert got is None and bot.position is None and bot.last_reject == "mode_changed"
+    assert orders.net_qty == 0

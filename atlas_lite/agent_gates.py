@@ -67,7 +67,8 @@ KNOWN_BOOKS = (
 # Retired after the 2026-10-30 paper review (or never past paper). Their flags stay off;
 # the gates list leaves them out. Gates can still be read or set by name.
 RETIRED_BOOKS = frozenset(
-    {"vwap_long", "short_straddle", "skew_fade", "long_iron_condor", "theta_cliff", "impulse_fade", "combo", "ict"}
+    {"vwap_long", "short_straddle", "skew_fade", "long_iron_condor", "theta_cliff", "impulse_fade", "combo", "ict",
+     "ai_agent"}
 )
 
 BOOK_ALIASES = {

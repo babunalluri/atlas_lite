@@ -254,6 +254,7 @@ RETIRED_PAPER_STRATEGIES = frozenset(
         "long_iron_condor",
         "nifty_vwap_long",
         "factor_paper",
+        "ai_agent",
     }
 )
 
