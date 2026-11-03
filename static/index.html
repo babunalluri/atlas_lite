@@ -7023,7 +7023,6 @@
       const minNet = arb.min_net != null ? ` · paper trades need est. net ≥ ₹${arb.min_net}` : "";
       const attemptUntil = arb.attempt_until || "15:15";
       meta.textContent = `NSE vs BSE gaps · ${arb.day} · ${arb.final ? "final" : "live, updated " + when}${minNet} · attempts until ${attemptUntil}`;
-      renderArbLiveFromReport(arb.live);
       const rows = ["small", "mid", "large", "all"].filter((g) => arb[g]).map((g) => {
         const r = arb[g];
         const block = conf
@@ -7326,6 +7325,15 @@
         : `Arb live: off (paper only)${stop}`;
     }
 
+    // The checkbox follows /api/arb/live (this host's switch and today's flag), not the day's report:
+    // a report written before the live path existed, or not yet written before 09:15, has no live block.
+    function loadArbLive() {
+      fetch("/api/arb/live")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => { if (d) renderArbLiveFromReport({ flag: d.live, day_state: d.day_state }); })
+        .catch(() => {});
+    }
+
     async function setArbLive(enabled) {
       const url = new URL("/api/arb/live", window.location.origin);
       url.searchParams.set("enabled", enabled ? "true" : "false");
@@ -7338,7 +7346,7 @@
       if (!resp.ok || data.ok === false) {
         throw new Error(data.detail || data.error || `HTTP ${resp.status}`);
       }
-      renderArbLiveFromReport({ flag: data.live, day_state: (arbLast && arbLast.live && arbLast.live.day_state) || {} });
+      loadArbLive();
     }
 
     document.getElementById("arbLiveToggle")?.addEventListener("change", async (ev) => {
@@ -7402,6 +7410,7 @@
           .then(renderArb)
           .catch(() => renderArb(null))
           .finally(loadArbTrades);
+        loadArbLive();
         fetch("/api/pob")
           .then((r) => (r.ok ? r.json() : null))
           .then(renderPob)
