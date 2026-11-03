@@ -489,6 +489,54 @@ async def api_agent_live(
     return {"ok": True, "live": live}
 
 
+def _arb_live_flag():
+    from atlas_lite.arb_live import LIVE_FLAG_NAME, ArbLiveFlag
+
+    return ArbLiveFlag(DATA_DIR / LIVE_FLAG_NAME)
+
+
+@app.get("/api/arb/live")
+async def api_arb_live_get() -> dict[str, Any]:
+    """Arb live gate + today's day-stop state (file under data/)."""
+
+    def read() -> dict[str, Any]:
+        from atlas_lite.arb_live import ArbLiveDayState, day_loss_stop_rs
+
+        flag = _arb_live_flag().snapshot()
+        day = _arb_latest_day() or datetime_today()
+        state_path = DATA_DIR / "arb" / f"live-state-{day}.json"
+        state = ArbLiveDayState(state_path, day=day, stop_rs=day_loss_stop_rs()).snapshot()
+        return {"ok": True, "live": flag, "day_state": state}
+
+    return await asyncio.to_thread(read)
+
+
+@app.post("/api/arb/live")
+async def api_arb_live_set(
+    request: Request,
+    enabled: bool = Query(..., description="true = real Kite IOC orders for NSE–BSE arb"),
+) -> dict[str, Any]:
+    """Toggle arb live orders. Sign-in required to enable; disable always allowed."""
+    if enabled:
+        _ui_session_required(request)
+
+    def write() -> dict[str, Any]:
+        return _arb_live_flag().set_enabled(enabled, source="api")
+
+    try:
+        live = await asyncio.to_thread(write)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "live": live}
+
+
+def datetime_today() -> str:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    return datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d")
+
+
 @app.get("/api/agent/macro")
 async def api_agent_macro() -> dict[str, Any]:
     """Timestamped macro/sentiment snapshot used by the agent."""

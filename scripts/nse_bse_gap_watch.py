@@ -2,7 +2,10 @@
        [--research-nets 1,100,200,300,1000] [--days 5] [--until YYYY-MM-DD] [--start 09:15] [--end 15:30]
 
 Watch NSE vs BSE best bid/ask for liquid stocks and record every moment one exchange's
-bid is above the other's ask. Read-only: never places an order.
+bid is above the other's ask. Paper tracks always run. Real orders only when both
+ATLAS_LITE_ARB_LIVE_ALLOWED=1 and data/arb_live.json enabled; then confirmed main-track
+(₹500) crossings fire LIMIT IOC buy+sell (300 ms path). Day stop: no new live entries
+once realized live P&L ≤ −ATLAS_LITE_ARB_LIVE_DAY_STOP (default ₹2,000).
 
 Opens its own Kite websocket in full mode (best bid/ask with quantities; the engine's
 ticker uses quote mode for stocks, which has no depth). Kite allows 3 websocket
@@ -67,8 +70,23 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from atlas_lite.agent_gates import _is_nse_trading_day  # noqa: E402
+from atlas_lite.arb_live import (  # noqa: E402
+    ATTEMPT_UNTIL,
+    LIVE_FLAG_NAME,
+    LIVE_FLAT_BY,
+    LIVE_LATENCY_MS,
+    LIVE_ORDER_TAG,
+    ArbLiveDayState,
+    ArbLiveFlag,
+    day_loss_stop_rs,
+    live_after_hm,
+    live_until_hm,
+    within_attempt_hours,
+    within_live_window,
+)
 from atlas_lite.config import load_settings  # noqa: E402
 from atlas_lite.kite_charges import order_charges as kite_order_charges  # noqa: E402
+from atlas_lite.kite_orders import KiteOrderClient, KiteOrderError  # noqa: E402
 from atlas_lite.kite_ws import KITE_WS_URL, WS_MODE_FULL, parse_binary_ticks  # noqa: E402
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -85,6 +103,9 @@ MAX_NOTIONAL = 100_000.0
 PAPER_COOLDOWN_S = 2.0
 MIN_PAPER_NET = 500.0  # main track: estimated net after costs a crossing needs (--min-net)
 RESEARCH_NETS: tuple[float, ...] = (1.0, 100.0, 200.0, 300.0, 1000.0)  # research tracks (--research-nets)
+# Audit B: flatten retries with backoff; stop and flag for manual after max attempts.
+FLATTEN_BACKOFF_S = (5.0, 15.0, 60.0, 60.0, 60.0)
+FLATTEN_MAX_ATTEMPTS = 5
 
 
 def paper_tracks() -> tuple[float, ...]:
@@ -116,26 +137,65 @@ def intraday_cost(buy_px: float, sell_px: float, qty: int, buy_exch: str) -> flo
 GROUP_ORDER = ("small", "mid", "large")
 
 
-def load_universe(path: Path) -> dict[str, tuple[str, str]]:
-    """NSE symbol -> (group, BSE symbol)."""
+def load_universe(path: Path) -> dict[str, tuple[str, str, str]]:
+    """NSE symbol -> (group, BSE symbol, bse_group)."""
     if path.is_file():
         groups = json.loads(path.read_text(encoding="utf-8"))
-        return {e["nse"]: (g, e["bse"]) for g, entries in groups.items() for e in entries}
+        return {
+            e["nse"]: (g, e["bse"], str(e.get("bse_group") or ""))
+            for g, entries in groups.items() for e in entries
+        }
     print(f"WARNING: {path} not found: watching only {len(STOCKS)} built-in large caps, no small or mid caps",
           flush=True)
-    return {s: ("large", s) for s in STOCKS}
+    return {s: ("large", s, "A") for s in STOCKS}
 
 
-def load_tokens(universe: dict[str, tuple[str, str]]) -> dict[int, tuple[str, str]]:
+def load_fo_underlyings(path: Path | None = None) -> set[str]:
+    """NSE equity symbols that have an NFO future — proxy for MIS short-sellable names."""
+    import re
+
+    fo: set[str] = set()
+    csv_path = path or (ROOT / "data" / "nfo_instruments.csv")
+    if not csv_path.is_file():
+        return fo
+    with csv_path.open(encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            if row.get("instrument_type") != "FUT":
+                continue
+            ts = str(row.get("tradingsymbol") or "")
+            m = re.match(r"^([A-Z0-9&-]+?)\d{2}[A-Z]{3}FUT$", ts)
+            if m:
+                fo.add(m.group(1))
+    return fo
+
+
+def round_trip_est_net(
+    buy_px: float, sell_px: float, qty: int, buy_exch: str, buy_q: dict, sell_q: dict,
+) -> float:
+    """Entry credit minus entry+exit charges and half-spread exit slip (finding #8)."""
+    sell_exch = "BSE" if buy_exch == "NSE" else "NSE"
+    entry_gross = (sell_px - buy_px) * qty
+    entry_cost = intraday_cost(buy_px, sell_px, qty, buy_exch)
+    exit_cost = order_charges([
+        (buy_exch, "sell", buy_px, qty),
+        (sell_exch, "buy", sell_px, qty),
+    ])
+    buy_spread = max(0.0, float(buy_q.get("ask") or buy_px) - float(buy_q.get("bid") or buy_px))
+    sell_spread = max(0.0, float(sell_q.get("ask") or sell_px) - float(sell_q.get("bid") or sell_px))
+    exit_slip = 0.5 * (buy_spread + sell_spread) * qty
+    return entry_gross - entry_cost - exit_cost - exit_slip
+
+
+def load_tokens(universe: dict[str, tuple]) -> dict[int, tuple[str, str]]:
     """instrument_token -> (exchange, NSE symbol) for universe stocks found on both exchanges."""
-    want = {"NSE": set(universe), "BSE": {bse for _, bse in universe.values()}}
+    want = {"NSE": set(universe), "BSE": {v[1] for v in universe.values()}}
     found: dict[str, dict[str, int]] = {"NSE": {}, "BSE": {}}
     for exch, name in (("NSE", "nse_instruments.csv"), ("BSE", "bse_instruments.csv")):
         with (ROOT / "data" / name).open(encoding="utf-8") as fh:
             for row in csv.DictReader(fh):
                 if row["exchange"] == exch and row["instrument_type"] == "EQ" and row["tradingsymbol"] in want[exch]:
                     found[exch][row["tradingsymbol"]] = int(row["instrument_token"])
-    both = [s for s, (_, bse) in universe.items() if s in found["NSE"] and bse in found["BSE"]]
+    both = [s for s, v in universe.items() if s in found["NSE"] and v[1] in found["BSE"]]
     return {**{found["NSE"][s]: ("NSE", s) for s in both}, **{found["BSE"][universe[s][1]]: ("BSE", s) for s in both}}
 
 
@@ -167,9 +227,22 @@ def tradable_qty(buy_q: dict, sell_q: dict) -> int:
 
 class Watch:
     def __init__(self, tokens: dict[int, tuple[str, str]], out: Path, day: str,
-                 universe: dict[str, tuple[str, str]] | None = None) -> None:
+                 universe: dict[str, tuple] | None = None,
+                 *, live_flag: ArbLiveFlag | None = None,
+                 order_client: KiteOrderClient | None = None,
+                 fo_underlyings: set[str] | None = None) -> None:
         self.tokens = tokens
-        self.groups = {s: g for s, (g, _) in (universe or {}).items()}
+        uni = universe or {}
+        self.groups = {s: v[0] for s, v in uni.items()}
+        # Quotes are keyed by NSE symbol even on BSE; orders need the real BSE tradingsymbol.
+        self.bse_sym = {s: v[1] for s, v in uni.items()}
+        self.bse_group = {s: (v[2] if len(v) > 2 else "") for s, v in uni.items()}
+        # Finding #6: live only on F&O names (MIS short-sellable); never BSE X-group.
+        self.fo_underlyings = fo_underlyings if fo_underlyings is not None else load_fo_underlyings()
+        self.live_shortable = {
+            s for s in uni
+            if s in self.fo_underlyings and str(self.bse_group.get(s) or "A").upper() != "X"
+        }
         self.quotes: dict[tuple[str, str], dict] = {}
         self.open_eps: dict[tuple[str, str], dict] = {}
         self.episodes: list[dict] = []
@@ -189,6 +262,7 @@ class Watch:
         self.paper_errors = 0
         self.cancelled_at_close = 0
         self.day = day
+        self.out = out
         self.live_path = out / f"live-{day}.json"
         self._live_at = 0.0
         self.ticks_base = 0
@@ -199,7 +273,21 @@ class Watch:
         # Any start: no paper trade until every cooldown has passed (an attempt in flight at a crash
         # was never written, so its cooldown is not in the files).
         self._resume_until = time.time() + PAPER_COOLDOWN_S
+        self.live_flag = live_flag
+        self.order_client = order_client
+        self.live_orders: list[dict] = []
+        self.live_orders_path = out / f"live-orders-{day}.jsonl"
+        self.live_state = ArbLiveDayState(out / f"live-state-{day}.json", day=day)
+        self._live_busy = False
+        self._live_attempted: set[tuple] = set()  # (stock, direction, root) already live-tried
+        self.live_errors = 0
+        # Open live inventory: hedge (both legs) or residual (unwind failed). Flatten before LIVE_FLAT_BY.
+        self._live_open: list[dict] = []
+        self._live_open_path = out / f"live-open-{day}.json"
+        self._flatten_at = 0.0
         self._reload()
+        self._reload_live_orders()
+        self._reload_live_open()
 
     def _reload(self) -> None:
         """A restart mid-day picks up the day's crossings and paper trades already written, so the
@@ -284,6 +372,37 @@ class Watch:
                 continue
             self._paper_last[key] = max(self._paper_last.get(key, 0.0), at)
 
+    def _reload_live_orders(self) -> None:
+        if not self.live_orders_path.is_file():
+            return
+        for line in self.live_orders_path.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(row, dict):
+                continue
+            self.live_orders.append(row)
+            root = row.get("crossing_root") or row.get("crossing_start")
+            if row.get("stock") and row.get("direction") and root:
+                # Dedup live fires across restart using root + direction.
+                self._live_attempted.add((row["stock"], row["direction"], str(root)))
+
+    def _reload_live_open(self) -> None:
+        if not self._live_open_path.is_file():
+            return
+        try:
+            raw = json.loads(self._live_open_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if isinstance(raw, list):
+            self._live_open = [x for x in raw if isinstance(x, dict)]
+
+    def _save_live_open(self) -> None:
+        tmp = self._live_open_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self._live_open, indent=2) + "\n", encoding="utf-8")
+        tmp.replace(self._live_open_path)
+
     def on_tick(self, tick: dict) -> None:
         key = self.tokens.get(int(tick.get("instrument_token") or 0))
         if key is None:
@@ -337,8 +456,12 @@ class Watch:
                     self._marked_at[k] = now
                     with self.path.open("a", encoding="utf-8") as fh:
                         fh.write(json.dumps({"event": "open", **self._serialized(ep)}) + "\n")
-                self.maybe_paper(stock, buy_exch, "NSE" if buy_exch == "BSE" else "BSE", buy_q, sell_q, now,
+                sell_exch = "NSE" if buy_exch == "BSE" else "BSE"
+                self.maybe_paper(stock, buy_exch, sell_exch, buy_q, sell_q, now,
                                  (stock, direction, ep["start"], ep["root"]), ticks=ep["ticks"])
+                self.maybe_live(stock, buy_exch, sell_exch, buy_q, sell_q, now,
+                                (stock, direction, ep["start"], ep["root"]), ticks=ep["ticks"])
+                self.maybe_flatten_live()
             elif gap > 0:
                 pass  # still crossed but no tradable size this moment: the crossing and any carry stay as is
             else:  # the gap closed: the crossing ends, and a carry from a restart no longer applies
@@ -357,6 +480,8 @@ class Watch:
         re-attempted against the same shares (a first fill would have taken them). crossing is
         (stock, direction, start, root). ticks: updates the crossing has been seen on; from 2, the
         confirmed attempts may fire too (each kind once per crossing)."""
+        if not within_attempt_hours():  # closing-session quotes are not tradable (15:15+)
+            return
         if now < self._resume_until:  # just restarted: an attempt lost in flight may still be cooling down
             return
         qty = tradable_qty(buy_q, sell_q)
@@ -389,11 +514,103 @@ class Watch:
                     self._tasks.add(task)
                     task.add_done_callback(self._paper_done)
 
+    def maybe_live(self, stock: str, buy_exch: str, sell_exch: str, buy_q: dict, sell_q: dict, now: float,
+                   crossing: tuple | None, ticks: int) -> None:
+        """Real orders: confirmed main-track, open window only, one in flight, day-loss stop."""
+        if ticks < 2 or crossing is None:
+            return
+        if not within_live_window():
+            return
+        if now < self._resume_until:
+            return
+        if self.live_flag is None or self.order_client is None or not self.live_flag.is_enabled():
+            return
+        if self.live_state.stopped or self.live_state.opens_blocked or self._live_busy or self._live_open:
+            return
+        # Finding #6: only F&O / short-sellable names.
+        if stock not in self.live_shortable:
+            return
+        qty = tradable_qty(buy_q, sell_q)
+        if qty < 1:
+            return
+        # Finding #8: ₹500 bar must clear round-trip (entry + exit charges/slip), not entry alone.
+        est_net = round_trip_est_net(
+            buy_q["ask"], sell_q["bid"], qty, buy_exch, buy_q, sell_q,
+        )
+        if est_net < MIN_PAPER_NET:
+            return
+        live_key = (stock, crossing[1], str(crossing[3]))
+        if live_key in self._live_attempted:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._live_attempted.add(live_key)
+        self._live_busy = True
+        task = loop.create_task(self.live_attempt(
+            stock, buy_exch, sell_exch, buy_q["ask"], sell_q["bid"], qty, est_net,
+            crossing[3], crossing_ticks=ticks, direction=crossing[1]))
+        self._tasks.add(task)
+        task.add_done_callback(self._live_done)
+
+    def maybe_flatten_live(self, *, force: bool = False) -> None:
+        """Exit open hedges when the cross is gone, or force-flat by LIVE_FLAT_BY / session end."""
+        if not self._live_open or self._live_busy or self.order_client is None:
+            return
+        force = force or hm_now() >= LIVE_FLAT_BY
+        pos = self._live_open[0]
+        if pos.get("flattening") or pos.get("manual_needed"):
+            return  # in flight, or audit B: stopped after max failures
+        attempts = int(pos.get("flatten_attempts") or 0)
+        if attempts >= FLATTEN_MAX_ATTEMPTS:
+            pos["manual_needed"] = True
+            self._save_live_open()
+            self.live_state.block_opens("flatten_max_attempts")
+            print(
+                f"{datetime.now(IST):%H:%M:%S} LIVE flatten MANUAL {pos.get('stock')} "
+                f"after {attempts} failures — no more auto retries",
+                flush=True,
+            )
+            return
+        if attempts > 0:
+            last_fail = float(pos.get("flatten_last_fail_at") or 0.0)
+            backoff = FLATTEN_BACKOFF_S[min(attempts - 1, len(FLATTEN_BACKOFF_S) - 1)]
+            if time.time() - last_fail < backoff:
+                return
+        stock = str(pos.get("stock") or "")
+        buy_exch = str(pos.get("buy_exchange") or "")
+        sell_exch = str(pos.get("sell_exchange") or "")
+        bq = self.quotes.get((buy_exch, stock))
+        sq = self.quotes.get((sell_exch, stock))
+        crossed = False
+        if bq and sq and bq.get("ask") and sq.get("bid"):
+            crossed = float(sq["bid"]) > float(bq["ask"])
+        if not (pos.get("kind") == "residual" or force or not crossed):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        pos["flattening"] = True
+        self._save_live_open()
+        self._live_busy = True
+        task = loop.create_task(self._flatten_open(pos, reason="force" if force else "gap_closed"))
+        self._tasks.add(task)
+        task.add_done_callback(self._live_done)
+
     def _paper_done(self, task: asyncio.Task) -> None:
         self._tasks.discard(task)
         if not task.cancelled() and task.exception() is not None:
             self.paper_errors += 1
             print(f"{datetime.now(IST):%H:%M:%S} paper attempt failed: {task.exception()!r}", flush=True)
+
+    def _live_done(self, task: asyncio.Task) -> None:
+        self._tasks.discard(task)
+        self._live_busy = False
+        if not task.cancelled() and task.exception() is not None:
+            self.live_errors += 1
+            print(f"{datetime.now(IST):%H:%M:%S} live attempt failed: {task.exception()!r}", flush=True)
 
     async def _quote_after(self, key: tuple[str, str], t_min: float) -> tuple[dict | None, bool]:
         """First quote update at or after t_min; (last quote, False) if none comes within NEXT_QUOTE_WAIT_S."""
@@ -466,6 +683,390 @@ class Watch:
                           "gross": round(gross, 2), "unwind_pnl": round(unwind_pnl, 2), "net": round(net, 2)})
         finally:
             self._paper_busy.discard((stock, lat, track) + ((True,) if confirmed else ()))
+
+    def _book_symbol(self, exch: str, stock: str) -> str:
+        if exch == "BSE":
+            return f"BSE:{self.bse_sym.get(stock, stock)}"
+        return f"NSE:{stock}"
+
+    async def _margin_ok(self, buy_sym: str, sell_sym: str, qty: int, buy_lim: float, sell_lim: float) -> tuple[bool, str]:
+        """Funds + basket margin must cover both legs. No 25% fallback fire (finding #5/#6)."""
+        assert self.order_client is not None
+        try:
+            available = await asyncio.to_thread(self.order_client.equity_available)
+        except KiteOrderError as exc:
+            return False, f"margins_unavailable:{exc}"
+        orders = [
+            {
+                "exchange": buy_sym.split(":", 1)[0],
+                "tradingsymbol": buy_sym.split(":", 1)[-1],
+                "transaction_type": "BUY",
+                "variety": "regular",
+                "product": "MIS",
+                "order_type": "LIMIT",
+                "quantity": qty,
+                "price": round(buy_lim, 2),
+            },
+            {
+                "exchange": sell_sym.split(":", 1)[0],
+                "tradingsymbol": sell_sym.split(":", 1)[-1],
+                "transaction_type": "SELL",
+                "variety": "regular",
+                "product": "MIS",
+                "order_type": "LIMIT",
+                "quantity": qty,
+                "price": round(sell_lim, 2),
+            },
+        ]
+        try:
+            required = await asyncio.to_thread(self.order_client.basket_margin_required, orders)
+        except KiteOrderError as exc:
+            # Finding #6: margin API error on a disallowed short must NOT fall through and fire.
+            return False, f"basket_margin_failed:{exc}"
+        if required <= 0:
+            return False, "basket_margin_zero"
+        if available < required:
+            return False, f"insufficient_funds:avail={available:.0f}:need={required:.0f}"
+        return True, f"ok:avail={available:.0f}:need={required:.0f}"
+
+    async def live_attempt(self, stock: str, buy_exch: str, sell_exch: str, buy_lim: float, sell_lim: float,
+                           qty: int, est_net: float, crossing_root: str | None,
+                           crossing_ticks: int | None = None, direction: str | None = None) -> None:
+        """LIMIT IOC buy+sell; imbalance market-unwind; matched hedge held until gap closes / flat-by."""
+        assert self.order_client is not None
+        seen = time.time()
+        # Finding #9: fire immediately (no artificial 300 ms sleep). Paper still models delay.
+        buy_sym = self._book_symbol(buy_exch, stock)
+        sell_sym = self._book_symbol(sell_exch, stock)
+        base = {
+            "event": "live",
+            "live": True,
+            "stock": stock,
+            "group": self.groups.get(stock, "large"),
+            "latency_ms": LIVE_LATENCY_MS,
+            "seen": datetime.fromtimestamp(seen, IST).isoformat(timespec="milliseconds"),
+            "direction": direction or f"buy {buy_exch} sell {sell_exch}",
+            "buy_exchange": buy_exch,
+            "sell_exchange": sell_exch,
+            "buy_symbol": buy_sym,
+            "sell_symbol": sell_sym,
+            "buy_limit": buy_lim,
+            "sell_limit": sell_lim,
+            "qty": qty,
+            "est_net": round(est_net, 2),
+            "track": MIN_PAPER_NET,
+            "crossing_root": crossing_root,
+            "confirmed": True,
+            "crossing_ticks": crossing_ticks,
+        }
+        if (self.live_state.stopped or self.live_state.opens_blocked
+                or not (self.live_flag and self.live_flag.is_enabled())
+                or not within_live_window()):
+            self._record_live({**base, "outcome": "skipped", "reason": "live_off_stopped_or_window",
+                               "bought": 0, "sold": 0, "net": None})
+            return
+        ok, margin_why = await self._margin_ok(buy_sym, sell_sym, qty, buy_lim, sell_lim)
+        if not ok:
+            self._record_live({**base, "outcome": "skipped", "reason": margin_why,
+                               "bought": 0, "sold": 0, "net": None})
+            print(f"{datetime.now(IST):%H:%M:%S} LIVE skip {stock}: {margin_why}", flush=True)
+            return
+
+        async def _ioc(sym: str, side: str, lim: float) -> dict:
+            try:
+                return await asyncio.to_thread(
+                    self.order_client.ioc_limit_fill,
+                    symbol=sym,
+                    transaction_type=side,
+                    qty=qty,
+                    price=lim,
+                    tag=LIVE_ORDER_TAG,
+                )
+            except KiteOrderError as exc:
+                return {"order_id": getattr(exc, "order_id", ""), "quantity": 0, "average_price": None,
+                        "status": "ERROR", "error": str(exc)}
+
+        buy_fill, sell_fill = await asyncio.gather(_ioc(buy_sym, "BUY", buy_lim), _ioc(sell_sym, "SELL", sell_lim))
+        bought = int(buy_fill.get("quantity") or 0)
+        sold = int(sell_fill.get("quantity") or 0)
+        buy_px = float(buy_fill["average_price"]) if bought and buy_fill.get("average_price") else buy_lim
+        sell_px = float(sell_fill["average_price"]) if sold and sell_fill.get("average_price") else sell_lim
+        fills: list[tuple[str, str, float, int]] = []
+        if bought:
+            fills.append((buy_exch, "buy", buy_px, bought))
+        if sold:
+            fills.append((sell_exch, "sell", sell_px, sold))
+        matched = min(bought, sold)
+        unwind_pnl = 0.0
+        unwind_orders: list[dict] = []
+        if bought != sold:
+            extra = abs(bought - sold)
+            try:
+                if bought > sold:
+                    uw = await asyncio.to_thread(
+                        self.order_client.market_fill,
+                        symbol=buy_sym, transaction_type="SELL", qty=extra, tag=LIVE_ORDER_TAG,
+                    )
+                    px = float(uw["average_price"])
+                    unwind_pnl = extra * (px - buy_px)
+                    fills.append((buy_exch, "sell", px, extra))
+                    unwind_orders.append(uw)
+                    bought = sold  # residual cleared
+                else:
+                    uw = await asyncio.to_thread(
+                        self.order_client.market_fill,
+                        symbol=sell_sym, transaction_type="BUY", qty=extra, tag=LIVE_ORDER_TAG,
+                    )
+                    px = float(uw["average_price"])
+                    unwind_pnl = extra * (sell_px - px)
+                    fills.append((sell_exch, "buy", px, extra))
+                    unwind_orders.append(uw)
+                    sold = bought
+            except KiteOrderError as exc:
+                # Finding #3: book adverse once, block opens, retry flatten without re-charging.
+                self.live_errors += 1
+                adverse = -abs(extra * max(buy_px, sell_px) * 0.01)  # 1% adverse placeholder until flat
+                state = self.live_state.note_trade(adverse, count=True)
+                self.live_state.block_opens(f"unwind_failed:{exc}")
+                residual = {
+                    "kind": "residual",
+                    "stock": stock,
+                    "buy_exchange": buy_exch,
+                    "sell_exchange": sell_exch,
+                    "buy_symbol": buy_sym,
+                    "sell_symbol": sell_sym,
+                    "buy_px": buy_px,
+                    "sell_px": sell_px,
+                    "bought": bought,
+                    "sold": sold,
+                    "qty": extra,
+                    "heavy": "buy" if bought > sold else "sell",
+                    "entry_fills": fills,
+                    "opened_at": base["seen"],
+                    "crossing_root": crossing_root,
+                    "adverse_booked": True,
+                    "flatten_attempts": 0,
+                }
+                self._live_open.append(residual)
+                self._save_live_open()
+                self._record_live({
+                    **base, "bought": bought, "sold": sold, "outcome": "unwind_failed",
+                    "buy_fill": buy_fill, "sell_fill": sell_fill, "error": str(exc),
+                    "gross": round(matched * (sell_px - buy_px), 2) if matched else 0.0,
+                    "unwind_pnl": None, "net": adverse, "day_state": state,
+                })
+                print(f"{datetime.now(IST):%H:%M:%S} LIVE UNWIND FAILED {stock}: {exc} adverse={adverse}", flush=True)
+                return
+        if not fills:
+            self._record_live({**base, "bought": 0, "sold": 0, "outcome": "none",
+                               "buy_fill": buy_fill, "sell_fill": sell_fill,
+                               "gross": 0.0, "unwind_pnl": 0.0, "net": None,
+                               "day_state": self.live_state.snapshot()})
+            return  # finding #9: zero-fill does not count as a trade
+        matched = min(bought, sold)
+        if matched > 0 and bought == sold:
+            # Finding #2: hold the hedge and exit when the gap closes (or LIVE_FLAT_BY).
+            pos = {
+                "kind": "hedge",
+                "stock": stock,
+                "buy_exchange": buy_exch,
+                "sell_exchange": sell_exch,
+                "buy_symbol": buy_sym,
+                "sell_symbol": sell_sym,
+                "buy_px": buy_px,
+                "sell_px": sell_px,
+                "qty": matched,
+                "entry_unwind_pnl": unwind_pnl,
+                "entry_charges": order_charges(fills),
+                "entry_fills": fills,
+                "opened_at": base["seen"],
+                "crossing_root": crossing_root,
+            }
+            self._live_open.append(pos)
+            self._save_live_open()
+            self._record_live({
+                **base, "bought": bought, "sold": sold, "outcome": "both_open",
+                "buy_fill": buy_fill, "sell_fill": sell_fill, "unwind_orders": unwind_orders,
+                "gross": round(matched * (sell_px - buy_px), 2), "unwind_pnl": round(unwind_pnl, 2),
+                "net": None, "open": True, "day_state": self.live_state.snapshot(),
+            })
+            print(f"{datetime.now(IST):%H:%M:%S} LIVE both_open {stock} qty={matched} hold until gap/flat", flush=True)
+            return
+        # Matched 0 after imbalance unwind only (pure one_leg cleaned up)
+        net = round(unwind_pnl - order_charges(fills), 2)
+        state = self.live_state.note_trade(net, count=True)
+        self._record_live({
+            **base, "bought": bought, "sold": sold, "outcome": "one_leg",
+            "buy_fill": buy_fill, "sell_fill": sell_fill, "unwind_orders": unwind_orders,
+            "gross": 0.0, "unwind_pnl": round(unwind_pnl, 2), "net": net, "day_state": state,
+        })
+        print(
+            f"{datetime.now(IST):%H:%M:%S} LIVE one_leg {stock} net={net} day_pnl={state['day_pnl']}"
+            f"{' STOPPED' if state['stopped'] else ''}",
+            flush=True,
+        )
+
+    async def _flatten_open(self, pos: dict, *, reason: str) -> None:
+        """Close a held hedge (both exchanges) or residual one-sided inventory."""
+        assert self.order_client is not None
+        stock = str(pos.get("stock") or "")
+        pos["flatten_attempts"] = int(pos.get("flatten_attempts") or 0) + 1
+        try:
+            if pos.get("kind") == "residual":
+                heavy = pos.get("heavy")
+                sym = str(pos["buy_symbol"] if heavy == "buy" else pos["sell_symbol"])
+                try:
+                    open_qty = await asyncio.to_thread(self.order_client.net_position_qty, sym)
+                except KiteOrderError as exc:
+                    pos["flattening"] = False
+                    pos["flatten_last_fail_at"] = time.time()
+                    self._save_live_open()
+                    self._record_live({
+                        "event": "live_flatten", "live": True, "stock": stock, "outcome": "flatten_deferred",
+                        "reason": reason, "error": f"position_check:{exc}",
+                        "day_state": self.live_state.snapshot(),
+                    })
+                    return
+                # Audit C: close only the actual open size (signed).
+                if heavy == "buy":
+                    qty = max(0, int(open_qty))
+                    if qty < 1:
+                        self._drop_open(pos)
+                        return
+                    uw = await asyncio.to_thread(
+                        self.order_client.market_fill,
+                        symbol=sym, transaction_type="SELL", qty=qty, tag=LIVE_ORDER_TAG,
+                    )
+                    px = float(uw["average_price"])
+                    net = qty * (px - float(pos["buy_px"])) - order_charges(
+                        [(str(pos["buy_exchange"]), "sell", px, qty)])
+                else:
+                    qty = max(0, -int(open_qty))  # short → positive shares to buy back
+                    if qty < 1:
+                        self._drop_open(pos)
+                        return
+                    uw = await asyncio.to_thread(
+                        self.order_client.market_fill,
+                        symbol=sym, transaction_type="BUY", qty=qty, tag=LIVE_ORDER_TAG,
+                    )
+                    px = float(uw["average_price"])
+                    net = qty * (float(pos["sell_px"]) - px) - order_charges(
+                        [(str(pos["sell_exchange"]), "buy", px, qty)])
+                state = self.live_state.note_trade(round(net, 2), count=True)
+                self._drop_open(pos)
+                self._record_live({
+                    "event": "live_flatten", "live": True, "stock": stock, "outcome": "residual_closed",
+                    "reason": reason, "net": round(net, 2), "day_state": state, "fill": uw, "qty": qty,
+                })
+                return
+            entry_qty = int(pos.get("qty") or 0)
+            buy_px, sell_px = float(pos["buy_px"]), float(pos["sell_px"])
+            buy_exch, sell_exch = str(pos["buy_exchange"]), str(pos["sell_exchange"])
+            buy_sym, sell_sym = str(pos["buy_symbol"]), str(pos["sell_symbol"])
+            # Finding #10 / audit C: size each exit to Kite's open qty; never exit a flat leg.
+            try:
+                buy_qty = await asyncio.to_thread(self.order_client.net_position_qty, buy_sym)
+                sell_qty = await asyncio.to_thread(self.order_client.net_position_qty, sell_sym)
+            except KiteOrderError as exc:
+                pos["flattening"] = False
+                pos["flatten_last_fail_at"] = time.time()
+                self._save_live_open()
+                self._record_live({
+                    "event": "live_flatten", "live": True, "stock": stock, "outcome": "flatten_deferred",
+                    "reason": reason, "error": f"position_check:{exc}",
+                    "day_state": self.live_state.snapshot(),
+                })
+                return
+            long_exit = max(0, int(buy_qty))   # shares to SELL on the buy exchange
+            short_exit = max(0, -int(sell_qty))  # shares to BUY on the sell exchange
+            if long_exit == 0 and short_exit == 0:
+                entry_gross = entry_qty * (sell_px - buy_px)
+                entry_ch = float(pos.get("entry_charges") or 0.0)
+                net = round(entry_gross + float(pos.get("entry_unwind_pnl") or 0.0) - entry_ch, 2)
+                state = self.live_state.note_trade(net, count=True)
+                self._drop_open(pos)
+                self._record_live({
+                    "event": "live_flatten", "live": True, "stock": stock, "outcome": "hedge_netted",
+                    "reason": reason, "net": net, "day_state": state,
+                    "buy_qty": buy_qty, "sell_qty": sell_qty,
+                })
+                print(f"{datetime.now(IST):%H:%M:%S} LIVE hedge_netted {stock} net={net} ({reason})", flush=True)
+                return
+            exit_tasks = []
+            if long_exit > 0:
+                exit_tasks.append(("sell_long", asyncio.to_thread(
+                    self.order_client.market_fill,
+                    symbol=buy_sym, transaction_type="SELL", qty=long_exit, tag=LIVE_ORDER_TAG,
+                )))
+            if short_exit > 0:
+                exit_tasks.append(("buy_short", asyncio.to_thread(
+                    self.order_client.market_fill,
+                    symbol=sell_sym, transaction_type="BUY", qty=short_exit, tag=LIVE_ORDER_TAG,
+                )))
+            results = await asyncio.gather(*(t for _, t in exit_tasks))
+            by_name = {name: res for (name, _), res in zip(exit_tasks, results)}
+            fills: list[tuple[str, str, float, int]] = [
+                (buy_exch, "buy", buy_px, entry_qty),
+                (sell_exch, "sell", sell_px, entry_qty),
+            ]
+            exit_sell_px = buy_px
+            exit_buy_px = sell_px
+            if "sell_long" in by_name:
+                exit_sell_px = float(by_name["sell_long"]["average_price"])
+                fills.append((buy_exch, "sell", exit_sell_px, long_exit))
+            if "buy_short" in by_name:
+                exit_buy_px = float(by_name["buy_short"]["average_price"])
+                fills.append((sell_exch, "buy", exit_buy_px, short_exit))
+            # P&L from closing whatever Kite still shows open (audit C).
+            net = round(
+                long_exit * (exit_sell_px - buy_px) + short_exit * (sell_px - exit_buy_px)
+                - order_charges(fills),
+                2,
+            )
+            state = self.live_state.note_trade(net, count=True)
+            self._drop_open(pos)
+            self._record_live({
+                "event": "live_flatten", "live": True, "stock": stock, "outcome": "hedge_closed",
+                "reason": reason, "net": net, "day_state": state,
+                "long_exit": long_exit, "short_exit": short_exit,
+                "buy_qty": buy_qty, "sell_qty": sell_qty,
+                "exit_sell": by_name.get("sell_long"), "exit_buy": by_name.get("buy_short"),
+            })
+            print(
+                f"{datetime.now(IST):%H:%M:%S} LIVE hedge_closed {stock} "
+                f"long_exit={long_exit} short_exit={short_exit} net={net} ({reason})",
+                flush=True,
+            )
+        except KiteOrderError as exc:
+            self.live_errors += 1
+            pos["flattening"] = False
+            pos["flatten_last_fail_at"] = time.time()
+            self._save_live_open()
+            # Finding #3: do not book another -1% on every failed retry.
+            if not pos.get("adverse_booked"):
+                adverse = -abs(float(pos.get("qty") or 1) * float(pos.get("buy_px") or pos.get("sell_px") or 0) * 0.01)
+                state = self.live_state.note_trade(adverse, count=True)
+                pos["adverse_booked"] = True
+                self._save_live_open()
+            else:
+                adverse = None
+                state = self.live_state.snapshot()
+            self.live_state.block_opens(f"flatten_failed:{exc}")
+            self._record_live({
+                "event": "live_flatten", "live": True, "stock": stock, "outcome": "flatten_failed",
+                "reason": reason, "error": str(exc), "net": adverse, "day_state": state,
+                "flatten_attempts": pos.get("flatten_attempts"),
+            })
+            print(f"{datetime.now(IST):%H:%M:%S} LIVE flatten FAILED {stock}: {exc}", flush=True)
+
+    def _drop_open(self, pos: dict) -> None:
+        self._live_open = [p for p in self._live_open if p is not pos and p != pos]
+        self._save_live_open()
+
+    def _record_live(self, rec: dict) -> None:
+        self.live_orders.append(rec)
+        with self.live_orders_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec) + "\n")
 
     def _record(self, rec: dict) -> None:
         self.paper.append(rec)
@@ -553,9 +1154,25 @@ class Watch:
                 }
             return out_b
 
+        live_recs = [x for x in self.live_orders if x.get("outcome") not in ("skipped",)]
+        live_block = {
+            "attempts": len(live_recs),
+            "both": sum(x.get("outcome") == "both" for x in live_recs),
+            "one_leg": sum(x.get("outcome") == "one_leg" for x in live_recs),
+            "partial": sum(x.get("outcome") == "partial" for x in live_recs),
+            "none": sum(x.get("outcome") == "none" for x in live_recs),
+            "unwind_failed": sum(x.get("outcome") == "unwind_failed" for x in live_recs),
+            "net": round(sum(float(x.get("net") or 0) for x in live_recs if x.get("net") is not None), 2),
+            "day_state": self.live_state.snapshot(),
+            "flag": self.live_flag.snapshot() if self.live_flag else {
+                "enabled": False, "allowed": False, "file_enabled": False,
+                "day_loss_stop": day_loss_stop_rs(), "latency_ms": LIVE_LATENCY_MS,
+            },
+            "errors": self.live_errors,
+        }
         out: dict = {"ticks": self.ticks_base + self.ticks, "quote_samples_since": self.samples_since, "paper_errors": self.paper_errors,
                      "paper_cancelled_at_close": self.cancelled_at_close, "min_net": MIN_PAPER_NET,
-                     "research_nets": sorted(RESEARCH_NETS)}
+                     "research_nets": sorted(RESEARCH_NETS), "live": live_block}
 
         def main_track(recs: list[dict]) -> list[dict]:
             return [x for x in recs if x.get("track", MIN_PAPER_NET) == MIN_PAPER_NET]
@@ -566,14 +1183,22 @@ class Watch:
 
         def kind(recs: list[dict], confirmed: bool) -> list[dict]:
             return [x for x in recs if bool(x.get("confirmed")) == confirmed]
-        present = set(self.groups.values()) or {"large"}
-        for g in [x for x in GROUP_ORDER if x in present]:  # small caps first
+        # Finding #7: always emit small/mid/large when the universe has that group (even 0 crossings).
+        present = {g for g in self.groups.values() if g} or {"large"}
+        for g in [x for x in GROUP_ORDER if x in present]:  # small caps first, mid included
             out[g] = block([e for e in self.episodes if e.get("group") == g], g)
             in_group = [x for x in self.paper if x.get("group") == g]  # reloaded rows may be partial
             out[g]["paper"] = paper_block(main_track(kind(in_group, False)))
             out[g]["paper_research"] = research(kind(in_group, False))
             out[g]["paper_confirmed"] = paper_block(main_track(kind(in_group, True)))
             out[g]["paper_research_confirmed"] = research(kind(in_group, True))
+            # Split tradable session vs closing-session artifacts for analysis.
+            def _before(recs: list[dict]) -> list[dict]:
+                return [x for x in recs if str(x.get("seen") or "")[11:16] < ATTEMPT_UNTIL]
+            out[g]["paper_before_1515"] = paper_block(main_track(kind(_before(in_group), False)))
+            out[g]["paper_confirmed_before_1515"] = paper_block(main_track(kind(_before(in_group), True)))
+        out["attempt_until"] = ATTEMPT_UNTIL
+        out["live_window"] = {"after": live_after_hm(), "until": live_until_hm(), "flat_by": LIVE_FLAT_BY}
         out["all"] = block(self.episodes, None)
         out["all"]["paper"] = paper_block(main_track(kind(self.paper, False)))
         out["all"]["paper_research"] = research(kind(self.paper, False))
@@ -598,12 +1223,16 @@ async def session(watch: Watch, end: str) -> None:
         print(f"{datetime.now(IST):%H:%M:%S} connected, {len(tokens)} instruments in full mode", flush=True)
         while hm_now() < end:
             try:
-                msg = await asyncio.wait_for(ws.recv(), timeout=5)
+                msg = await asyncio.wait_for(ws.recv(), timeout=1.0)
             except asyncio.TimeoutError:
-                continue
+                msg = None
             if isinstance(msg, bytes):
                 for tick in parse_binary_ticks(msg):
                     watch.on_tick(tick)
+            # Finding #7: flatten on a timer, not only when some stock crosses.
+            if time.time() - watch._flatten_at >= 1.0:
+                watch._flatten_at = time.time()
+                watch.maybe_flatten_live()
             if time.time() - watch._live_at >= 60:
                 watch.write_report(final=False)
 
@@ -712,10 +1341,25 @@ async def run_day(args: argparse.Namespace, out: Path, n: int) -> str:
         await asyncio.sleep(20)
     day = datetime.now(IST).strftime("%Y-%m-%d")
     universe = load_universe(Path(args.universe))
-    watch = Watch(load_tokens(universe), out, day, universe)
+    creds = Path(os.environ.get("KITE_CREDENTIALS_PATH") or (ROOT / "kite_credentials"))
+    # Flag beside the arb folder: data/arb_live.json when --out is data/arb.
+    live_flag = ArbLiveFlag(out.parent / LIVE_FLAG_NAME)
+    stale = live_flag.clear_if_stale()
+    if stale is not None:
+        print(f"{day}: cleared stale arb live flag from a prior day", flush=True)
+    order_client = KiteOrderClient(creds)
+    fo = load_fo_underlyings()
+    watch = Watch(
+        load_tokens(universe), out, day, universe,
+        live_flag=live_flag, order_client=order_client, fo_underlyings=fo,
+    )
     watch.write_report(final=False)  # a file exists from the first second, so a restart always resumes
+    live_snap = live_flag.snapshot()
     print(f"{day} (day {n}, last {args.until}): watching {len(watch.tokens) // 2} stocks on NSE and BSE until {args.end}; "
-          f"paper tracks ₹{', ₹'.join(f'{t:g}' for t in paper_tracks())}", flush=True)
+          f"paper tracks ₹{', ₹'.join(f'{t:g}' for t in paper_tracks())} (attempts until {ATTEMPT_UNTIL}); "
+          f"live={'ON' if live_snap['enabled'] else 'off'} "
+          f"{live_after_hm()}–{live_until_hm()} shortable={len(watch.live_shortable)} "
+          f"(allowed={live_snap['allowed']} stop=₹{day_loss_stop_rs():g})", flush=True)
     backoff = 5.0
     while hm_now() < args.end:
         try:
@@ -724,6 +1368,16 @@ async def run_day(args: argparse.Namespace, out: Path, n: int) -> str:
             print(f"{datetime.now(IST):%H:%M:%S} websocket: {exc}; retrying in {backoff:.0f}s", flush=True)
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 60.0)
+    # Finding #7: force-flatten after the session loop (which ends at --end, so the
+    # old `hm_now() < 15:30` guard never ran). Retry a few times; then cancel leftovers.
+    for _ in range(5):
+        if not watch._live_open:
+            break
+        watch.maybe_flatten_live(force=True)
+        if watch._tasks:
+            await asyncio.wait(set(watch._tasks), timeout=20)
+        else:
+            break
     if watch._tasks:  # let paper attempts in flight finish: worst case 2 x (600 ms + 2 s quote wait)
         _, pending = await asyncio.wait(set(watch._tasks), timeout=15)
         for task in pending:  # anything still running is dropped, not written after the final report
@@ -731,6 +1385,10 @@ async def run_day(args: argparse.Namespace, out: Path, n: int) -> str:
         watch.cancelled_at_close = len(pending)
     report = watch.write_report(final=True)
     print(json.dumps(report, indent=2), flush=True)
+    # Finding #4: live does not stay on overnight — file flag off at day end.
+    if watch.live_flag is not None and watch.live_flag.snapshot().get("file_enabled"):
+        watch.live_flag.set_enabled(False, source="day_end")
+        print(f"{day}: arb live auto-off at session end", flush=True)
     return day
 
 

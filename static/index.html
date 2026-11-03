@@ -2378,6 +2378,11 @@
       <div class="history-detail" id="cfMeta">Cash–futures (10:15–14:45): —</div>
       <div class="history-detail" id="pobMeta">Pre-open basis (09:15–10:00): —</div>
       <div class="history-detail" id="arbMeta">NSE vs BSE gaps: —</div>
+      <div class="history-detail" id="arbLiveLine">Arb live: —</div>
+      <label class="history-meta" for="arbLiveToggle" style="display:inline-flex;align-items:center;gap:6px;margin:0 0 0.4rem 0;" title="Real Kite IOC for confirmed ₹500 NSE–BSE arb — requires sign-in; day auto-off">
+        <input type="checkbox" id="arbLiveToggle" />
+        Live arb (₹500 confirmed, open window)
+      </label>
       <div class="history-table-wrap">
         <table class="history-table" id="arbTable">
           <thead>
@@ -7016,7 +7021,9 @@
       if (head) head.textContent = `Paper tries (${trackSel ? "₹" + trackSel + "+" : "main"}, ${lat}${conf ? ", confirmed" : ""})`;
       const when = String(arb.updated_at || "").slice(11, 16);
       const minNet = arb.min_net != null ? ` · paper trades need est. net ≥ ₹${arb.min_net}` : "";
-      meta.textContent = `NSE vs BSE gaps · ${arb.day} · ${arb.final ? "final" : "live, updated " + when}${minNet} · paper only, no orders`;
+      const attemptUntil = arb.attempt_until || "15:15";
+      meta.textContent = `NSE vs BSE gaps · ${arb.day} · ${arb.final ? "final" : "live, updated " + when}${minNet} · attempts until ${attemptUntil}`;
+      renderArbLiveFromReport(arb.live);
       const rows = ["small", "mid", "large", "all"].filter((g) => arb[g]).map((g) => {
         const r = arb[g];
         const block = conf
@@ -7293,6 +7300,62 @@
       }
       await loadAgentPanel();
     }
+
+    function renderArbLiveFromReport(liveBlock) {
+      const line = document.getElementById("arbLiveLine");
+      const toggle = document.getElementById("arbLiveToggle");
+      if (!line) return;
+      const flag = (liveBlock && liveBlock.flag) || {};
+      const day = (liveBlock && liveBlock.day_state) || {};
+      const allowed = !!flag.allowed;
+      const on = !!flag.enabled;
+      if (toggle && toggle !== document.activeElement) {
+        toggle.checked = on;
+        toggle.disabled = !allowed && !on;
+      }
+      if (!allowed) {
+        line.textContent = "Arb live: locked off on this host (ATLAS_LITE_ARB_LIVE_ALLOWED=0)";
+        return;
+      }
+      const win = `${flag.live_after || "09:15"}–${flag.live_until || "09:20"}`;
+      const stop = flag.day_loss_stop != null ? ` · day stop ₹${flag.day_loss_stop}` : "";
+      const pnl = day.day_pnl != null ? ` · day P&L ₹${day.day_pnl}` : "";
+      const killed = day.stopped ? " · STOPPED" : (day.opens_blocked ? " · opens blocked" : "");
+      line.textContent = on
+        ? `Arb live: ON · confirmed ₹500 IOC · window ${win}${stop}${pnl}${killed} · auto-off at session end`
+        : `Arb live: off (paper only)${stop}`;
+    }
+
+    async function setArbLive(enabled) {
+      const url = new URL("/api/arb/live", window.location.origin);
+      url.searchParams.set("enabled", enabled ? "true" : "false");
+      const resp = await fetch(url.pathname + "?" + url.searchParams.toString(), {
+        method: "POST",
+        credentials: "same-origin",
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (resp.status === 401) throw new Error("login_required");
+      if (!resp.ok || data.ok === false) {
+        throw new Error(data.detail || data.error || `HTTP ${resp.status}`);
+      }
+      renderArbLiveFromReport({ flag: data.live, day_state: (arbLast && arbLast.live && arbLast.live.day_state) || {} });
+    }
+
+    document.getElementById("arbLiveToggle")?.addEventListener("change", async (ev) => {
+      const box = ev.target;
+      const want = !!box.checked;
+      try {
+        await setArbLive(want);
+      } catch (err) {
+        box.checked = !want;
+        const line = document.getElementById("arbLiveLine");
+        if (line) {
+          line.textContent = String(err && err.message) === "login_required"
+            ? "Not signed in — required for Live arb"
+            : `Arb live toggle failed: ${err.message || err}`;
+        }
+      }
+    });
 
     async function loadAgentPanel() {
       const meta = document.getElementById("agentMeta");

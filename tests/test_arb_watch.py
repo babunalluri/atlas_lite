@@ -7,10 +7,18 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 import atlas_lite.main as main
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import nse_bse_gap_watch as W  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _allow_paper_attempts_after_hours(monkeypatch):
+    """ATTEMPT_UNTIL is 15:15; unit tests run on wall clock (often evenings)."""
+    monkeypatch.setattr(W, "within_attempt_hours", lambda: True)
 
 
 def test_api_arb_reports_nothing_until_the_watcher_writes(tmp_path, monkeypatch) -> None:
@@ -55,6 +63,7 @@ def _watch(tmp_path, monkeypatch):
     monkeypatch.setattr(W, "NEXT_QUOTE_WAIT_S", 0.3)
     monkeypatch.setattr(W, "MIN_PAPER_NET", 0.0)  # mechanics tests; the ₹500 rule has its own tests
     monkeypatch.setattr(W, "RESEARCH_NETS", ())  # one track: research tracks have their own test
+    monkeypatch.setattr(W, "within_attempt_hours", lambda: True)  # wall clock may be after 15:15
     universe = {"AAA": ("small", "AAA")}
     w = W.Watch({1: ("NSE", "AAA"), 2: ("BSE", "AAA")}, tmp_path, "2026-11-02", universe)
     w._resume_until = 0.0  # mechanics tests trade at once; the start cooldown has its own test
@@ -169,7 +178,7 @@ def test_a_failed_paper_attempt_is_logged_and_counted(tmp_path, monkeypatch, cap
 
 def test_missing_universe_warns(tmp_path, capsys) -> None:
     uni = W.load_universe(tmp_path / "missing.json")
-    assert set(g for g, _ in uni.values()) == {"large"} and "WARNING" in capsys.readouterr().out
+    assert set(v[0] for v in uni.values()) == {"large"} and "WARNING" in capsys.readouterr().out
 
 
 def test_api_arb_falls_back_to_live_when_the_summary_is_unreadable(tmp_path, monkeypatch) -> None:

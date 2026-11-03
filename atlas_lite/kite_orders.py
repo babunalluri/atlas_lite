@@ -28,6 +28,7 @@ DEFAULT_MARKET_PROTECTION = -1
 FILL_POLL_S = 0.25
 FILL_TIMEOUT_S = 8.0
 ORDER_TAG = "atlas_agent"
+ARB_ORDER_TAG = "atlas_arb"
 
 # Terminal Kite statuses only. Everything else (OPEN PENDING, CANCEL PENDING, …) is still working.
 KITE_ORDER_FINISHED = frozenset({"COMPLETE", "REJECTED", "CANCELLED", "CANCELED"})
@@ -242,8 +243,9 @@ class KiteOrderClient:
 
         Returns quantity (signed), average_price, realised, and raw row fields.
         """
-        _exchange, tradingsymbol = split_nfo_symbol(symbol)
+        exchange, tradingsymbol = split_nfo_symbol(symbol)
         product_u = str(product or DEFAULT_PRODUCT).upper()
+        exchange_u = exchange.upper()
         try:
             with self._client() as client:
                 resp = client.get("/portfolio/positions")
@@ -258,7 +260,12 @@ class KiteOrderClient:
                         continue
                     if str(row.get("tradingsymbol") or "").upper() != tradingsymbol:
                         continue
-                    if str(row.get("exchange") or "NFO").upper() not in ("NFO", ""):
+                    row_ex = str(row.get("exchange") or exchange_u).upper()
+                    # Match the requested exchange (NFO / NSE / BSE). Empty exchange on the
+                    # row is accepted only for NFO (legacy agent path).
+                    if row_ex and row_ex != exchange_u:
+                        continue
+                    if not row_ex and exchange_u != "NFO":
                         continue
                     row_product = str(row.get("product") or "").upper()
                     if row_product and row_product != product_u:
@@ -271,6 +278,7 @@ class KiteOrderClient:
                         "average_price": round(float(avg), 2) if avg is not None else None,
                         "realised": round(float(realised), 2) if realised is not None else None,
                         "tradingsymbol": tradingsymbol,
+                        "exchange": row_ex or exchange_u,
                         "product": row_product or product_u,
                         "raw": row,
                     }
@@ -340,6 +348,199 @@ class KiteOrderClient:
             "exchange": fill.get("exchange"),
             "tradingsymbol": fill.get("tradingsymbol"),
             "transaction_type": fill.get("transaction_type"),
+        }
+
+    def place_limit_ioc(
+        self,
+        *,
+        symbol: str,
+        transaction_type: str,
+        qty: int,
+        price: float,
+        product: str = DEFAULT_PRODUCT,
+        tag: str = ARB_ORDER_TAG,
+    ) -> str:
+        """Place a LIMIT IOC equity/F&O order. Unfilled qty is cancelled by the exchange."""
+        exchange, tradingsymbol = split_nfo_symbol(symbol)
+        side = str(transaction_type or "").strip().upper()
+        if side not in ("BUY", "SELL"):
+            raise KiteOrderError(f"bad_transaction_type:{transaction_type}")
+        quantity = int(qty)
+        if quantity <= 0:
+            raise KiteOrderError("bad_qty")
+        px = float(price)
+        if px <= 0:
+            raise KiteOrderError("bad_price")
+        data = {
+            "tradingsymbol": tradingsymbol,
+            "exchange": exchange,
+            "transaction_type": side,
+            "order_type": "LIMIT",
+            "price": f"{px:.2f}",
+            "quantity": str(quantity),
+            "product": product,
+            "validity": "IOC",
+            "tag": (tag or ARB_ORDER_TAG)[:20],
+        }
+        try:
+            with self._client() as client:
+                resp = client.post(f"/orders/{DEFAULT_VARIETY}", data=data)
+                body = _json_body(resp)
+                if resp.status_code >= 400:
+                    raise KiteOrderError(_kite_error(body, resp.status_code))
+                order_id = str((body.get("data") or {}).get("order_id") or "").strip()
+                if not order_id:
+                    raise KiteOrderError("missing_order_id")
+                _log.warning(
+                    "kite IOC limit id=%s %s %s qty=%s px=%s",
+                    order_id,
+                    side,
+                    tradingsymbol,
+                    quantity,
+                    px,
+                )
+                return order_id
+        except KiteOrderError:
+            raise
+        except (httpx.HTTPError, OSError, ValueError) as exc:
+            raise _wrap_transport(exc) from exc
+
+    def wait_ioc_done(
+        self,
+        order_id: str,
+        *,
+        timeout_s: float = FILL_TIMEOUT_S,
+        poll_s: float = FILL_POLL_S,
+    ) -> dict[str, Any]:
+        """Poll until IOC finishes (COMPLETE / CANCELLED / REJECTED). Partial fill OK."""
+        deadline = time.monotonic() + float(timeout_s)
+        last: dict[str, Any] = {}
+        while time.monotonic() < deadline:
+            last = self._latest_status(order_id)
+            status = str(last.get("status") or "").upper()
+            if kite_order_finished(status):
+                return last
+            time.sleep(float(poll_s))
+        try:
+            self.cancel(order_id)
+        except KiteOrderError as exc:
+            _log.warning("kite IOC cancel after timeout failed id=%s: %s", order_id, exc)
+        try:
+            last = self._latest_status(order_id)
+        except KiteOrderError as exc:
+            raise KiteOrderError(
+                f"ioc_timeout:{order_id}:{last.get('status') or 'unknown'}:recheck_failed:{exc}",
+                order_id=order_id,
+            ) from exc
+        if kite_order_finished(str(last.get("status") or "")):
+            return last
+        raise KiteOrderError(
+            f"ioc_timeout:{order_id}:{last.get('status') or 'unknown'}",
+            order_id=order_id,
+        )
+
+    def equity_available(self) -> float:
+        """Equity segment cash available for trading (₹)."""
+        try:
+            with self._client() as client:
+                resp = client.get("/user/margins")
+                body = _json_body(resp)
+                if resp.status_code >= 400:
+                    raise KiteOrderError(_kite_error(body, resp.status_code))
+                data = body.get("data") if isinstance(body.get("data"), dict) else {}
+                equity = data.get("equity") if isinstance(data.get("equity"), dict) else {}
+                available = equity.get("available") if isinstance(equity.get("available"), dict) else {}
+                for key in ("live_balance", "cash", "intraday_payin"):
+                    val = _f(available.get(key))
+                    if val is not None:
+                        return float(val)
+                net = _f(equity.get("net"))
+                return float(net or 0.0)
+        except KiteOrderError:
+            raise
+        except (httpx.HTTPError, OSError, ValueError, TypeError) as exc:
+            raise _wrap_transport(exc) from exc
+
+    def basket_margin_required(
+        self,
+        orders: list[dict[str, Any]],
+    ) -> float:
+        """POST /margins/orders — total required margin for the basket (₹)."""
+        if not orders:
+            return 0.0
+        try:
+            with self._client() as client:
+                resp = client.post("/margins/orders", json=orders)
+                body = _json_body(resp)
+                if resp.status_code >= 400:
+                    raise KiteOrderError(_kite_error(body, resp.status_code))
+                data = body.get("data")
+                rows = data if isinstance(data, list) else []
+                total = 0.0
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    final = row.get("final") if isinstance(row.get("final"), dict) else row
+                    for key in ("total", "span", "exposure", "margin"):
+                        val = _f(final.get(key) if isinstance(final, dict) else None)
+                        if val is not None and key == "total":
+                            total += float(val)
+                            break
+                    else:
+                        val = _f(row.get("total"))
+                        if val is not None:
+                            total += float(val)
+                return round(total, 2)
+        except KiteOrderError:
+            raise
+        except (httpx.HTTPError, OSError, ValueError, TypeError) as exc:
+            raise _wrap_transport(exc) from exc
+
+    def ioc_limit_fill(
+        self,
+        *,
+        symbol: str,
+        transaction_type: str,
+        qty: int,
+        price: float,
+        product: str = DEFAULT_PRODUCT,
+        tag: str = ARB_ORDER_TAG,
+    ) -> dict[str, Any]:
+        """Place LIMIT IOC and return fill qty/price (0 qty if nothing filled / rejected)."""
+        order_id = self.place_limit_ioc(
+            symbol=symbol,
+            transaction_type=transaction_type,
+            qty=qty,
+            price=price,
+            product=product,
+            tag=tag,
+        )
+        try:
+            row = self.wait_ioc_done(order_id)
+        except KiteOrderError as exc:
+            if not exc.order_id:
+                exc.order_id = order_id
+            # Still try to read any partial that landed before the error.
+            try:
+                row = self._latest_status(order_id)
+            except KiteOrderError:
+                raise exc from None
+            if int(float(row.get("filled_quantity") or 0)) <= 0:
+                raise
+        status = str(row.get("status") or "").upper()
+        filled = int(float(row.get("filled_quantity") or 0))
+        avg = _f(row.get("average_price"))
+        if filled > 0 and (avg is None or avg <= 0):
+            raise KiteOrderError(f"bad_fill_price:{order_id}", order_id=order_id)
+        return {
+            "order_id": order_id,
+            "average_price": round(float(avg), 2) if avg and filled else None,
+            "quantity": filled,
+            "status": status or "UNKNOWN",
+            "exchange": row.get("exchange"),
+            "tradingsymbol": row.get("tradingsymbol"),
+            "transaction_type": row.get("transaction_type") or transaction_type,
+            "status_message": row.get("status_message"),
         }
 
 

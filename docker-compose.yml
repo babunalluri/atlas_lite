@@ -18,6 +18,9 @@ services:
       ATLAS_LITE_API_TOKEN: ${ATLAS_LITE_API_TOKEN:-}
       # Live UI locked until host sets 1; Live checkbox also requires UI login.
       ATLAS_LITE_AGENT_LIVE_ALLOWED: ${ATLAS_LITE_AGENT_LIVE_ALLOWED:-0}
+      # NSE–BSE arb live (confirmed ₹500 IOC). Locked until host sets 1; day stop ₹2k default.
+      ATLAS_LITE_ARB_LIVE_ALLOWED: ${ATLAS_LITE_ARB_LIVE_ALLOWED:-0}
+      ATLAS_LITE_ARB_LIVE_DAY_STOP: ${ATLAS_LITE_ARB_LIVE_DAY_STOP:-2000}
       # factor_paper forward test (paper only, never Kite orders). Off unless the host sets 1.
       ATLAS_LITE_PAPER_FACTOR: ${ATLAS_LITE_PAPER_FACTOR:-0}
       # Weekly NIFTY strangle + 5%-wing condor paper books (paper only). On unless the host sets 0.
@@ -76,9 +79,10 @@ services:
       retries: 3
       start_period: 45s
 
-  # NSE vs BSE gap watcher (scripts/nse_bse_gap_watch.py): read-only research, paper trades only, never
-  # places an order. Its own Kite websocket. Restarts with the stack (crash, reboot, deploy); a restart
-  # reloads the day's files. Idles after ATLAS_LITE_ARB_UNTIL, or when ATLAS_LITE_ARB_WATCH=0.
+  # NSE vs BSE gap watcher (scripts/nse_bse_gap_watch.py): paper tracks always; real LIMIT IOC orders
+  # only when ATLAS_LITE_ARB_LIVE_ALLOWED=1 and data/arb_live.json enabled (confirmed ₹500 @ 300 ms).
+  # Day-loss kill: ATLAS_LITE_ARB_LIVE_DAY_STOP (default 2000). Own Kite websocket. Restarts with the
+  # stack; idles after ATLAS_LITE_ARB_UNTIL, or when ATLAS_LITE_ARB_WATCH=0.
   arb-watch:
     build: .
     container_name: atlas-lite-arb
@@ -87,6 +91,10 @@ services:
     environment:
       KITE_CREDENTIALS_PATH: /secrets/kite_credentials
       ATLAS_LITE_ARB_WATCH: ${ATLAS_LITE_ARB_WATCH:-1}
+      ATLAS_LITE_ARB_LIVE_ALLOWED: ${ATLAS_LITE_ARB_LIVE_ALLOWED:-0}
+      ATLAS_LITE_ARB_LIVE_DAY_STOP: ${ATLAS_LITE_ARB_LIVE_DAY_STOP:-2000}
+      ATLAS_LITE_ARB_LIVE_AFTER: ${ATLAS_LITE_ARB_LIVE_AFTER:-09:15}
+      ATLAS_LITE_ARB_LIVE_UNTIL: ${ATLAS_LITE_ARB_LIVE_UNTIL:-09:20}
     volumes:
       - ./kite_credentials:/secrets/kite_credentials:ro
       - ./data:/app/data
