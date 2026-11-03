@@ -40,7 +40,13 @@ from atlas_lite.paper_ai_agent import (
 from atlas_lite.gamma_regime import GammaOi, previous_trading_day
 from atlas_lite.paper_long_straddle import (
     LEDGER_NAME as LONG_STRADDLE_LEDGER,
+    LIVE_ENV as LONG_STRADDLE_LIVE_ENV,
+    LIVE_FLAG_NAME as LONG_STRADDLE_LIVE_FLAG,
     STRATEGY as LONG_STRADDLE_STRATEGY,
+    TP20_LEDGER_NAME as LONG_STRADDLE_TP20_LEDGER,
+    TP20_STRATEGY as LONG_STRADDLE_TP20_STRATEGY,
+    TP20_TAKE_PROFIT as LONG_STRADDLE_TP20_TP,
+    paper_long_straddle_tp20_enabled,
     PaperLongStraddle,
     paper_long_straddle_enabled,
 )
@@ -277,9 +283,16 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
         "IV rich vs RV · max 5/day",
         "½ credit target / ½ defined-loss stop on premium PnL · flat 15:14",
     ),
+    "long_straddle_tp20": (
+        "09:16 · buy the balanced strike (ATM±50 where CE≈PE) at ask · 1 lot · max 1/day · "
+        "no entries after −₹15k in the month · paper only",
+        "resting take-profit at +20% of the price paid (fills when the bids reach it) · "
+        "stop when bids fall 30% below cost · else sell 13:00 at bid",
+    ),
     "long_straddle": (
-        "09:16 · buy ATM CE+PE at ask · 1 lot · max 1/day · expiry days included",
-        "sell both at 13:00 at bid · no target / stop",
+        "09:16 · buy the balanced strike (ATM±50 where CE≈PE) at ask · 1 lot · max 1/day · "
+        "no entries after −₹15k in the month · live only on a day 'Live straddle' is ticked",
+        "sell both at 13:00 at bid · stop when bids fall 30% below cost · no take-profit",
     ),
     "short_atm_straddle": (
         "14:00–14:15 · sell ATM CE+PE · 1 lot · max 1/day · |NIFTY chg| ≤0.75%",
@@ -401,6 +414,8 @@ class FeedEngine:
     _paper_weekly: dict[str, PaperWeeklySell] = field(default_factory=dict, repr=False)
     _paper_v3: PaperScalperV3 | None = field(default=None, repr=False)
     _paper_long_str: PaperLongStraddle | None = field(default=None, repr=False)
+    _paper_long_str_tp20: PaperLongStraddle | None = field(default=None, repr=False)
+    _straddle_live: Any = field(default=None, repr=False)
     # Previous day's NIFTY open interest, for the dealer-gamma reading Scalper v3 logs.
     _gamma_oi: GammaOi | None = field(default=None, repr=False)
     _gamma_oi_tried_at: float = field(default=0.0, repr=False)
@@ -675,12 +690,27 @@ class FeedEngine:
             self._gamma_oi = GammaOi(self.data_dir)
             self._log.info("scalper_v3 paper book qty %d (13:00 straddle sale, no live orders)", self._paper_v3.qty)
         if paper_long_straddle_enabled():
+            from atlas_lite.day_live_flag import DayLiveFlag
+
+            # Live only on a day the operator ticks "Live straddle" and the host allows it.
+            self._straddle_live = DayLiveFlag(self.data_dir / LONG_STRADDLE_LIVE_FLAG, LONG_STRADDLE_LIVE_ENV)
             self._paper_long_str = PaperLongStraddle(
-                path=self.data_dir / LONG_STRADDLE_LEDGER, lot_size=self._nifty_option_lot()
+                path=self.data_dir / LONG_STRADDLE_LEDGER, lot_size=self._nifty_option_lot(),
+                order_client=KiteOrderClient(self.credentials_path), live_flag=self._straddle_live,
             )
             self._log.info(
-                "long_straddle paper book qty %d (09:16 straddle purchase, sold 13:00, no live orders)",
-                self._paper_long_str.qty,
+                "long_straddle book qty %d (09:16 balanced straddle, sold 13:00; live when ticked, allowed=%s)",
+                self._paper_long_str.qty, self._straddle_live.allowed(),
+            )
+        if paper_long_straddle_tp20_enabled():
+            self._paper_long_str_tp20 = PaperLongStraddle(
+                path=self.data_dir / LONG_STRADDLE_TP20_LEDGER, lot_size=self._nifty_option_lot(),
+                strategy=LONG_STRADDLE_TP20_STRATEGY, name="Long straddle +20% TP",
+                take_profit=LONG_STRADDLE_TP20_TP,
+            )
+            self._log.info(
+                "long_straddle_tp20 paper book qty %d (09:16 straddle, resting +20%% take-profit, else 13:00)",
+                self._paper_long_str_tp20.qty,
             )
         if paper_weekly_sell_enabled():
             lot = self._nifty_option_lot()
@@ -751,7 +781,7 @@ class FeedEngine:
             self._tasks.append(asyncio.create_task(self._paper_weekly_loop()))
         if self._paper_v3 is not None:
             self._tasks.append(asyncio.create_task(self._paper_v3_loop()))
-        if self._paper_long_str is not None:
+        if self._paper_long_str is not None or self._paper_long_str_tp20 is not None:
             self._tasks.append(asyncio.create_task(self._paper_long_straddle_loop()))
         if self._agent is not None:
             self._tasks.append(asyncio.create_task(self._agent_loop()))
@@ -2925,14 +2955,15 @@ class FeedEngine:
                 await asyncio.sleep(1.0)
 
     async def _paper_long_straddle_loop(self) -> None:
-        """Long straddle: daily 09:16 ATM straddle purchase, sold at 13:00. Paper only."""
-        if self._paper_long_str is None:
+        """Long straddle books (main and +20% take-profit): 09:16 ATM straddle purchase. Paper only."""
+        books = [b for b in (self._paper_long_str, self._paper_long_str_tp20) if b is not None]
+        if not books:
             return
         interval = max(1.0, STREAM_INTERVAL_MS / 1000.0)
         while True:
             try:
                 now = datetime.now(IST)
-                if now.weekday() >= 5 and self._paper_long_str.position is None:
+                if now.weekday() >= 5 and all(b.position is None for b in books):
                     await asyncio.sleep(30.0)
                     continue
                 nb = self.notebooks.get("nifty")
@@ -2941,10 +2972,19 @@ class FeedEngine:
                     expiry = nb.universe.expiry
                     if nb.atm:
                         atm, ce, pe = int(nb.atm.strike), nb.atm.ce_symbol, nb.atm.pe_symbol
-                allow = self._agent_gates.entries_allowed(LONG_STRADDLE_STRATEGY, now) if self._agent_gates else True
-                self._paper_long_str.on_frame(
-                    now=now, book=self.book, expiry=expiry, atm=atm, ce_symbol=ce, pe_symbol=pe, allow_entry=allow
-                )
+                for b in books:  # each book on its own: one failing never stops the other
+                    try:
+                        allow = self._agent_gates.entries_allowed(b.strategy, now) if self._agent_gates else True
+                        # In a worker thread: a live order waits for its fill and must not block the engine.
+                        await asyncio.to_thread(
+                            b.on_frame, now=now, book=self.book, expiry=expiry, atm=atm, ce_symbol=ce,
+                            pe_symbol=pe, allow_entry=allow,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        self._log.warning("%s paper book failed: %s", b.strategy, exc)
+                if self._straddle_live is not None and now.strftime("%H:%M") >= "15:30":
+                    if self._straddle_live.turn_off_if_on(source="day_end"):
+                        self._log.info("long straddle live auto-off at session end")
                 await asyncio.sleep(interval)
             except asyncio.CancelledError:
                 raise
@@ -3616,6 +3656,12 @@ class FeedEngine:
             self._paper_v3.snapshot(self.book)
             if self._paper_v3 is not None
             else {"ok": True, "mode": "paper", "enabled": False, "live_orders": False, "book": SCALPER_V3_STRATEGY, "name": "Scalper v3"}
+        )
+        body[LONG_STRADDLE_TP20_STRATEGY] = (
+            self._paper_long_str_tp20.snapshot(self.book)
+            if self._paper_long_str_tp20 is not None
+            else {"ok": True, "mode": "paper", "enabled": False, "live_orders": False,
+                  "book": LONG_STRADDLE_TP20_STRATEGY, "name": "Long straddle +20% TP"}
         )
         body[LONG_STRADDLE_STRATEGY] = (
             self._paper_long_str.snapshot(self.book)

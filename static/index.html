@@ -2372,6 +2372,11 @@
       </div>
       <div class="history-detail" id="factorPaperLine">Factor paper: —</div>
       <div class="history-detail" id="longStraddleLine">Long straddle: —</div>
+      <label class="history-meta" for="straddleLiveToggle" style="display:inline-flex;align-items:center;gap:6px;margin:0 0 0.4rem 0;" title="Real Kite orders for today's 09:16 long straddle (1 lot) — requires sign-in; good for today only">
+        <input type="checkbox" id="straddleLiveToggle" />
+        <span id="straddleLiveLabel">Live straddle (today only)</span>
+      </label>
+      <div class="history-detail" id="longStraddleTpLine">Long straddle +20% TP: —</div>
       <div class="history-detail" id="scalperV3Line">Scalper v3: —</div>
       <div class="history-detail" id="weeklyStrangleLine">Weekly strangle: —</div>
       <div class="history-detail" id="weeklyCondorLine">Weekly condor: —</div>
@@ -7107,17 +7112,74 @@
       });
     }
 
-    function renderLongStraddle(ls) {
-      const line = document.getElementById("longStraddleLine");
+    // Long straddle live switch: follows /api/straddle/live (host allows it, and ticked for today).
+    function renderStraddleLive(live) {
+      const toggle = document.getElementById("straddleLiveToggle");
+      const label = document.getElementById("straddleLiveLabel");
+      if (!toggle || !label) return;
+      const allowed = !!(live && live.allowed);
+      const on = !!(live && live.enabled);
+      if (toggle !== document.activeElement) toggle.checked = on;
+      toggle.disabled = !allowed && !on;
+      const stale = !!(live && live.stale);
+      label.textContent = !allowed
+        ? "Live straddle · locked on this host (ATLAS_LITE_STRADDLE_LIVE_ALLOWED=0)"
+        : on ? "Live straddle · ON for today (real orders, 1 lot)"
+          : stale ? `Live straddle · was ticked on ${live.day || "an earlier day"} — not active today, tick again to trade live`
+            : "Live straddle (today only)";
+    }
+
+    function loadStraddleLive() {
+      fetch("/api/straddle/live")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => renderStraddleLive(d && d.live))
+        .catch(() => {});
+    }
+
+    document.getElementById("straddleLiveToggle")?.addEventListener("change", async (ev) => {
+      const box = ev.target;
+      const want = !!box.checked;
+      if (want && !window.confirm(
+        "Turn ON live orders for today's long straddle?\n\nAt 09:16 it buys 1 lot of the balanced NIFTY straddle with real money (MIS), " +
+        "sells at 13:00, or earlier if the bids fall 30% below cost. Good for today only.",
+      )) {
+        box.checked = false;
+        return;
+      }
+      try {
+        const resp = await fetch(`/api/straddle/live?enabled=${want ? "true" : "false"}`, {
+          method: "POST", credentials: "same-origin",
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (resp.status === 401) throw new Error("Not signed in — required for Live straddle");
+        if (!resp.ok || data.ok === false) throw new Error(data.detail || `HTTP ${resp.status}`);
+        renderStraddleLive(data.live);
+      } catch (err) {
+        box.checked = !want;
+        const label = document.getElementById("straddleLiveLabel");
+        if (label) label.textContent = `Live straddle toggle failed: ${err.message || err}`;
+      }
+    });
+
+    function renderLongStraddle(ls, elId = "longStraddleLine", flag = "ATLAS_LITE_PAPER_LONG_STRADDLE") {
+      const line = document.getElementById(elId);
       if (!line) return;
+      const name = ls.name || "Long straddle";
       if (!ls.enabled) {
-        line.textContent = "Long straddle · off (ATLAS_LITE_PAPER_LONG_STRADDLE=0)";
+        line.textContent = `${name} · off (${flag}=0)`;
         return;
       }
       const pos = ls.position;
+      const tp = pos && pos.target != null ? ` · take-profit ${pos.target}` : "";
+      const rule = ls.take_profit
+        ? `buys the ATM straddle at 09:16, sells at +${Math.round(ls.take_profit * 100)}% or at 13:00`
+        : "buys the ATM straddle at 09:16, sells at 13:00";
+      const stop = pos && pos.stop != null ? ` · stop ${pos.stop}` : "";
+      const mode = pos && pos.live ? " · LIVE" : "";
+      const manual = pos && pos.manual_needed ? " · EXIT FAILED — close manually in Kite" : "";
       line.textContent = pos
-        ? `Long straddle · long ${pos.atm} straddle${pos.expiry_day ? " (expiry day)" : ""} · paid ${pos.debit} · worth now ${pos.value_now ?? "—"} · sells 13:00 · open PnL ${pos.open_pnl ?? "—"}`
-        : `Long straddle · FLAT · buys the ATM straddle at 09:16, sells at 13:00` + (ls.last_reject ? ` · ${ls.last_reject}` : "");
+        ? `${name}${mode} · long ${pos.atm} straddle${pos.expiry_day ? " (expiry day)" : ""} · paid ${pos.debit} · worth now ${pos.value_now ?? "—"}${tp}${stop} · open PnL ${pos.open_pnl ?? "—"}${manual}`
+        : `${name} · FLAT · ${rule}` + (ls.last_reject ? ` · ${ls.last_reject}` : "");
     }
 
     function renderScalperV3(v3) {
@@ -7421,6 +7483,8 @@
           .catch(() => renderCf(null));
         renderFactorPaper(paper.factor_paper || {});
         renderLongStraddle(paper.long_straddle || {});
+        loadStraddleLive();
+        renderLongStraddle(paper.long_straddle_tp20 || {}, "longStraddleTpLine", "ATLAS_LITE_PAPER_LONG_STRADDLE_TP20");
         renderScalperV3(paper.scalper_v3 || {});
         renderWeeklySell("weeklyStrangleLine", paper.weekly_strangle || {});
         renderWeeklySell("weeklyCondorLine", paper.weekly_condor5 || {});

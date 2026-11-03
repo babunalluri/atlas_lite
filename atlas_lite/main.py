@@ -537,6 +537,34 @@ def datetime_today() -> str:
     return datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d")
 
 
+def _straddle_live_flag():
+    from atlas_lite.day_live_flag import DayLiveFlag
+    from atlas_lite.paper_long_straddle import LIVE_ENV, LIVE_FLAG_NAME
+
+    return DayLiveFlag(DATA_DIR / LIVE_FLAG_NAME, LIVE_ENV)
+
+
+@app.get("/api/straddle/live")
+async def api_straddle_live_get() -> dict[str, Any]:
+    """Long-straddle live switch: allowed on this host, and enabled for today."""
+    return {"ok": True, "live": await asyncio.to_thread(lambda: _straddle_live_flag().snapshot())}
+
+
+@app.post("/api/straddle/live")
+async def api_straddle_live_set(
+    request: Request,
+    enabled: bool = Query(..., description="true = real Kite orders for today's long straddle"),
+) -> dict[str, Any]:
+    """Toggle long-straddle live orders for today. Sign-in required to enable; disable always allowed."""
+    if enabled:
+        _ui_session_required(request)
+    try:
+        live = await asyncio.to_thread(lambda: _straddle_live_flag().set_enabled(enabled, source="ui"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "live": live}
+
+
 @app.get("/api/agent/macro")
 async def api_agent_macro() -> dict[str, Any]:
     """Timestamped macro/sentiment snapshot used by the agent."""

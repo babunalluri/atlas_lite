@@ -169,6 +169,24 @@ class KiteOrderClient:
         except (httpx.HTTPError, OSError, ValueError) as exc:
             raise _wrap_transport(exc) from exc
 
+    def list_orders(self) -> list[dict[str, Any]]:
+        """Today's order book (every order on the account, latest state each). Raises if the reply is not
+        a list: an unreadable book must never be mistaken for an empty one."""
+        try:
+            with self._client() as client:
+                resp = client.get("/orders")
+                body = _json_body(resp)
+                if resp.status_code >= 400:
+                    raise KiteOrderError(_kite_error(body, resp.status_code))
+                data = body.get("data")
+                if not isinstance(data, list):
+                    raise KiteOrderError("orders_reply_not_a_list")
+                return [row for row in data if isinstance(row, dict)]
+        except KiteOrderError:
+            raise
+        except (httpx.HTTPError, OSError, ValueError) as exc:
+            raise _wrap_transport(exc) from exc
+
     def _latest_status(self, order_id: str) -> dict[str, Any]:
         rows = self.order_history(order_id)
         return rows[-1] if rows else {}

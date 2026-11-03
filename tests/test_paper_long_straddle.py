@@ -129,8 +129,8 @@ def test_snapshot_open_pnl_is_net_of_charges(tmp_path) -> None:
     frame(b, t("09:16"), quotes(120, 120))
     snap = b.snapshot(Book(quotes(150, 150)))
     pos = snap["position"]
-    assert snap["book"] == "long_straddle" and pos["debit"] == 241.0 and pos["value_now"] == 300.0
-    assert pos["open_pnl"] < (300.0 - 241.0) * 65
+    assert snap["book"] == "long_straddle" and pos["debit"] == 241.0 and pos["value_now"] == 299.0  # at the bids
+    assert pos["open_pnl"] < (299.0 - 241.0) * 65
 
 
 def test_ledger_lines_are_json_with_the_strategy(tmp_path) -> None:
@@ -139,3 +139,128 @@ def test_ledger_lines_are_json_with_the_strategy(tmp_path) -> None:
     frame(b, t("13:00"), quotes(130, 130))
     rows = [json.loads(x) for x in (tmp_path / LEDGER_NAME).read_text().splitlines()]
     assert [r["event"] for r in rows] == ["open", "close"] and {r["strategy"] for r in rows} == {"long_straddle"}
+
+
+def mk_tp(tmp_path: Path) -> PaperLongStraddle:
+    from atlas_lite.paper_long_straddle import TP20_LEDGER_NAME, TP20_STRATEGY, TP20_TAKE_PROFIT
+
+    return PaperLongStraddle(path=tmp_path / TP20_LEDGER_NAME, strategy=TP20_STRATEGY,
+                             name="Long straddle +20% TP", take_profit=TP20_TAKE_PROFIT)
+
+
+def test_tp20_sells_at_exactly_plus_20_percent_once_the_bids_reach_it(tmp_path) -> None:
+    b = mk_tp(tmp_path)
+    frame(b, t("09:16"), quotes(120, 120))  # paid 241.0 at the ask; target 289.2
+    assert frame(b, t("10:00"), quotes(150, 139)) is None  # bids 149.5 + 138.5 = 288 < 289.2
+    ev = frame(b, t("10:05"), quotes(160, 140))  # bids 159.5 + 139.5 = 299 >= 289.2
+    assert ev["reason"] == "target" and ev["pnl_known"] is True and ev["strategy"] == "long_straddle_tp20"
+    assert ev["exit"] == 289.2  # a resting limit fills at its own price, not the better bid
+    assert ev["pnl_gross"] == round((289.2 - 241.0) * 65, 2)
+
+
+def test_tp20_without_the_target_sells_at_1300_like_the_main_book(tmp_path) -> None:
+    b = mk_tp(tmp_path)
+    frame(b, t("09:16"), quotes(120, 120))
+    assert frame(b, t("12:00"), quotes(125, 125)) is None
+    ev = frame(b, t("13:00"), quotes(126, 126))
+    assert ev["reason"] == "time" and ev["exit"] == 251.0
+
+
+def test_tp20_needs_both_bids(tmp_path) -> None:
+    b = mk_tp(tmp_path)
+    frame(b, t("09:16"), quotes(120, 120))
+    rows = quotes(400, 140)
+    rows[PE] = {"last_price": 140}  # no bid on the put: the resting order can't be judged filled
+    assert frame(b, t("10:00"), rows) is None and b.position is not None
+
+
+def test_the_two_books_keep_separate_ledgers_and_state(tmp_path) -> None:
+    main, tp = mk(tmp_path), mk_tp(tmp_path)
+    frame(main, t("09:16"), quotes(120, 120))
+    frame(tp, t("09:16"), quotes(120, 120))
+    frame(tp, t("10:00"), quotes(160, 140))  # tp closes on target, main stays open
+    again_main, again_tp = mk(tmp_path), mk_tp(tmp_path)
+    assert again_main.position is not None and again_tp.position is None
+    assert again_tp.traded_day == DAY and again_tp.snapshot()["book"] == "long_straddle_tp20"
+    assert again_main.snapshot()["take_profit"] is None and again_tp.snapshot()["take_profit"] == 0.20
+
+
+def test_snapshot_values_the_position_at_the_bids(tmp_path) -> None:
+    b = mk_tp(tmp_path)
+    frame(b, t("09:16"), quotes(120, 120))  # paid 241.0; target 289.2
+    snap = b.snapshot(Book(quotes(145, 145, spread=1.0)))  # last 290 (past target), bids 288 (not yet)
+    assert snap["position"]["value_now"] == 288.0 and snap["position"]["target"] == 289.2
+    assert frame(b, t("10:00"), quotes(145, 145, spread=1.0)) is None  # and the take-profit has not fired
+
+
+# ---- balanced strike, stop, monthly limit ----
+CE50, PE50 = "NFO:NIFTY26N0323000CE", "NFO:NIFTY26N0323000PE"
+
+
+def test_balanced_strike_picks_the_strike_where_ce_and_pe_are_closest(tmp_path) -> None:
+    b = mk(tmp_path)
+    rows = {**quotes(150, 100), CE50: {"last_price": 124, "bid": 123.5, "ask": 124.5},
+            PE50: {"last_price": 126, "bid": 125.5, "ask": 126.5}}
+    ev = frame(b, t("09:16"), rows)
+    assert ev["atm"] == 23000 and ev["ce_symbol"] == CE50 and ev["debit_fill"] == 251.0
+
+
+def test_balanced_strike_falls_back_to_atm_without_neighbour_quotes(tmp_path) -> None:
+    ev = frame(mk(tmp_path), t("09:16"), quotes(150, 100))
+    assert ev["atm"] == 22950 and ev["ce_symbol"] == CE
+
+
+def test_emergency_stop_at_30_percent_below_the_price_paid(tmp_path) -> None:
+    b = mk(tmp_path)
+    frame(b, t("09:16"), quotes(120, 120))  # paid 241; stop at 168.7 on the bids
+    assert frame(b, t("10:00"), quotes(85, 85)) is None  # bids 169
+    ev = frame(b, t("10:01"), quotes(84.5, 84.5))  # bids 168
+    assert ev["reason"] == "stop" and ev["pnl"] < 0 and ev["pnl_known"] is True
+
+
+def test_monthly_loss_limit_blocks_new_entries(tmp_path) -> None:
+    b = mk(tmp_path)
+    b.month_pnl["2026-10"] = -15_000.0
+    assert frame(b, t("09:16"), quotes(120, 120)) is None and b.last_reject == "monthly_loss_limit"
+    assert frame(mk(tmp_path / "nov"), t("09:16", "2026-11-04"), quotes(120, 120)) is not None  # new month
+
+
+def test_monthly_pnl_is_rebuilt_from_the_ledger(tmp_path) -> None:
+    b = mk(tmp_path)
+    frame(b, t("09:16"), quotes(120, 120))
+    frame(b, t("13:00"), quotes(90, 95))
+    assert mk(tmp_path).month_pnl["2026-10"] == b.month_pnl["2026-10"] < 0
+
+
+def test_day_live_flag_counts_only_for_today(tmp_path, monkeypatch) -> None:
+    import json as _j
+    from atlas_lite.day_live_flag import DayLiveFlag
+
+    f = DayLiveFlag(tmp_path / "straddle_live.json", "ATLAS_LITE_STRADDLE_LIVE_ALLOWED")
+    monkeypatch.delenv("ATLAS_LITE_STRADDLE_LIVE_ALLOWED", raising=False)
+    import pytest as _pt
+    with _pt.raises(ValueError):
+        f.set_enabled(True)
+    monkeypatch.setenv("ATLAS_LITE_STRADDLE_LIVE_ALLOWED", "1")
+    assert f.set_enabled(True)["enabled"] is True
+    (tmp_path / "straddle_live.json").write_text(_j.dumps({"enabled": True, "day": "2026-01-01"}))
+    assert f.is_enabled() is False and f.snapshot()["stale"] is True
+    (tmp_path / "straddle_live.json").write_text(_j.dumps({"enabled": True}))  # no day at all
+    assert f.is_enabled() is False
+    assert f.turn_off_if_on(source="day_end") is True and f.is_enabled() is False
+
+
+def test_straddle_live_api_reads_and_refuses_when_not_allowed(tmp_path, monkeypatch) -> None:
+    import asyncio
+    import atlas_lite.main as main
+
+    monkeypatch.setattr(main, "DATA_DIR", tmp_path)
+    monkeypatch.delenv("ATLAS_LITE_STRADDLE_LIVE_ALLOWED", raising=False)
+    got = asyncio.run(main.api_straddle_live_get())
+    assert got["live"]["allowed"] is False and got["live"]["enabled"] is False
+
+    class Req:  # disabling never needs a login
+        headers, cookies = {}, {}
+
+    off = asyncio.run(main.api_straddle_live_set(Req(), enabled=False))
+    assert off["live"]["enabled"] is False
