@@ -52,8 +52,9 @@ from atlas_lite.agent_gates import _is_nse_trading_day
 from atlas_lite.kite_charges import kite_nfo_charges
 from atlas_lite.live_straddle import LiveStraddle
 from atlas_lite.log_util import get_logger
-from atlas_lite.metrics import quote_ask, quote_bid, quote_ltp
+from atlas_lite.metrics import pick_float, quote_ask, quote_bid, quote_ltp
 from atlas_lite.minute_bars import hm_ge
+from atlas_lite.specs import NIFTY_SYMBOL, VIX_SYMBOLS
 
 IST = ZoneInfo("Asia/Kolkata")
 STRATEGY = "long_straddle"
@@ -96,6 +97,38 @@ class QuoteSource(Protocol):
 
 def hm(t: tuple[int, int]) -> str:
     return f"{t[0]:02d}:{t[1]:02d}"
+
+
+def entry_context(book: QuoteSource, ce: float, pe: float) -> dict[str, Any]:
+    """Conditions at entry, logged for the ~27 Nov re-test of a filter (4 Nov study: VIX, prior range and the
+    OI walls predict the size of the morning move, but not a move bigger than the straddle's price; on 36
+    real days the cheaper straddles and the less balanced CE/PE did better, too few days to trust).
+    Yesterday's range and the OI walls are rebuilt from history at the re-test, so they are not logged.
+    Never raises: a logging gap must not stop the trade."""
+    try:
+        return _entry_context(book, ce, pe)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _entry_context(book: QuoteSource, ce: float, pe: float) -> dict[str, Any]:
+    out: dict[str, Any] = {"ce_pe_imbalance": round(abs(ce - pe) / (ce + pe), 4)}
+    spot_row = book.get(NIFTY_SYMBOL)
+    spot = quote_ltp(spot_row)
+    if spot:
+        out["spot"] = spot
+        out["straddle_pct_spot"] = round((ce + pe) / spot * 100, 3)
+        prev = pick_float(spot_row.get("ohlc") if isinstance(spot_row.get("ohlc"), dict) else {}, "close")
+        if prev:
+            out["gap_pct"] = round((spot - prev) / prev * 100, 3)
+    vix_row = book.get(VIX_SYMBOLS[0]) if VIX_SYMBOLS else None
+    vix = quote_ltp(vix_row)
+    if vix:
+        out["vix"] = vix
+        prev = pick_float(vix_row.get("ohlc") if isinstance(vix_row.get("ohlc"), dict) else {}, "close")
+        if prev:
+            out["vix_chg"] = round(vix - prev, 2)
+    return out
 
 
 def strike_symbol(symbol: str, atm: int, strike: int) -> str:
@@ -276,7 +309,8 @@ class PaperLongStraddle:
             return None
         day = now.strftime("%Y-%m-%d")
         if self.live_enabled():
-            return self._open_live(now, day, strike, ce_symbol, pe_symbol, ce_ask + pe_ask, expiry_day)
+            return self._open_live(now, day, strike, ce_symbol, pe_symbol, ce_ask + pe_ask, expiry_day,
+                                   entry_context(book, ce, pe))
         charges_open = round(float(kite_nfo_charges([(ce_ask, self.qty, "buy"), (pe_ask, self.qty, "buy")])["total"]), 2)
         pos = LongStraddlePosition(
             day=day, opened_at=now.isoformat(), atm=int(strike), ce_symbol=ce_symbol, pe_symbol=pe_symbol,
@@ -288,6 +322,7 @@ class PaperLongStraddle:
             "atm": pos.atm, "symbol": f"{ce_symbol},{pe_symbol}", "ce_symbol": ce_symbol, "pe_symbol": pe_symbol,
             "qty": pos.qty, "ce": ce, "pe": pe, "debit_fill": pos.debit_fill, "entry": pos.debit_fill,
             "charges_open": charges_open, "expiry_day": expiry_day, "live": False,
+            "context": entry_context(book, ce, pe),
             "stop": round(pos.debit_fill * (1 - self.stop_loss), 2) if self.stop_loss else None,
             "reason": "09:16 balanced ATM straddle purchase" + (" (expiry day)" if expiry_day else ""),
         })
@@ -313,7 +348,7 @@ class PaperLongStraddle:
         return max(basket, fallback) if basket > 0 else fallback
 
     def _open_live(self, now: datetime, day: str, strike: int, ce_symbol: str, pe_symbol: str, ask_total: float,
-                   expiry_day: bool) -> dict[str, Any] | None:
+                   expiry_day: bool, context: dict[str, Any] | None = None) -> dict[str, Any] | None:
         """Start today's live trade: funds check, a durable start line, then both buys (tagged)."""
         need = self._funds_needed(ce_symbol, pe_symbol, ask_total)
         try:
@@ -325,7 +360,7 @@ class PaperLongStraddle:
         self.traded_day = day
         start = self._append({"event": "live_start", "ts": now.isoformat(), "day": day, "live": True, "atm": strike,
                               "ce_symbol": ce_symbol, "pe_symbol": pe_symbol, "qty": self.qty,
-                              "expiry_day": expiry_day})
+                              "expiry_day": expiry_day, "context": context or {}})
         if start is None:  # no durable record: no real orders today
             self.last_reject = "ledger_write_failed"
             return None

@@ -264,3 +264,19 @@ def test_straddle_live_api_reads_and_refuses_when_not_allowed(tmp_path, monkeypa
 
     off = asyncio.run(main.api_straddle_live_set(Req(), enabled=False))
     assert off["live"]["enabled"] is False
+
+
+def test_open_logs_the_entry_conditions(tmp_path) -> None:
+    rows = quotes(130, 110)
+    rows["NSE:NIFTY 50"] = {"last_price": 23000.0, "ohlc": {"close": 22900.0}}
+    rows["NSE:INDIA VIX"] = {"last_price": 12.5, "ohlc": {"close": 12.0}}
+    ctx = frame(mk(tmp_path), t("09:16"), rows)["context"]
+    assert ctx["ce_pe_imbalance"] == round(20 / 240, 4)
+    assert ctx["straddle_pct_spot"] == round(240 / 23000 * 100, 3) and ctx["spot"] == 23000.0
+    assert ctx["gap_pct"] == round(100 / 22900 * 100, 3)
+    assert ctx["vix"] == 12.5 and ctx["vix_chg"] == 0.5
+
+
+def test_open_without_spot_or_vix_still_trades(tmp_path) -> None:
+    ev = frame(mk(tmp_path), t("09:16"), quotes(120, 120))
+    assert ev["event"] == "open" and ev["context"] == {"ce_pe_imbalance": 0.0}

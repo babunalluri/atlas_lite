@@ -881,6 +881,17 @@ class FeedEngine:
                 return
 
             if access_token == self.rest.access_token:
+                # Same token: Kite may have started accepting it (seen 4 Nov: a fresh login's token was
+                # refused for an hour, then worked) - ask Kite before keeping the banner up.
+                try:
+                    await self.rest.check_session()
+                except Exception:  # noqa: BLE001
+                    pass
+                else:
+                    if self._kite_auth_error:
+                        self._log.info("Kite session works again with the same token — auth error cleared")
+                    self._kite_auth_error = ""
+                    return
                 self._kite_auth_error = (
                     "Kite access token expired — update kite_credentials on disk "
                     "(python3 scripts/kite_get_access_token.py)"
