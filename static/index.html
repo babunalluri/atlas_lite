@@ -994,16 +994,19 @@
       z-index: 5;
       pointer-events: none;
       font-family: ui-monospace, monospace;
-      font-size: 0.6875rem;
+      font-size: 0.625rem;
       font-weight: 700;
       color: var(--ink);
-      line-height: 1.35;
-      padding: 5px 8px;
+      line-height: 1.3;
+      padding: 4px 7px;
       border-radius: 6px;
       background: color-mix(in srgb, var(--panel) 88%, transparent);
       border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
       box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
-      max-width: min(520px, calc(100% - 20px));
+      /* Keep OHLC chip compact — do not grow with indicator dumps. */
+      max-width: min(240px, calc(100% - 24px));
+      white-space: normal;
+      overflow-wrap: anywhere;
     }
     .chart-draw-mode {
       position: absolute;
@@ -3115,6 +3118,7 @@
     }
 
     function formatHudTime(ts) {
+      // Compact: "03 Nov 14:40" — no comma / IST (chart is always IST).
       return new Date(Number(ts)).toLocaleString("en-IN", {
         timeZone: "Asia/Kolkata",
         day: "2-digit",
@@ -3122,7 +3126,7 @@
         hour: "2-digit",
         minute: "2-digit",
         hour12: false,
-      }) + " IST";
+      }).replace(",", "");
     }
 
     function formatHudNum(value, digits) {
@@ -3146,43 +3150,31 @@
       el.style.setProperty("--chart-hud-top", `${top}px`);
     }
 
-    function renderOhlcHud(k, crosshairData) {
+    function clearOhlcHud() {
+      const el = document.getElementById("chartOhlcHud");
+      if (el) el.textContent = "";
+    }
+
+    function renderOhlcHud(k, _crosshairData) {
       const el = document.getElementById("chartOhlcHud");
       if (!el) return;
+      // On-demand only: empty/missing bar → hide (mouse left chart / no crosshair).
       if (!k || k.close == null) {
         el.textContent = "";
         return;
       }
+      // OHLC chip only — indicator values live in their own pane tooltips;
+      // dumping them here made the popup cover half the chart.
       let html =
         `${formatHudTime(k.timestamp)}<br>` +
-        `O ${formatHudNum(k.open, 2)}  H ${formatHudNum(k.high, 2)}  ` +
+        `O ${formatHudNum(k.open, 2)}  H ${formatHudNum(k.high, 2)}<br>` +
         `L ${formatHudNum(k.low, 2)}  C ${formatHudNum(k.close, 2)}<br>` +
-        `FUT Vol ${formatHudNum(k.volume, 0)}  OI ${formatHudNum(k.oi, 0)}`;
+        `Vol ${formatHudNum(k.volume, 0)}  OI ${formatHudNum(k.oi, 0)}`;
 
-      if (crosshairData && crosshairData.indicatorData) {
-        const parts = [];
-        Object.entries(crosshairData.indicatorData).forEach(([paneId, indMap]) => {
-          if (!indMap) return;
-          Object.entries(indMap).forEach(([name, vals]) => {
-            if (!vals || typeof vals !== "object") return;
-            const sub = [];
-            Object.entries(vals).forEach(([kKey, v]) => {
-              if (v != null && Number.isFinite(Number(v))) {
-                sub.push(`${kKey.toUpperCase()} ${Number(v).toFixed(2)}`);
-              }
-            });
-            if (sub.length) {
-              parts.push(`<b>${name}</b> ${sub.join(" ")}`);
-            }
-          });
-        });
-        if (parts.length) {
-          html += `<br>${parts.join("  ·  ")}`;
-        }
-      } else if (latestFeedAdx != null && Number.isFinite(Number(latestFeedAdx))) {
-        html += `<br><b>ADX</b> ${Number(latestFeedAdx).toFixed(2)}`;
+      if (latestFeedAdx != null && Number.isFinite(Number(latestFeedAdx))) {
+        html += `<br>ADX ${Number(latestFeedAdx).toFixed(1)}`;
         if (latestFeedAtr != null && Number.isFinite(Number(latestFeedAtr))) {
-          html += `  ·  <b>ATR</b> ${Number(latestFeedAtr).toFixed(2)}`;
+          html += `  ATR ${Number(latestFeedAtr).toFixed(1)}`;
         }
       }
 
@@ -5134,10 +5126,17 @@
     function bindChartHud() {
       if (!niftyChart || chartHudBound) return;
       chartHudBound = true;
+      // Show OHLC chip only while the crosshair is over a bar; hide when it leaves.
       niftyChart.subscribeAction("onCrosshairChange", (data) => {
         const k = data && data.kLineData;
         if (k) renderOhlcHud(k, data);
+        else clearOhlcHud();
       });
+      const host = document.getElementById("klineHost");
+      if (host && !host._ohlcLeaveBound) {
+        host._ohlcLeaveBound = true;
+        host.addEventListener("pointerleave", clearOhlcHud);
+      }
     }
 
     function checkPriceAlerts(bars) {
@@ -5173,6 +5172,7 @@
       chartHasFullData = false;
       chartHasVol = false;
       chartHudBound = false;
+      clearOhlcHud();
       chartDrawTool = null;
       overlayHistory = [[]];
       overlayRedo = [];
@@ -5408,11 +5408,7 @@
       clearAutoSessionOverlays();
       restoreIndicators();
       syncPred30Pad();
-      if (bars.length) {
-        const last = bars[bars.length - 1];
-        renderOhlcHud(last);
-        checkPriceAlerts(bars);
-      }
+      if (bars.length) checkPriceAlerts(bars);
     }
 
     function mergeCandleBars(incoming) {
@@ -5463,7 +5459,6 @@
       }
       unlockYScale();
       hideNativeChartLabels();
-      renderOhlcHud(bars[bars.length - 1]);
       checkPriceAlerts(bars);
     }
 
