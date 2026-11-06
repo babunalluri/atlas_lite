@@ -25,7 +25,8 @@ Customer book (Sensibull-style short IC):
   the set's entry spot.
 
 Ledger: ``paper_short_iron_condor.jsonl``.
-On by default; disable with ``ATLAS_LITE_PAPER_SHORT_IC=0``.
+Retired 6 Nov 2026 (−₹28,036 over 14 paper days, 7 losing; −₹33.7k on 2–6 Nov alone): off by
+default; ``ATLAS_LITE_PAPER_SHORT_IC=1`` turns it back on. The ledger is kept.
 """
 
 from __future__ import annotations
@@ -93,7 +94,7 @@ class QuoteSource(Protocol):
 
 
 def paper_short_ic_enabled() -> bool:
-    raw = os.environ.get("ATLAS_LITE_PAPER_SHORT_IC", "1").strip().lower()
+    raw = os.environ.get("ATLAS_LITE_PAPER_SHORT_IC", "0").strip().lower()
     return raw in ("1", "true", "yes")
 
 

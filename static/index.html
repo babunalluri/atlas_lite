@@ -2368,75 +2368,20 @@
       </div>
       <div class="history-detail" id="agentLiveLine">Live: off (paper only)</div>
       <div class="history-detail" id="agentPositionLine">Agent book: —</div>
-      <div class="history-detail" id="aiAgentLine">AI agent book: —</div>
-      <div class="history-toolbar" style="margin-top:0;">
-        <button type="button" id="aiAgentApproveBtn" title="Accept promoted model for real paper opens (not shadow)">Approve AI agent</button>
-        <span class="history-meta" id="aiAgentMeta">Promoted fit still needs approval before paper opens</span>
-      </div>
-      <div class="history-detail" id="factorPaperLine">Factor paper: —</div>
       <div class="history-detail" id="longStraddleLine">Long straddle: —</div>
       <label class="history-meta" for="straddleLiveToggle" style="display:inline-flex;align-items:center;gap:6px;margin:0 0 0.4rem 0;" title="Real Kite orders for today's 09:16 long straddle (1 lot) — requires sign-in; good for today only">
         <input type="checkbox" id="straddleLiveToggle" />
         <span id="straddleLiveLabel">Live straddle (today only)</span>
       </label>
       <div class="history-detail" id="longStraddleTpLine">Long straddle +20% TP: —</div>
+      <div class="history-detail" id="longStraddleTrailLine">Long straddle trail: —</div>
+      <div class="history-detail" id="longStraddleLeg50Line">Long straddle leg −50%: —</div>
       <div class="history-detail" id="scalperV3Line">Scalper v3: —</div>
+      <div class="history-detail" id="scalperV31415Line">Scalper v3 14:15 hold: —</div>
+      <div class="history-detail" id="scalperV3WingsLine">Scalper v3 + 1,000 wings: —</div>
       <div class="history-detail" id="weeklyStrangleLine">Weekly strangle: —</div>
       <div class="history-detail" id="weeklyCondorLine">Weekly condor: —</div>
-      <div class="history-detail" id="cfMeta">Cash–futures (10:15–14:45): —</div>
-      <div class="history-detail" id="pobMeta">Pre-open basis (09:15–10:00): —</div>
-      <div class="history-detail" id="arbMeta">NSE vs BSE gaps: —</div>
-      <div class="history-detail" id="arbLiveLine">Arb live: —</div>
-      <label class="history-meta" for="arbLiveToggle" style="display:inline-flex;align-items:center;gap:6px;margin:0 0 0.4rem 0;" title="Real Kite IOC for confirmed ₹500 NSE–BSE arb — requires sign-in; day auto-off">
-        <input type="checkbox" id="arbLiveToggle" />
-        Live arb (₹500 confirmed, open window)
-      </label>
-      <div class="history-table-wrap">
-        <table class="history-table" id="arbTable">
-          <thead>
-            <tr><th>Group</th><th>Stocks</th><th>Crossings</th><th>Beat costs</th><th>Est. net ≥ min</th><th>Lasted ≥0.5 s</th><th>₹ (≥0.5 s)</th><th id="arbPaperHead">Paper tries</th><th>Both filled</th><th>One leg</th><th>Neither</th><th>Unknown</th><th>Paper net ₹</th></tr>
-          </thead>
-          <tbody id="arbRows">
-            <tr><td colspan="13" class="hist-muted">Waiting for the NSE vs BSE watcher (runs 09:15–15:30)</td></tr>
-          </tbody>
-        </table>
-      </div>
-      <div class="history-toolbar" style="margin-top:0;">
-        <span class="history-meta" id="arbTradesMeta">Paper trades: —</span>
-        <label class="history-meta" for="arbTrack">Track
-          <select id="arbTrack">
-            <option value="">main (₹500+)</option>
-            <option value="1">research ₹1+ (beats costs)</option>
-            <option value="100">research ₹100+</option>
-            <option value="200">research ₹200+</option>
-            <option value="300">research ₹300+</option>
-            <option value="1000">research ₹1,000+</option>
-          </select>
-        </label>
-        <label class="history-meta" for="arbConfirm">Fires on
-          <select id="arbConfirm">
-            <option value="">first sighting</option>
-            <option value="1">confirmed (seen twice)</option>
-          </select>
-        </label>
-        <label class="history-meta" for="arbLatency">Order delay
-          <select id="arbLatency">
-            <option value="100">100 ms</option>
-            <option value="300" selected>300 ms (Kite-like)</option>
-            <option value="600">600 ms</option>
-          </select>
-        </label>
-      </div>
-      <div class="history-table-wrap" style="max-height:22rem;overflow:auto;">
-        <table class="history-table" id="arbTradesTable">
-          <thead>
-            <tr><th>Time</th><th>Stock</th><th>Group</th><th>Direction</th><th>Buy @ / Sell @</th><th>Qty</th><th>Est. net ₹</th><th>Bought</th><th>Sold</th><th>Outcome</th><th>Gross ₹</th><th>Unwind ₹</th><th>Net ₹</th></tr>
-          </thead>
-          <tbody id="arbTradesRows">
-            <tr><td colspan="13" class="hist-muted">No paper trades yet</td></tr>
-          </tbody>
-        </table>
-      </div>
+      <div class="history-detail" id="weeklyStrangle1000Line">Weekly strangle 1,000: —</div>
       <div class="history-detail" id="agentMacroLine">Macro: —</div>
       <div class="history-detail" id="agentDecision">Last cycle: —</div>
       <div class="history-table-wrap">
@@ -6900,213 +6845,6 @@
       }).join("");
     }
 
-    function renderAiAgentBook(ai) {
-      const line = document.getElementById("aiAgentLine");
-      const meta = document.getElementById("aiAgentMeta");
-      const btn = document.getElementById("aiAgentApproveBtn");
-      if (!line) return;
-      const promoted = !!ai.promoted;
-      const approved = !!ai.approved;
-      const canOpen = !!ai.can_open;
-      const shadow = !!ai.shadow;
-      const pos = ai.position;
-      if (!ai.enabled) {
-        line.textContent = "AI agent · retired 2 Nov (shadow −₹2,450, side choice no better than random) · ledger kept";
-        if (meta) meta.textContent = "";
-        if (btn) btn.hidden = true;
-        return;
-      }
-      if (btn) btn.hidden = false;
-      let state = "off";
-      if (canOpen) state = "paper ready";
-      else if (promoted && !approved) state = "promoted · needs approval (shadow only)";
-      else if (!promoted) state = "not promoted (shadow only)";
-      let posText = "FLAT";
-      if (pos) {
-        posText = `OPEN ${String(pos.style || "").toUpperCase()} ${String(pos.side || "").toUpperCase()} @ ${pos.entry}`;
-      } else if (shadow) {
-        posText = "SHADOW open";
-      }
-      line.textContent =
-        `AI agent · ${state} · ${posText} · entries ${ai.entries_today ?? 0} · day PnL ${ai.day_pnl ?? 0}` +
-        (ai.last_reject ? ` · ${ai.last_reject}` : "") +
-        (ai.test_net != null ? ` · test_net ${ai.test_net}` : "");
-      if (meta) {
-        if (canOpen) meta.textContent = "Approved · real paper opens enabled";
-        else if (promoted) meta.textContent = "Promoted fit — Approve to enable paper opens (shadow until then)";
-        else meta.textContent = "Model not promoted — shadow fills only";
-      }
-      if (btn) {
-        btn.disabled = !promoted || approved;
-        btn.textContent = approved ? "AI agent approved" : "Approve AI agent";
-      }
-    }
-
-    function renderFactorPaper(fp) {
-      const line = document.getElementById("factorPaperLine");
-      if (!line) return;
-      // Retired while off: no line at all.
-      line.hidden = !fp.enabled;
-      if (!fp.enabled) return;
-      const pos = fp.position;
-      const posText = pos
-        ? `OPEN ${String(pos.side || "").toUpperCase()} @ ${pos.entry} (mark ${pos.mark ?? "—"}, T ${pos.target} / S ${pos.stop})`
-        : "FLAT";
-      const sig = fp.last_signal;
-      line.textContent =
-        `Factor paper · ${posText} · entries ${fp.entries_today ?? 0}/${fp.max_entries_per_day ?? 3} · day PnL ${fp.day_pnl ?? 0}` +
-        (sig ? ` · last signal ${sig.bar} ${String(sig.side).toUpperCase()} ${sig.move > 0 ? "+" : ""}${sig.move}pt` : "") +
-        ((fp.side_locked || []).length ? ` · locked ${fp.side_locked.join("/").toUpperCase()}` : "") +
-        (fp.last_reject ? ` · ${fp.last_reject}` : "");
-    }
-
-    // NSE vs BSE gap watcher (paper only): small caps first, paper results at the realistic 300 ms delay.
-    // Cash–futures spread book (cf-watch): full-lot signals, one paper position at a time.
-    function renderCf(cf) {
-      const meta = document.getElementById("cfMeta");
-      if (!meta) return;
-      if (!cf || !cf.available) {
-        meta.textContent = "Cash–futures (10:15–14:45): no report yet · paper only";
-        return;
-      }
-      const when = String(cf.updated_at || "").slice(11, 16);
-      const probes = (cf.entry_probes && cf.entry_probes.confirmed) || {};
-      const open = cf.open_position ? ` · open ${cf.open_position.stock}` : "";
-      const errs = cf.preopen_book_errors ? ` · pre-open book errors ${cf.preopen_book_errors}` : "";
-      meta.textContent =
-        `Cash–futures · ${cf.day} · ${cf.final ? "final" : "live " + when}` +
-        ` · signals ${cf.signals ?? 0} (fit cap ${cf.signals_fit_capital ?? 0})` +
-        ` · confirmed probes both ${probes.both ?? 0} / one-leg ${probes.one_leg ?? 0}` +
-        ` · trades ${cf.trades ?? 0} · unwinds ${cf.unwinds ?? 0} · net ₹${cf.net ?? 0}${open}${errs}` +
-        ` · paper only, no orders`;
-    }
-
-    // Pre-open basis book (hosted by cf-watch): rich futures vs the stock's previous-day closing basis.
-    function renderPob(pob) {
-      const meta = document.getElementById("pobMeta");
-      if (!meta) return;
-      if (!pob || !pob.available) {
-        meta.textContent = "Pre-open basis (09:15–10:00): no report yet · paper only, hosted by cf-watch";
-        return;
-      }
-      const when = String(pob.updated_at || "").slice(11, 16);
-      const probes = (pob.entry_probes && pob.entry_probes.confirmed) || {};
-      const both = probes.both ?? 0;
-      const one = probes.one_leg ?? 0;
-      const open = pob.open_position ? ` · open ${pob.open_position.stock}` : "";
-      meta.textContent =
-        `Pre-open basis · ${pob.day} · ${pob.final ? "final" : "live " + when}` +
-        ` · signals ${pob.signals ?? 0} (fit cap ${pob.signals_fit_capital ?? 0})` +
-        ` · confirmed probes both ${both} / one-leg ${one}` +
-        ` · trades ${pob.trades ?? 0} · net ₹${pob.net ?? 0}${open}` +
-        ` · paper only, no orders`;
-    }
-    let arbLast = null;
-    function renderArb(arb) {
-      const meta = document.getElementById("arbMeta");
-      const tbody = document.getElementById("arbRows");
-      if (!meta || !tbody) return;
-      arbLast = arb;
-      arbDay = (arb && arb.day) || null;  // the trade list shows the same day as this summary
-      if (!arb || !arb.available) {
-        meta.textContent = "NSE vs BSE gaps · no report yet (watcher runs 09:15–15:30 on trading days)";
-        tbody.innerHTML = `<tr><td colspan="13" class="hist-muted">No report yet</td></tr>`;
-        return;
-      }
-      // The paper columns follow the Track and Order delay selectors below the table.
-      const lat = `${document.getElementById("arbLatency")?.value || "300"}ms`;
-      const trackSel = document.getElementById("arbTrack")?.value || "";
-      const conf = document.getElementById("arbConfirm")?.value === "1";
-      const head = document.getElementById("arbPaperHead");
-      if (head) head.textContent = `Paper tries (${trackSel ? "₹" + trackSel + "+" : "main"}, ${lat}${conf ? ", confirmed" : ""})`;
-      const when = String(arb.updated_at || "").slice(11, 16);
-      const minNet = arb.min_net != null ? ` · paper trades need est. net ≥ ₹${arb.min_net}` : "";
-      const attemptUntil = arb.attempt_until || "15:15";
-      meta.textContent = `NSE vs BSE gaps · ${arb.day} · ${arb.final ? "final" : "live, updated " + when}${minNet} · attempts until ${attemptUntil}`;
-      const rows = ["small", "mid", "large", "all"].filter((g) => arb[g]).map((g) => {
-        const r = arb[g];
-        const block = conf
-          ? (trackSel ? ((r.paper_research_confirmed || {})[trackSel] || {}) : (r.paper_confirmed || {}))
-          : (trackSel ? ((r.paper_research || {})[trackSel] || {}) : (r.paper || {}));
-        const p = block[lat] || {};
-        const top = Object.keys(r.top_profitable_stocks || {}).slice(0, 3).join(", ");
-        const cell = (v) => escapeTradeHtml(v ?? "—");
-        return `<tr${g === "all" ? ' class="hist-muted"' : ""}>
-          <td title="${escapeTradeHtml(top ? "most profitable crossings: " + top : "")}">${cell(g)}</td>
-          <td>${cell(r.stocks)}</td>
-          <td>${cell(r.crossings)}</td>
-          <td>${cell(r.crossings_profitable_after_costs)}</td>
-          <td>${cell(r.crossings_meeting_min_net)}</td>
-          <td>${cell(r.profitable_lasting_0_5s_or_more)}</td>
-          <td>${cell(r.sum_best_net_lasting_0_5s_or_more)}</td>
-          <td>${cell(p.attempts)}</td>
-          <td>${cell(p.both)}</td>
-          <td>${cell((p.one_leg ?? 0) + (p.partial ?? 0))}</td>
-          <td>${cell(p.none)}</td>
-          <td>${cell(p.unknown)}</td>
-          <td>${cell(p.net)}</td>
-        </tr>`;
-      });
-      tbody.innerHTML = rows.join("") || `<tr><td colspan="13" class="hist-muted">No data yet</td></tr>`;
-    }
-
-    // One row per paper attempt (simulated IOC pair), newest first.
-    const ARB_OUTCOME = {
-      both: "both filled", none: "neither filled", one_leg: "one leg (unwound)",
-      partial: "partial (unwound)", unknown: "unknown (no price update)",
-    };
-    let arbDay = null;
-    function renderArbTrades(data) {
-      const meta = document.getElementById("arbTradesMeta");
-      const tbody = document.getElementById("arbTradesRows");
-      if (!meta || !tbody) return;
-      if (!data || !data.day || !data.count) {
-        meta.textContent = "Paper trades: none yet";
-        tbody.innerHTML = `<tr><td colspan="13" class="hist-muted">No paper trades yet</td></tr>`;
-        return;
-      }
-      const shown = data.shown < data.count ? ` · showing latest ${data.shown} of ${data.count}` : ` · ${data.count} attempts`;
-      const trackText = (data.track != null ? ` · track ₹${data.track}+` : "") + (data.confirmed ? " · confirmed" : "");
-      meta.textContent = `Paper trades ${data.day}${trackText} · ${data.latency_ms} ms delay${shown} · net ₹${data.net} (all ${data.count})`;
-      const cell = (v) => escapeTradeHtml(v ?? "—");
-      tbody.innerHTML = (data.trades || []).map((t) => {
-        const stale = t.unwind_quote_updated === false ? " · unwind: no fresh price, assumed one spread worse" : "";
-        return `<tr>
-          <td>${cell(String(t.seen || "").slice(11, 23))}</td>
-          <td>${cell(t.stock)}</td>
-          <td>${cell(t.group)}</td>
-          <td>${cell(t.direction)}</td>
-          <td>${cell(t.buy_limit)} / ${cell(t.sell_limit)}</td>
-          <td>${cell(t.qty)}</td>
-          <td>${cell(t.est_net)}</td>
-          <td>${cell(t.bought)}</td>
-          <td>${cell(t.sold)}</td>
-          <td>${cell((ARB_OUTCOME[t.outcome] || t.outcome) + stale)}</td>
-          <td>${cell(t.gross)}</td>
-          <td>${cell(t.unwind_pnl)}</td>
-          <td>${cell(t.net)}</td>
-        </tr>`;
-      }).join("") || `<tr><td colspan="13" class="hist-muted">No paper trades at this delay</td></tr>`;
-    }
-
-    function loadArbTrades() {
-      const lat = document.getElementById("arbLatency")?.value || "300";
-      const dayQ = arbDay ? `&day=${encodeURIComponent(arbDay)}` : "";
-      const track = document.getElementById("arbTrack")?.value || "";
-      const trackQ = track ? `&track=${encodeURIComponent(track)}` : "";
-      const confQ = document.getElementById("arbConfirm")?.value === "1" ? "&confirmed=true" : "";
-      fetch(`/api/arb/trades?latency_ms=${encodeURIComponent(lat)}${dayQ}${trackQ}${confQ}`)
-        .then((r) => (r.ok ? r.json() : null))
-        .then(renderArbTrades)
-        .catch(() => renderArbTrades(null));
-    }
-    for (const id of ["arbLatency", "arbTrack", "arbConfirm"]) {
-      document.getElementById(id)?.addEventListener("change", () => {
-        renderArb(arbLast);  // summary columns follow the selectors too
-        loadArbTrades();
-      });
-    }
-
     // Long straddle live switch: follows /api/straddle/live (host allows it, and ticked for today).
     function renderStraddleLive(live) {
       const toggle = document.getElementById("straddleLiveToggle");
@@ -7168,20 +6906,27 @@
       const tp = pos && pos.target != null ? ` · take-profit ${pos.target}` : "";
       const rule = ls.take_profit
         ? `buys the ATM straddle at 09:16, sells at +${Math.round(ls.take_profit * 100)}% or at 13:00`
+        : ls.trail_start
+        ? `buys the ATM straddle at 09:16, trails from +${Math.round(ls.trail_start * 100)}% (exit ${Math.round(ls.trail_gap * 100)}% off the peak) or sells at 13:00`
+        : ls.leg_stop
+        ? `buys the ATM straddle at 09:16, sells a leg at −${Math.round(ls.leg_stop * 100)}%, the rest at 13:00`
         : "buys the ATM straddle at 09:16, sells at 13:00";
+      const sold = pos && pos.sold_leg ? ` · ${pos.sold_leg.toUpperCase()} sold` : "";
+      const peak = pos && pos.peak != null ? ` · peak ${pos.peak}` : "";
       const stop = pos && pos.stop != null ? ` · stop ${pos.stop}` : "";
       const mode = pos && pos.live ? " · LIVE" : "";
       const manual = pos && pos.manual_needed ? " · EXIT FAILED — close manually in Kite" : "";
       line.textContent = pos
-        ? `${name}${mode} · long ${pos.atm} straddle${pos.expiry_day ? " (expiry day)" : ""} · paid ${pos.debit} · worth now ${pos.value_now ?? "—"}${tp}${stop} · open PnL ${pos.open_pnl ?? "—"}${manual}`
+        ? `${name}${mode} · long ${pos.atm} straddle${pos.expiry_day ? " (expiry day)" : ""} · paid ${pos.debit} · worth now ${pos.value_now ?? "—"}${tp}${stop}${sold}${peak} · open PnL ${pos.open_pnl ?? "—"}${manual}`
         : `${name} · FLAT · ${rule}` + (ls.last_reject ? ` · ${ls.last_reject}` : "");
     }
 
-    function renderScalperV3(v3) {
-      const line = document.getElementById("scalperV3Line");
+    function renderScalperV3(v3, elId = "scalperV3Line", flag = "ATLAS_LITE_PAPER_SCALPER_V3") {
+      const line = document.getElementById(elId);
       if (!line) return;
+      const name = v3.name || "Scalper v3";
       if (!v3.enabled) {
-        line.textContent = "Scalper v3 · off (ATLAS_LITE_PAPER_SCALPER_V3=0)";
+        line.textContent = `${name} · off (${flag}=0)`;
         return;
       }
       const pos = v3.position;
@@ -7189,8 +6934,9 @@
       const g = v3.gamma;
       const gammaText = g ? ` · last entry gamma ${g.regime} (${g.share > 0 ? "+" : ""}${g.share})` : "";
       line.textContent = (pos
-        ? `Scalper v3 · short ${pos.atm} straddle · credit ${pos.credit} · cost now ${pos.cost_now ?? "—"} (target ${pos.target} / stop ${pos.stop}) · open PnL ${pos.open_pnl ?? "—"}`
-        : `Scalper v3 · FLAT · sells the ATM straddle at 13:00 on non-expiry days` + (v3.last_reject ? ` · ${v3.last_reject}` : "")) + gammaText;
+        ? `${name} · short ${pos.atm} ${pos.wings ? "iron fly" : "straddle"} · credit ${pos.credit} · cost now ${pos.cost_now ?? "—"}` +
+          (pos.target != null ? ` (target ${pos.target} / stop ${pos.stop})` : " (held to 15:14)") + ` · open PnL ${pos.open_pnl ?? "—"}`
+        : `${name} · FLAT · sells the ATM ${v3.wing_pts ? `straddle with ${v3.wing_pts}-pt wings` : "straddle"} at ${v3.entry_at || "13:00"} on non-expiry days` + (v3.last_reject ? ` · ${v3.last_reject}` : "")) + gammaText;
     }
 
     function renderWeeklySell(elId, wb) {
@@ -7203,29 +6949,13 @@
       }
       const pos = wb.position;
       if (!pos) {
-        line.textContent = `${name} · FLAT · enters 15:25 three sessions before expiry` + (wb.last_reject ? ` · ${wb.last_reject}` : "");
+        const sessions = wb.sessions === 2 ? "two" : "three";
+        line.textContent = `${name} · FLAT · enters 15:25 ${sessions} sessions before expiry` + (wb.last_reject ? ` · ${wb.last_reject}` : "");
         return;
       }
       line.textContent =
         `${name} · exp ${pos.expiry} · ${pos.legs.join(", ")} · credit ${pos.credit}` +
         ` · cost now ${pos.cost_now ?? "—"} (stop ${pos.stop_level}) · open PnL ${pos.open_pnl ?? "—"}`;
-    }
-
-    async function approveAiAgent() {
-      const meta = document.getElementById("aiAgentMeta");
-      const resp = await fetch("/api/paper/ai_agent/approve", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: atlasApiHeaders(),
-      });
-      const data = await resp.json().catch(() => ({}));
-      if (!resp.ok || data.ok === false) {
-        if (meta) meta.textContent = `Approve failed: ${data.detail || data.error || resp.status}`;
-        throw new Error(data.detail || data.error || `HTTP ${resp.status}`);
-      }
-      if (meta) meta.textContent = "Approved · real paper opens enabled immediately";
-      await loadAgentPanel();
-      return data;
     }
 
     function renderAgentLive(st, paper) {
@@ -7357,71 +7087,6 @@
       await loadAgentPanel();
     }
 
-    function renderArbLiveFromReport(liveBlock) {
-      const line = document.getElementById("arbLiveLine");
-      const toggle = document.getElementById("arbLiveToggle");
-      if (!line) return;
-      const flag = (liveBlock && liveBlock.flag) || {};
-      const day = (liveBlock && liveBlock.day_state) || {};
-      const allowed = !!flag.allowed;
-      const on = !!flag.enabled;
-      if (toggle && toggle !== document.activeElement) {
-        toggle.checked = on;
-        toggle.disabled = !allowed && !on;
-      }
-      if (!allowed) {
-        line.textContent = "Arb live: locked off on this host (ATLAS_LITE_ARB_LIVE_ALLOWED=0)";
-        return;
-      }
-      const win = `${flag.live_after || "09:15"}–${flag.live_until || "09:20"}`;
-      const stop = flag.day_loss_stop != null ? ` · day stop ₹${flag.day_loss_stop}` : "";
-      const pnl = day.day_pnl != null ? ` · day P&L ₹${day.day_pnl}` : "";
-      const killed = day.stopped ? " · STOPPED" : (day.opens_blocked ? " · opens blocked" : "");
-      line.textContent = on
-        ? `Arb live: ON · confirmed ₹500 IOC · window ${win}${stop}${pnl}${killed} · auto-off at session end`
-        : `Arb live: off (paper only)${stop}`;
-    }
-
-    // The checkbox follows /api/arb/live (this host's switch and today's flag), not the day's report:
-    // a report written before the live path existed, or not yet written before 09:15, has no live block.
-    function loadArbLive() {
-      fetch("/api/arb/live")
-        .then((r) => (r.ok ? r.json() : null))
-        .then((d) => { if (d) renderArbLiveFromReport({ flag: d.live, day_state: d.day_state }); })
-        .catch(() => {});
-    }
-
-    async function setArbLive(enabled) {
-      const url = new URL("/api/arb/live", window.location.origin);
-      url.searchParams.set("enabled", enabled ? "true" : "false");
-      const resp = await fetch(url.pathname + "?" + url.searchParams.toString(), {
-        method: "POST",
-        credentials: "same-origin",
-      });
-      const data = await resp.json().catch(() => ({}));
-      if (resp.status === 401) throw new Error("login_required");
-      if (!resp.ok || data.ok === false) {
-        throw new Error(data.detail || data.error || `HTTP ${resp.status}`);
-      }
-      loadArbLive();
-    }
-
-    document.getElementById("arbLiveToggle")?.addEventListener("change", async (ev) => {
-      const box = ev.target;
-      const want = !!box.checked;
-      try {
-        await setArbLive(want);
-      } catch (err) {
-        box.checked = !want;
-        const line = document.getElementById("arbLiveLine");
-        if (line) {
-          line.textContent = String(err && err.message) === "login_required"
-            ? "Not signed in — required for Live arb"
-            : `Arb live toggle failed: ${err.message || err}`;
-        }
-      }
-    });
-
     async function loadAgentPanel() {
       const meta = document.getElementById("agentMeta");
       const macroEl = document.getElementById("agentMacroLine");
@@ -7461,28 +7126,17 @@
             posEl.textContent = `Agent book FLAT · entries today ${ag.entries_today ?? 0} · day PnL ${ag.day_pnl ?? 0}`;
           }
         }
-        renderAiAgentBook(paper.ai_agent || {});
-        fetch("/api/arb")
-          .then((r) => (r.ok ? r.json() : null))
-          .then(renderArb)
-          .catch(() => renderArb(null))
-          .finally(loadArbTrades);
-        loadArbLive();
-        fetch("/api/pob")
-          .then((r) => (r.ok ? r.json() : null))
-          .then(renderPob)
-          .catch(() => renderPob(null));
-        fetch("/api/cf")
-          .then((r) => (r.ok ? r.json() : null))
-          .then(renderCf)
-          .catch(() => renderCf(null));
-        renderFactorPaper(paper.factor_paper || {});
         renderLongStraddle(paper.long_straddle || {});
         loadStraddleLive();
         renderLongStraddle(paper.long_straddle_tp20 || {}, "longStraddleTpLine", "ATLAS_LITE_PAPER_LONG_STRADDLE_TP20");
+        renderLongStraddle(paper.long_straddle_trail || {}, "longStraddleTrailLine", "ATLAS_LITE_PAPER_LONG_STRADDLE_TRAIL");
+        renderLongStraddle(paper.long_straddle_leg50 || {}, "longStraddleLeg50Line", "ATLAS_LITE_PAPER_LONG_STRADDLE_LEG50");
         renderScalperV3(paper.scalper_v3 || {});
+        renderScalperV3(paper.scalper_v3_1415 || {}, "scalperV31415Line", "ATLAS_LITE_PAPER_SCALPER_V3_1415");
+        renderScalperV3(paper.scalper_v3_wings || {}, "scalperV3WingsLine", "ATLAS_LITE_PAPER_SCALPER_V3_WINGS");
         renderWeeklySell("weeklyStrangleLine", paper.weekly_strangle || {});
         renderWeeklySell("weeklyCondorLine", paper.weekly_condor5 || {});
+        renderWeeklySell("weeklyStrangle1000Line", paper.weekly_strangle1000 || {});
         if (macroEl) {
           macroEl.textContent =
             `Macro as_of ${macro.fetched_at || "—"} · crude ${fmtMacroPct(macro.crude)} · gold ${fmtMacroPct(macro.gold)} · USDINR ${fmtMacroPct(macro.usdinr)} · ES ${fmtMacroPct(macro.es_futures)} · headlines ${((macro.headlines || []).length)}`;
@@ -7529,19 +7183,6 @@
     document.getElementById("agentClose")?.addEventListener("click", () => { setAgentOpen(false); });
     document.getElementById("agentBackdrop")?.addEventListener("click", () => { setAgentOpen(false); });
     document.getElementById("agentRefreshBtn")?.addEventListener("click", () => { loadAgentPanel(); });
-    document.getElementById("aiAgentApproveBtn")?.addEventListener("click", async () => {
-      const meta = document.getElementById("aiAgentMeta");
-      const ok = window.confirm(
-        "Approve the promoted AI agent model?\n\nThis enables real paper opens (not only shadow) for the current fit. A later refit will need approval again.",
-      );
-      if (!ok) return;
-      try {
-        if (meta) meta.textContent = "Approving…";
-        await approveAiAgent();
-      } catch (err) {
-        if (meta) meta.textContent = String(err?.message || err);
-      }
-    });
     document.getElementById("agentLiveToggle")?.addEventListener("change", async (ev) => {
       const toggle = ev.target;
       const want = !!toggle?.checked;

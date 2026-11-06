@@ -8,7 +8,7 @@ from datetime import date, datetime
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from atlas_lite.paper_weekly_sell import PaperWeeklySell, select_strikes, sessions_until
+from atlas_lite.paper_weekly_sell import PaperWeeklySell, select_fixed_width, select_strikes, sessions_until
 
 EXPIRY = date(2026, 11, 3)  # Tuesday
 ENTRY_DAY = "2026-10-29"  # Thursday: Fri, Mon, Tue = 3 sessions
@@ -87,6 +87,23 @@ def test_opens_once_at_1525_three_sessions_before_expiry(tmp_path) -> None:
     assert ev["max_loss"] is not None
     b.position = None  # a later frame for the same expiry must not reopen
     assert frame(b, t(ENTRY_DAY, "15:26"), chain()) is None
+
+
+def test_select_fixed_width_numbers() -> None:
+    strikes = list(range(20000, 26050, 50))
+    assert select_fixed_width(23010, strikes, strikes, 1000) == (22500, 23550, None, None)
+    assert select_fixed_width(23000, [22600, 22650], strikes, 1000) is None
+
+
+def test_fixed_width_book_opens_two_sessions_before_with_strikes_1000_apart(tmp_path) -> None:
+    b = PaperWeeklySell(path=tmp_path / "w1000.jsonl", strategy="weekly_strangle1000", sessions=2, width_pts=1000)
+    assert frame(b, t(ENTRY_DAY, "15:25"), chain()) is None  # Thursday is 3 sessions before
+    ev = frame(b, t("2026-10-30", "15:25"), chain())
+    assert ev is not None and ev["event"] == "open" and len(ev["legs"]) == 2
+    put = next(leg["strike"] for leg in ev["legs"] if leg["opt"] == "PE")
+    call = next(leg["strike"] for leg in ev["legs"] if leg["opt"] == "CE")
+    assert put <= ev["forward"] - 500 and call >= ev["forward"] + 500 and call - put <= 1050
+    assert ev["reason"] == "1000 pts wide, 2 sessions to expiry" and ev["max_loss"] is None
 
 
 def test_strangle_has_two_legs_and_uncapped_loss(tmp_path) -> None:

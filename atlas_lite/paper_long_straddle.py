@@ -34,6 +34,16 @@ books differ only in the take-profit. Same 37 days: +₹1,065 a day, 65% of days
 the stop; +₹1,079, t 3.01 with it. Kite has no combo order for NIFTY options, so that two-leg
 take-profit would need leg-by-leg handling before it could ever go live.
 
+Variants added 6 Nov 2026 (VARIANTS, paper only, same entry; they differ only in the exit):
+
+- "long_straddle_trail": once the bids reach +10% over the price paid, sell both when they fall 15%
+  below their peak since entry; same -30% stop, else 13:00. Same 37 days: +₹1,248 a day, 64% of days
+  positive, best day +₹9,423 (the best trade-off of 12 trailing settings; every profit lock lowered
+  the average). The peak is kept in memory only: after a restart it starts again from the bids then.
+- "long_straddle_leg50": sell a leg on its own once its bid is 50% below what was paid for it (the
+  first leg only); the other leg rides to 13:00. No straddle stop (the leg exit is the stop). Same 37
+  days: +₹2,033 a day, worst day -₹3,219 (-30% raised the average but had -₹6.6-8.7k days).
+
 The strategy name is the retired iron-fly overlay's ("long_straddle"), which never traded; its two empty
 day rows stay in paper_trades.jsonl (day_pnl events, never read as trades). This book has its own ledger.
 """
@@ -79,6 +89,14 @@ LIVE_EVENTS = frozenset({"order_intent", "order_sent", "order_send_error", "orde
 TP20_STRATEGY = "long_straddle_tp20"
 TP20_LEDGER_NAME = "paper_long_straddle_tp20.jsonl"
 TP20_TAKE_PROFIT = 0.20
+VARIANTS: dict[str, dict[str, Any]] = {
+    "long_straddle_trail": {"ledger": "paper_long_straddle_trail.jsonl", "name": "Long straddle trail",
+                            "env": "ATLAS_LITE_PAPER_LONG_STRADDLE_TRAIL",
+                            "kwargs": {"trail_start": 0.10, "trail_gap": 0.15}},
+    "long_straddle_leg50": {"ledger": "paper_long_straddle_leg50.jsonl", "name": "Long straddle leg −50%",
+                            "env": "ATLAS_LITE_PAPER_LONG_STRADDLE_LEG50",
+                            "kwargs": {"leg_stop": 0.50, "stop_loss": None}},
+}
 
 
 def paper_long_straddle_enabled() -> bool:
@@ -88,6 +106,11 @@ def paper_long_straddle_enabled() -> bool:
 
 def paper_long_straddle_tp20_enabled() -> bool:
     raw = os.environ.get("ATLAS_LITE_PAPER_LONG_STRADDLE_TP20", "1").strip().lower()
+    return raw in ("1", "true", "yes")
+
+
+def paper_long_straddle_variant_enabled(name: str) -> bool:
+    raw = os.environ.get(VARIANTS[name]["env"], "1").strip().lower()
     return raw in ("1", "true", "yes")
 
 
@@ -170,6 +193,11 @@ class LongStraddlePosition:
     expiry_day: bool
     ce_mark: float | None = None
     pe_mark: float | None = None
+    ce_fill: float | None = None  # each leg's ask paid (the leg exit compares against it)
+    pe_fill: float | None = None
+    peak: float = 0.0  # highest bid total since entry (trailing exit; in memory only)
+    sold_leg: str | None = None  # "ce" | "pe" once the leg exit sold it
+    sold_px: float | None = None
 
 
 @dataclass
@@ -181,9 +209,13 @@ class PaperLongStraddle:
     name: str = "Long straddle"
     take_profit: float | None = None  # resting take-profit as a fraction of the price paid (variant book)
     stop_loss: float | None = STOP_LOSS
+    trail_start: float | None = None  # trailing exit arms once the bids are this far above the price paid
+    trail_gap: float | None = None  # ... then sells when they fall this far below their peak
+    leg_stop: float | None = None  # sell a leg on its own once its bid is this far below its own price paid
     month_loss_limit: float = MONTH_LOSS_LIMIT
     order_client: Any = None  # KiteOrderClient for live; None = paper only
     live_flag: Any = None  # DayLiveFlag; live only while it is enabled for today
+    risk: Any = None  # RiskManager: asked before a live entry; logs only unless enforcing
     position: LongStraddlePosition | None = None
     live: LiveStraddle | None = None  # today's live trade while it runs
     pending_close: dict[str, Any] | None = None  # a live close whose ledger line could not be written yet
@@ -259,6 +291,8 @@ class PaperLongStraddle:
             elif kind == "open" and not ev.get("live"):
                 open_ev = ev
                 self.traded_day = str(ev.get("day") or "")
+            elif kind == "leg_close" and open_ev is not None:
+                open_ev = {**open_ev, "sold_leg": ev.get("leg"), "sold_px": ev.get("px")}
             elif kind == "close":
                 if ev.get("live"):
                     live_start = None  # one line ends a live trade and carries its P&L
@@ -280,6 +314,10 @@ class PaperLongStraddle:
                 debit_fill=float(open_ev["debit_fill"]),
                 charges_open=float(open_ev["charges_open"]),
                 expiry_day=bool(open_ev.get("expiry_day")),
+                ce_fill=pick_float(open_ev, "ce_fill"),
+                pe_fill=pick_float(open_ev, "pe_fill"),
+                sold_leg=open_ev.get("sold_leg"),
+                sold_px=pick_float(open_ev, "sold_px"),
             )
 
     # ---- prices ----
@@ -308,19 +346,27 @@ class PaperLongStraddle:
             self.last_reject = "no_atm_quote"
             return None
         day = now.strftime("%Y-%m-%d")
-        if self.live_enabled():
+        live = self.live_enabled()
+        if live and self.risk is not None:
+            verdict = self.risk.check(self.strategy, now, selling=False)
+            if verdict.get("blocks"):  # enforced "no": today's trade stays on paper
+                live = False
+                self._append({"event": "live_risk_block", "ts": now.isoformat(), "day": day, "live": False,
+                              "reasons": verdict.get("reasons")})
+        if live:
             return self._open_live(now, day, strike, ce_symbol, pe_symbol, ce_ask + pe_ask, expiry_day,
                                    entry_context(book, ce, pe))
         charges_open = round(float(kite_nfo_charges([(ce_ask, self.qty, "buy"), (pe_ask, self.qty, "buy")])["total"]), 2)
         pos = LongStraddlePosition(
             day=day, opened_at=now.isoformat(), atm=int(strike), ce_symbol=ce_symbol, pe_symbol=pe_symbol,
             qty=self.qty, debit_fill=round(ce_ask + pe_ask, 2), charges_open=charges_open,
-            expiry_day=expiry_day, ce_mark=ce, pe_mark=pe,
+            expiry_day=expiry_day, ce_mark=ce, pe_mark=pe, ce_fill=ce_ask, pe_fill=pe_ask,
         )
         ev = self._append({
             "event": "open", "ts": now.isoformat(), "day": day, "side": "long", "style": "long",
             "atm": pos.atm, "symbol": f"{ce_symbol},{pe_symbol}", "ce_symbol": ce_symbol, "pe_symbol": pe_symbol,
-            "qty": pos.qty, "ce": ce, "pe": pe, "debit_fill": pos.debit_fill, "entry": pos.debit_fill,
+            "qty": pos.qty, "ce": ce, "pe": pe, "ce_fill": ce_ask, "pe_fill": pe_ask,
+            "debit_fill": pos.debit_fill, "entry": pos.debit_fill,
             "charges_open": charges_open, "expiry_day": expiry_day, "live": False,
             "context": entry_context(book, ce, pe),
             "stop": round(pos.debit_fill * (1 - self.stop_loss), 2) if self.stop_loss else None,
@@ -432,9 +478,12 @@ class PaperLongStraddle:
         pos = self.position
         if pos is None:
             return None
-        known = reason in ("time", "time_late", "target", "stop")
+        known = reason in ("time", "time_late", "target", "stop", "trail")
         prices = []
-        for i, (sym, mark) in enumerate(((pos.ce_symbol, pos.ce_mark), (pos.pe_symbol, pos.pe_mark))):
+        for i, (leg, sym, mark) in enumerate((("ce", pos.ce_symbol, pos.ce_mark), ("pe", pos.pe_symbol, pos.pe_mark))):
+            if pos.sold_leg == leg and pos.sold_px is not None:  # sold earlier by the leg exit
+                prices.append(pos.sold_px)
+                continue
             px = leg_prices[i] if leg_prices is not None else (self._fill(book.get(sym), buying=False) if known else None)
             if px is None and known and mark is not None:
                 px = max(0.05, mark - SLIP_PTS)  # quote blinked this frame: today's last price, sold at a worse fill
@@ -453,6 +502,7 @@ class PaperLongStraddle:
             "qty": pos.qty, "entry": pos.debit_fill, "exit": round(credit, 2) if known else None,
             "pnl_gross": gross, "charges": charges, "pnl": pnl, "pnl_known": known,
             "expiry_day": pos.expiry_day, "reason": reason, "live": False,
+            **({"sold_leg": pos.sold_leg, "sold_px": pos.sold_px} if pos.sold_leg else {}),
         })
         if ev is None:
             return None
@@ -494,7 +544,15 @@ class PaperLongStraddle:
                 hit = self._take_profit_fill(pos, book)
                 if hit is not None:
                     return self._close(now, book, "target", leg_prices=hit)
-            if self.stop_loss and not hm_ge(now, EXIT_AT) and self._stop_hit(pos, book):
+            if self.trail_start is not None and not hm_ge(now, EXIT_AT):
+                hit = self._trail_hit(pos, book)
+                if hit is not None:
+                    return self._close(now, book, "trail", leg_prices=hit)
+            if self.leg_stop is not None and pos.sold_leg is None and not hm_ge(now, EXIT_AT):
+                ev = self._leg_exit(now, pos, book)
+                if ev is not None:
+                    return ev
+            if self.stop_loss and pos.sold_leg is None and not hm_ge(now, EXIT_AT) and self._stop_hit(pos, book):
                 return self._close(now, book, "stop")
             if hm_ge(now, EXIT_LATE):
                 return self._close(now, book, "time_late")
@@ -523,6 +581,37 @@ class PaperLongStraddle:
             return False
         return bids[0] + bids[1] <= pos.debit_fill * (1 - float(self.stop_loss or 0.0))
 
+    def _trail_hit(self, pos: LongStraddlePosition, book: QuoteSource) -> tuple[float, float] | None:
+        """Both bids (the sale prices) once the bid total has been trail_start above the price paid and
+        has since fallen trail_gap below its peak; None otherwise."""
+        bids = [quote_bid(book.get(s)) for s in (pos.ce_symbol, pos.pe_symbol)]
+        if any(b is None or b <= 0 for b in bids):
+            return None
+        total = bids[0] + bids[1]
+        pos.peak = max(pos.peak, total)
+        armed = pos.peak >= pos.debit_fill * (1 + float(self.trail_start or 0.0))
+        if armed and total <= pos.peak * (1 - float(self.trail_gap or 0.0)):
+            return float(bids[0]), float(bids[1])
+        return None
+
+    def _leg_exit(self, now: datetime, pos: LongStraddlePosition, book: QuoteSource) -> dict[str, Any] | None:
+        """Sell the first leg whose bid is leg_stop below its own ask paid; the other leg rides on."""
+        for leg, sym, paid in (("ce", pos.ce_symbol, pos.ce_fill), ("pe", pos.pe_symbol, pos.pe_fill)):
+            bid = quote_bid(book.get(sym))
+            if paid is None or bid is None or bid <= 0:
+                continue
+            if bid <= paid * (1 - float(self.leg_stop or 0.0)):
+                ev = self._append({
+                    "event": "leg_close", "ts": now.isoformat(), "day": pos.day, "leg": leg, "symbol": sym,
+                    "paid": paid, "px": round(float(bid), 2), "live": False,
+                    "reason": f"leg bid {round(float(bid), 2)} is {self.leg_stop:.0%} or more below {paid}",
+                })
+                if ev is None:
+                    return None
+                pos.sold_leg, pos.sold_px = leg, round(float(bid), 2)
+                return ev
+        return None
+
     def _take_profit_fill(self, pos: LongStraddlePosition, book: QuoteSource) -> tuple[float, float] | None:
         """Resting limit at debit x (1 + take_profit): fills at exactly that total once the bids reach it.
         Split across the legs in proportion to their bids (for charges); None while not reached.
@@ -547,6 +636,9 @@ class PaperLongStraddle:
             "name": self.name,
             "take_profit": self.take_profit,
             "stop_loss": self.stop_loss,
+            "trail_start": self.trail_start,
+            "trail_gap": self.trail_gap,
+            "leg_stop": self.leg_stop,
             "month_pnl": self.month_pnl.get(datetime.now(IST).strftime("%Y-%m"), 0.0),
             "month_loss_limit": self.month_loss_limit,
             "enabled": True,
@@ -574,6 +666,10 @@ class PaperLongStraddle:
             # value can show "at target" while the bids, and so the resting order, are still below it.
             ce = (self._fill(book.get(pos.ce_symbol), buying=False) if book is not None else None) or pos.ce_mark
             pe = (self._fill(book.get(pos.pe_symbol), buying=False) if book is not None else None) or pos.pe_mark
+            if pos.sold_leg == "ce":
+                ce = pos.sold_px
+            elif pos.sold_leg == "pe":
+                pe = pos.sold_px
             value = None if ce is None or pe is None else ce + pe
             close_ch = (
                 float(kite_nfo_charges([(ce, pos.qty, "sell"), (pe, pos.qty, "sell")])["total"]) if value is not None else 0.0
@@ -586,7 +682,9 @@ class PaperLongStraddle:
                 "live": False,
                 "manual_needed": False,
                 "target": round(pos.debit_fill * (1 + self.take_profit), 2) if self.take_profit else None,
-                "stop": round(pos.debit_fill * (1 - self.stop_loss), 2) if self.stop_loss else None,
+                "stop": round(pos.debit_fill * (1 - self.stop_loss), 2) if self.stop_loss and not pos.sold_leg else None,
+                "sold_leg": pos.sold_leg,
+                "peak": round(pos.peak, 2) if pos.peak else None,
                 # Net of entry charges and estimated exit charges, like the ledger's pnl.
                 "open_pnl": None if value is None else round((value - pos.debit_fill) * pos.qty - pos.charges_open - close_ch, 2),
             }

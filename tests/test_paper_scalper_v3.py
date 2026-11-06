@@ -7,7 +7,7 @@ from datetime import date, datetime
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from atlas_lite.paper_scalper_v3 import LEDGER_NAME, PaperScalperV3
+from atlas_lite.paper_scalper_v3 import LEDGER_NAME, VARIANTS, PaperScalperV3
 
 DAY = "2026-10-29"  # Thursday
 EXPIRY = date(2026, 11, 3)
@@ -188,3 +188,65 @@ def test_a_failed_gamma_reading_never_blocks_the_entry(tmp_path) -> None:
     ev = mk(tmp_path).on_frame(now=t("13:00"), book=Book(quotes(100, 100)), expiry=EXPIRY, atm=22950,
                                ce_symbol=CE, pe_symbol=PE, gamma=broken)
     assert ev is not None and ev["event"] == "open" and ev["gamma"] is None
+
+
+WCE, WPE = "NFO:NIFTY26N0323950CE", "NFO:NIFTY26N0321950PE"
+
+
+def mk_variant(tmp_path: Path, name: str) -> PaperScalperV3:
+    cfg = VARIANTS[name]
+    return PaperScalperV3(path=tmp_path / cfg["ledger"], strategy=name, name=cfg["name"], **cfg["kwargs"])
+
+
+def with_wings(rows: dict, wce: float = 3.0, wpe: float = 2.0) -> dict:
+    return {**rows, WCE: {"last_price": wce, "bid": wce - 0.1, "ask": wce + 0.1},
+            WPE: {"last_price": wpe, "bid": wpe - 0.1, "ask": wpe + 0.1}}
+
+
+def test_1415_variant_enters_at_1415_and_holds_to_1514(tmp_path) -> None:
+    b = mk_variant(tmp_path, "scalper_v3_1415")
+    assert frame(b, t("13:00"), quotes(100, 100)) is None
+    ev = frame(b, t("14:15"), quotes(100, 100))
+    assert ev["event"] == "open" and ev["strategy"] == "scalper_v3_1415" and ev["target"] is None and ev["stop"] is None
+    assert frame(b, t("14:30"), quotes(30, 30)) is None  # no take-profit
+    assert frame(b, t("14:40"), quotes(200, 200)) is None  # no stop
+    ev = frame(b, t("15:14"), quotes(80, 80))
+    assert ev["reason"] == "square_off" and ev["pnl"] > 0
+
+
+def test_1415_variant_window_and_separate_ledger(tmp_path) -> None:
+    assert frame(mk_variant(tmp_path / "a", "scalper_v3_1415"), t("14:20"), quotes(100, 100)) is not None
+    assert frame(mk_variant(tmp_path / "b", "scalper_v3_1415"), t("14:21"), quotes(100, 100)) is None
+    b = mk_variant(tmp_path / "c", "scalper_v3_1415")
+    frame(b, t("14:15"), quotes(100, 100))
+    assert PaperScalperV3(path=b.path).position is None  # the main book never reads the variant's lines
+    assert mk_variant(tmp_path / "c", "scalper_v3_1415").position is not None
+
+
+def test_wings_variant_buys_wings_1000_out_and_nets_them(tmp_path) -> None:
+    b = mk_variant(tmp_path, "scalper_v3_wings")
+    ev = frame(b, t("13:00"), with_wings(quotes(100, 100)))
+    assert ev["wce_symbol"] == WCE and ev["wpe_symbol"] == WPE
+    assert ev["credit_ltp"] == 195.0 and ev["credit_fill"] == round(199.0 - 5.2, 2)
+    assert ev["max_loss"] == round((1000 - ev["credit_fill"]) * 65, 2)
+    assert ev["target"] == 136.5 and ev["stop"] == 253.5
+    ev = frame(b, t("15:14"), with_wings(quotes(80, 80), 1.0, 1.0))
+    # buy back shorts at ask 80.5 + 80.5, sell wings at bid 0.9 + 0.9
+    assert ev["reason"] == "square_off" and ev["exit"] == round(161.0 - 1.8, 2)
+    assert ev["pnl_gross"] == round((193.8 - 159.2) * 65, 2)
+
+
+def test_wings_count_in_the_stop_and_survive_a_restart(tmp_path) -> None:
+    b = mk_variant(tmp_path, "scalper_v3_wings")
+    frame(b, t("13:00"), with_wings(quotes(100, 100)))
+    again = mk_variant(tmp_path, "scalper_v3_wings")
+    assert again.position is not None and again.position.wce_symbol == WCE
+    # shorts 260 alone would hit 253.5, but the wings are worth 10 more: net 250, no stop
+    assert frame(again, t("14:00"), with_wings(quotes(130, 130), 5.0, 5.0)) is None
+    ev = frame(again, t("14:05"), with_wings(quotes(132, 130), 5.0, 3.0))  # net 254
+    assert ev["reason"] == "stop"
+
+
+def test_wings_variant_needs_wing_quotes(tmp_path) -> None:
+    b = mk_variant(tmp_path, "scalper_v3_wings")
+    assert frame(b, t("13:00"), quotes(100, 100)) is None and b.last_reject == "no_wing_quote"

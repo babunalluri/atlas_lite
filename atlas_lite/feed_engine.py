@@ -46,18 +46,24 @@ from atlas_lite.paper_long_straddle import (
     TP20_LEDGER_NAME as LONG_STRADDLE_TP20_LEDGER,
     TP20_STRATEGY as LONG_STRADDLE_TP20_STRATEGY,
     TP20_TAKE_PROFIT as LONG_STRADDLE_TP20_TP,
+    VARIANTS as LONG_STRADDLE_VARIANTS,
     paper_long_straddle_tp20_enabled,
+    paper_long_straddle_variant_enabled,
     PaperLongStraddle,
     paper_long_straddle_enabled,
 )
 from atlas_lite.paper_scalper_v3 import (
     LEDGER_NAME as SCALPER_V3_LEDGER,
     STRATEGY as SCALPER_V3_STRATEGY,
+    VARIANTS as SCALPER_V3_VARIANTS,
     PaperScalperV3,
     paper_scalper_v3_enabled,
+    paper_scalper_v3_variant_enabled,
 )
+from atlas_lite.risk_manager import RiskManager
 from atlas_lite.paper_weekly_sell import (
     BOOKS as WEEKLY_SELL_BOOKS,
+    SESSIONS as WEEKLY_SELL_SESSIONS,
     PaperWeeklySell,
     paper_weekly_sell_enabled,
 )
@@ -261,6 +267,7 @@ RETIRED_PAPER_STRATEGIES = frozenset(
         "nifty_vwap_long",
         "factor_paper",
         "ai_agent",
+        "short_iron_condor",
     }
 )
 
@@ -288,6 +295,15 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
         "no entries after −₹15k in the month · paper only",
         "resting take-profit at +20% of the price paid (fills when the bids reach it) · "
         "stop when bids fall 30% below cost · else sell 13:00 at bid",
+    ),
+    "long_straddle_trail": (
+        "09:16 · buy the balanced strike (ATM±50 where CE≈PE) at ask · 1 lot · max 1/day · paper only",
+        "once bids are +10% over cost, sell when they fall 15% below their peak · "
+        "stop when bids fall 30% below cost · else sell 13:00 at bid",
+    ),
+    "long_straddle_leg50": (
+        "09:16 · buy the balanced strike (ATM±50 where CE≈PE) at ask · 1 lot · max 1/day · paper only",
+        "sell a leg once its bid is 50% below its own cost (first leg only) · other leg sells 13:00 at bid",
     ),
     "long_straddle": (
         "09:16 · buy the balanced strike (ATM±50 where CE≈PE) at ask · 1 lot · max 1/day · "
@@ -339,6 +355,14 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
         "1 lot · max 8/day · daily loss stop",
         "target / stop / trail / time · shadow_open/close until approval · flat 15:14",
     ),
+    "scalper_v3_1415": (
+        "14:15 on non-expiry trading days · sell ATM CE+PE · 1 lot · one trade a day · paper only",
+        "no target or stop · flat 15:14",
+    ),
+    "scalper_v3_wings": (
+        "13:00 on non-expiry trading days · sell ATM CE+PE, buy CE/PE 1,000 pts out · 1 lot · paper only",
+        "take profit at 30% of net credit / stop at −30% · else flat 15:14",
+    ),
     "scalper_v3": (
         "13:00 on non-expiry trading days · sell ATM CE+PE · 1 lot · one trade a day",
         "take profit at 30% of credit / stop at −30% · else flat 15:14",
@@ -349,6 +373,10 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
     ),
     "weekly_condor5": (
         "15:25, 3 sessions before Tuesday expiry · sell put/call at ±1.5 SD · buy wings 5% beyond · 1 lot",
+        "stop at 15:25 daily if cost ≥ 3× credit · else hold to expiry, close 15:29",
+    ),
+    "weekly_strangle1000": (
+        "15:25, 2 sessions before Tuesday expiry · sell put/call 1,000 pts apart (F ± 500) · no wings · 1 lot",
         "stop at 15:25 daily if cost ≥ 3× credit · else hold to expiry, close 15:29",
     ),
     "factor_paper": (
@@ -387,6 +415,7 @@ class FeedEngine:
     _recorder: SheetRecorder | None = field(default=None, repr=False)
     _record_last_revision: tuple[Any, ...] | None = field(default=None, repr=False)
     _structure_hm: str = field(default="", repr=False)
+    _sensex_structure_hm: str = field(default="", repr=False)
     _depth_watch: set[str] = field(default_factory=set, repr=False)
     _depth_leg_meta: dict[str, dict[str, Any]] = field(default_factory=dict, repr=False)
     _depth_leg_rev: dict[str, tuple[Any, ...]] = field(default_factory=dict, repr=False)
@@ -413,8 +442,10 @@ class FeedEngine:
     _paper_factor: PaperFactor | None = field(default=None, repr=False)
     _paper_weekly: dict[str, PaperWeeklySell] = field(default_factory=dict, repr=False)
     _paper_v3: PaperScalperV3 | None = field(default=None, repr=False)
+    _paper_v3_variants: dict[str, PaperScalperV3] = field(default_factory=dict, repr=False)
     _paper_long_str: PaperLongStraddle | None = field(default=None, repr=False)
     _paper_long_str_tp20: PaperLongStraddle | None = field(default=None, repr=False)
+    _paper_long_str_variants: dict[str, PaperLongStraddle] = field(default_factory=dict, repr=False)
     _straddle_live: Any = field(default=None, repr=False)
     # Previous day's NIFTY open interest, for the dealer-gamma reading Scalper v3 logs.
     _gamma_oi: GammaOi | None = field(default=None, repr=False)
@@ -689,6 +720,16 @@ class FeedEngine:
             self._paper_v3 = PaperScalperV3(path=self.data_dir / SCALPER_V3_LEDGER, lot_size=self._nifty_option_lot())
             self._gamma_oi = GammaOi(self.data_dir)
             self._log.info("scalper_v3 paper book qty %d (13:00 straddle sale, no live orders)", self._paper_v3.qty)
+        for name, cfg in SCALPER_V3_VARIANTS.items():
+            if paper_scalper_v3_variant_enabled(name):
+                self._paper_v3_variants[name] = PaperScalperV3(
+                    path=self.data_dir / cfg["ledger"], lot_size=self._nifty_option_lot(),
+                    strategy=name, name=cfg["name"], **cfg["kwargs"],
+                )
+        if self._paper_v3_variants:
+            if self._gamma_oi is None:
+                self._gamma_oi = GammaOi(self.data_dir)
+            self._log.info("scalper_v3 variants (paper): %s", ", ".join(self._paper_v3_variants))
         if paper_long_straddle_enabled():
             from atlas_lite.day_live_flag import DayLiveFlag
 
@@ -697,6 +738,12 @@ class FeedEngine:
             self._paper_long_str = PaperLongStraddle(
                 path=self.data_dir / LONG_STRADDLE_LEDGER, lot_size=self._nifty_option_lot(),
                 order_client=KiteOrderClient(self.credentials_path), live_flag=self._straddle_live,
+                risk=RiskManager(self.data_dir),
+            )
+            # A live close whose ledger line is not written yet still counts in the account totals.
+            book = self._paper_long_str
+            book.risk.pending = lambda: (
+                [{**book.pending_close, "strategy": book.strategy}] if book.pending_close else []
             )
             self._log.info(
                 "long_straddle book qty %d (09:16 balanced straddle, sold 13:00; live when ticked, allowed=%s)",
@@ -712,11 +759,20 @@ class FeedEngine:
                 "long_straddle_tp20 paper book qty %d (09:16 straddle, resting +20%% take-profit, else 13:00)",
                 self._paper_long_str_tp20.qty,
             )
+        for name, cfg in LONG_STRADDLE_VARIANTS.items():
+            if paper_long_straddle_variant_enabled(name):
+                self._paper_long_str_variants[name] = PaperLongStraddle(
+                    path=self.data_dir / cfg["ledger"], lot_size=self._nifty_option_lot(),
+                    strategy=name, name=cfg["name"], **cfg["kwargs"],
+                )
+        if self._paper_long_str_variants:
+            self._log.info("long straddle exit variants (paper): %s", ", ".join(self._paper_long_str_variants))
         if paper_weekly_sell_enabled():
             lot = self._nifty_option_lot()
             for name, cfg in WEEKLY_SELL_BOOKS.items():
                 self._paper_weekly[name] = PaperWeeklySell(
-                    path=self.data_dir / cfg["ledger"], strategy=name, wing_pct=cfg["wing_pct"], lot_size=lot
+                    path=self.data_dir / cfg["ledger"], strategy=name, wing_pct=cfg["wing_pct"], lot_size=lot,
+                    sessions=cfg.get("sessions", WEEKLY_SELL_SESSIONS), width_pts=cfg.get("width_pts"),
                 )
             self._log.info("weekly option-selling paper books: %s (qty %d, no live orders)", ", ".join(self._paper_weekly), lot)
         if paper_factor_enabled():
@@ -779,9 +835,9 @@ class FeedEngine:
             self._tasks.append(asyncio.create_task(self._paper_factor_loop()))
         if self._paper_weekly:
             self._tasks.append(asyncio.create_task(self._paper_weekly_loop()))
-        if self._paper_v3 is not None:
+        if self._paper_v3 is not None or self._paper_v3_variants:
             self._tasks.append(asyncio.create_task(self._paper_v3_loop()))
-        if self._paper_long_str is not None or self._paper_long_str_tp20 is not None:
+        if self._paper_long_str is not None or self._paper_long_str_tp20 is not None or self._paper_long_str_variants:
             self._tasks.append(asyncio.create_task(self._paper_long_straddle_loop()))
         if self._agent is not None:
             self._tasks.append(asyncio.create_task(self._agent_loop()))
@@ -1743,14 +1799,16 @@ class FeedEngine:
         """Last 1m bars (including forming) for SSE chart paint."""
         return list(self.candles(nb, limit=max(1, limit)).get("bars") or [])
 
-    def _structure_snapshot(self, now: datetime) -> dict[str, Any] | None:
-        """Once-a-minute ATM wings + next-week ATM for later strategy research."""
-        nb = self.notebooks.get("nifty")
+    def _structure_snapshot(self, now: datetime, nb_id: str = "nifty") -> dict[str, Any] | None:
+        """Once-a-minute ATM wings + next-week ATM for later strategy research.
+        Wings at 1, 2 and 5 strike steps (NIFTY 50/100/250, SENSEX 100/200/500)."""
+        nb = self.notebooks.get(nb_id)
         if not nb or not nb.enabled or not nb.universe or not nb.atm:
             return None
         atm = int(nb.atm.strike)
+        step = int(nb.universe.strike_step)
         wings: dict[str, dict[str, Any]] = {}
-        for pts in (50, 100, 250):
+        for pts in (step, 2 * step, 5 * step):
             for sign, key in ((-1, f"-{pts}"), (1, f"+{pts}")):
                 strike = atm + sign * pts
                 ce_sym = nb.universe.option_symbol(strike, "CE")
@@ -1791,11 +1849,13 @@ class FeedEngine:
         return body
 
     def _sync_depth_watch(self) -> None:
-        """Track NIFTY ATM±1 option symbols for per-tick depth recording."""
-        nb = self.notebooks.get("nifty")
+        """Track NIFTY and SENSEX ATM±1 option symbols for per-tick depth recording."""
         watch: set[str] = set()
         meta: dict[str, dict[str, Any]] = {}
-        if nb and nb.enabled and nb.universe and nb.atm:
+        for nb_id in ("nifty", "sensex"):
+            nb = self.notebooks.get(nb_id)
+            if not nb or not nb.enabled or not nb.universe or not nb.atm:
+                continue
             atm = int(nb.atm.strike)
             step = int(nb.universe.strike_step)
             expiry = nb.universe.expiry.isoformat()
@@ -1806,6 +1866,7 @@ class FeedEngine:
                     watch.add(sym)
                     meta[sym] = {
                         "key": f"{offset:+d}{side}",
+                        "index": nb_id,
                         "strike": strike,
                         "atm": atm,
                         "step": step,
@@ -1856,7 +1917,8 @@ class FeedEngine:
                 "atm": meta["atm"],
                 "step": meta["step"],
                 "expiry": meta["expiry"],
-                "spot": self._spot(self.notebooks.get("nifty")),
+                "index": meta.get("index", "nifty"),
+                "spot": self._spot(self.notebooks.get(meta.get("index", "nifty"))),
                 **tape,
             }
         )
@@ -2249,6 +2311,11 @@ class FeedEngine:
                     if snap is not None:
                         await self._recorder.append_structure(snap, now=now)
                         self._structure_hm = hm
+                if hm != self._sensex_structure_hm:
+                    snap = self._structure_snapshot(now, "sensex")
+                    if snap is not None:
+                        await self._recorder.append_structure(snap, now=now, sensex=True)
+                        self._sensex_structure_hm = hm
                 seen_seq = self.book.tick_seq
                 await self.book.wait_for_update(seen_seq, interval)
             except asyncio.CancelledError:
@@ -2930,14 +2997,15 @@ class FeedEngine:
         return AI_AGENT_LOT
 
     async def _paper_v3_loop(self) -> None:
-        """Scalper v3: daily 13:00 ATM straddle sale. Paper only, flat by 15:14."""
-        if self._paper_v3 is None:
+        """Scalper v3 and its variants: afternoon ATM straddle sale. Paper only, flat by 15:14."""
+        books = [b for b in (self._paper_v3, *self._paper_v3_variants.values()) if b is not None]
+        if not books:
             return
         interval = max(1.0, STREAM_INTERVAL_MS / 1000.0)
         while True:
             try:
                 now = datetime.now(IST)
-                if now.weekday() >= 5 and self._paper_v3.position is None:
+                if now.weekday() >= 5 and all(b.position is None for b in books):
                     await asyncio.sleep(30.0)
                     continue
                 nb = self.notebooks.get("nifty")
@@ -2946,18 +3014,22 @@ class FeedEngine:
                     expiry = nb.universe.expiry
                     if nb.atm:
                         atm, ce, pe = int(nb.atm.strike), nb.atm.ce_symbol, nb.atm.pe_symbol
-                allow = self._agent_gates.entries_allowed(SCALPER_V3_STRATEGY, now) if self._agent_gates else True
                 await self._refresh_gamma_oi(now)
-                self._paper_v3.on_frame(
-                    now=now,
-                    book=self.book,
-                    expiry=expiry,
-                    atm=atm,
-                    ce_symbol=ce,
-                    pe_symbol=pe,
-                    allow_entry=allow,
-                    gamma=lambda now=now, nb=nb: self._gamma_reading(now, nb),
-                )
+                for b in books:  # each book on its own: one failing never stops the others
+                    try:
+                        allow = self._agent_gates.entries_allowed(b.strategy, now) if self._agent_gates else True
+                        b.on_frame(
+                            now=now,
+                            book=self.book,
+                            expiry=expiry,
+                            atm=atm,
+                            ce_symbol=ce,
+                            pe_symbol=pe,
+                            allow_entry=allow,
+                            gamma=lambda now=now, nb=nb: self._gamma_reading(now, nb),
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        self._log.warning("%s paper book failed: %s", b.strategy, exc)
                 await asyncio.sleep(interval)
             except asyncio.CancelledError:
                 raise
@@ -2966,8 +3038,9 @@ class FeedEngine:
                 await asyncio.sleep(1.0)
 
     async def _paper_long_straddle_loop(self) -> None:
-        """Long straddle books (main and +20% take-profit): 09:16 ATM straddle purchase. Paper only."""
-        books = [b for b in (self._paper_long_str, self._paper_long_str_tp20) if b is not None]
+        """Long straddle books (main, +20% take-profit, exit variants): 09:16 ATM straddle purchase."""
+        books = [b for b in (self._paper_long_str, self._paper_long_str_tp20, *self._paper_long_str_variants.values())
+                 if b is not None]
         if not books:
             return
         interval = max(1.0, STREAM_INTERVAL_MS / 1000.0)
@@ -3663,6 +3736,13 @@ class FeedEngine:
             ai_body = self._paper_ai_agent.snapshot(book=self.book, spot=spot)
             ai_body["enabled"] = True
             body["ai_agent"] = ai_body
+        for name, cfg in SCALPER_V3_VARIANTS.items():
+            vbook = self._paper_v3_variants.get(name)
+            body[name] = (
+                vbook.snapshot(self.book)
+                if vbook is not None
+                else {"ok": True, "mode": "paper", "enabled": False, "live_orders": False, "book": name, "name": cfg["name"]}
+            )
         body[SCALPER_V3_STRATEGY] = (
             self._paper_v3.snapshot(self.book)
             if self._paper_v3 is not None
@@ -3674,6 +3754,13 @@ class FeedEngine:
             else {"ok": True, "mode": "paper", "enabled": False, "live_orders": False,
                   "book": LONG_STRADDLE_TP20_STRATEGY, "name": "Long straddle +20% TP"}
         )
+        for name, cfg in LONG_STRADDLE_VARIANTS.items():
+            vbook = self._paper_long_str_variants.get(name)
+            body[name] = (
+                vbook.snapshot(self.book)
+                if vbook is not None
+                else {"ok": True, "mode": "paper", "enabled": False, "live_orders": False, "book": name, "name": cfg["name"]}
+            )
         body[LONG_STRADDLE_STRATEGY] = (
             self._paper_long_str.snapshot(self.book)
             if self._paper_long_str is not None

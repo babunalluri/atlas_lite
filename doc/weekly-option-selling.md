@@ -8,6 +8,7 @@ Two books, same short strikes, run side by side:
 |---|---|---|
 | `weekly_strangle` | Sell put + call, no wings | `data/paper_weekly_strangle.jsonl` |
 | `weekly_condor5` | Same, plus wings bought 5% of F beyond each short strike | `data/paper_weekly_condor5.jsonl` |
+| `weekly_strangle1000` (from 6 Nov) | Sell put + call 1,000 pts apart (F ± 500), entered **2** sessions before expiry, no wings | `data/paper_weekly_strangle1000.jsonl` |
 
 Research behind it: [NIFTY Options Evidence Review](https://claude.ai/artifact/AmfvRUobJp5XoUJj6WJBGk) (SEBI studies, academic papers, Quantsapp backtests, all sources by trust tier).
 
@@ -34,6 +35,19 @@ Data: NSE F&O bhavcopy for every trading day since NIFTY weeklies began (1,901 d
 - March 2020: 9 of 11 expiries traded (two stop-outs); the two skipped weeks had no strike far enough out and would have won.
 - A 45-setting grid picked on 2019–2023 did worse on 2024–2026 than the untuned 1.5 SD rule. Entering 5 sessions before expiry lost money. About 60 settings and structures were tried in total.
 - Expiry-day trap found while building it: on expiry day NSE writes NIFTY's final settlement level into every option's settlement-price field. The backtest settles at intrinsic against that level.
+
+### Re-test, 6 Nov 2026 (same data and engine, slip 1 pt)
+
+| Structure, entry | ₹/week | PF 2019–23 / 2024–26 | Worst week | Losing years |
+|---|---|---|---|---|
+| Condor 1% / 1.5% / 2% wings, 3 sessions | −80 / +10 / +73 | 0.71/0.89 · 0.97/1.07 · 1.08/1.25 | −₹15.8k to −₹22.1k | 5 / 6 / 2 |
+| Same, 2 sessions | −195 / −95 / −39 | all below 1 in 2019–23 | | 7 / 4 / 4 |
+| Strangle 1.5 SD, 2 sessions | +430 | 1.86 / 2.34 | −₹23.5k | 1 |
+| **Strangle 1,000 pts wide, 2 sessions** | +426 | 2.44 / 2.39 | −₹20.6k | 0 |
+| Strangle 900 / 1,100 pts, 2 sessions | +477 / +386 | 2.18/2.23 · 2.72/2.56 | −₹23.4k / −₹17.8k | 0 / 0 |
+| Strangle 900–1,100 pts, 3 sessions | +431 to +588 | ~2.2 / ~1.4 | −₹47.7k to −₹51.4k | 2024 lost ₹25–32k |
+
+Closer wings lose: their cost eats the premium. A fixed 1,000-point width ignores VIX, so it is only safe with the shorter 2-session hold. In 2019 a 1,000-point width was ±4.5% of NIFTY against ±2.2% now, which flatters the early years; the % version (±2.2% of F, 2 sessions) had PF 1.54 / 2.71 and a −₹35.8k worst week. About 80 settings have now been tried across both studies.
 
 ## Limits
 

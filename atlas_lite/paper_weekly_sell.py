@@ -10,6 +10,10 @@ Rules, backtested on NSE end-of-day prices Feb 2019 – Oct 2026
   F * exp(+1.5 * IV * sqrt(3/252)), using only strikes with a live quote.
 - weekly_condor5 also buys wings 5% of F beyond each short strike;
   weekly_strangle has no wings.
+- weekly_strangle1000 (added 6 Nov 2026): no wings, short strikes a fixed 1,000 points
+  apart (put at or below F - 500, call at or above F + 500), entered two sessions before
+  expiry (normally Friday). Backtest: profit factor 2.44 / 2.39 on 2019–23 / 2024–26, no
+  losing year, worst week -Rs 20.6k (scratchpad study, 6 Nov).
 - Stop: once a day at 15:25, before expiry day, close everything if the position
   costs >= 3x the entry credit to buy back (both at last traded prices).
 - Otherwise hold to expiry and close at 15:29 on expiry day.
@@ -49,6 +53,8 @@ DEFAULT_LOT_SIZE = 65
 BOOKS: dict[str, dict[str, Any]] = {
     "weekly_strangle": {"ledger": "paper_weekly_strangle.jsonl", "wing_pct": None, "name": "Weekly strangle"},
     "weekly_condor5": {"ledger": "paper_weekly_condor5.jsonl", "wing_pct": 0.05, "name": "Weekly condor (5% wings)"},
+    "weekly_strangle1000": {"ledger": "paper_weekly_strangle1000.jsonl", "wing_pct": None, "sessions": 2,
+                            "width_pts": 1000.0, "name": "Weekly strangle (1,000 pts, 2 sessions)"},
 }
 
 
@@ -104,6 +110,17 @@ def select_strikes(
     return sp, sc, max(lps), min(lcs)
 
 
+def select_fixed_width(
+    F: float, put_strikes: list[int], call_strikes: list[int], width_pts: float
+) -> tuple[int, int, None, None] | None:
+    """Short put at or below F - width/2 and short call at or above F + width/2; no wings."""
+    puts = [k for k in put_strikes if k <= F - width_pts / 2]
+    calls = [k for k in call_strikes if k >= F + width_pts / 2]
+    if not puts or not calls:
+        return None
+    return max(puts), min(calls), None, None
+
+
 def iv_decimal(iv: float) -> float:
     return iv / 100.0 if iv > 1 else iv
 
@@ -147,6 +164,7 @@ class PaperWeeklySell:
     sd: float = SD
     sessions: int = SESSIONS
     stop_mult: float = STOP_MULT
+    width_pts: float | None = None  # fixed distance between the short strikes instead of sd
     position: WeeklyPosition | None = None
     entered_for: str = ""  # expiry already entered (one trade per weekly expiry)
     last_reject: str | None = None
@@ -253,7 +271,10 @@ class PaperWeeklySell:
         def live(opt: str) -> list[int]:
             return [k for k in strikes if (quote_ltp(book.get(option_symbol(k, opt))) or 0) > 0]
 
-        picked = select_strikes(F, iv, live("PE"), live("CE"), sd=self.sd, sessions=self.sessions, wing_pct=self.wing_pct)
+        if self.width_pts:
+            picked = select_fixed_width(F, live("PE"), live("CE"), self.width_pts)
+        else:
+            picked = select_strikes(F, iv, live("PE"), live("CE"), sd=self.sd, sessions=self.sessions, wing_pct=self.wing_pct)
         if picked is None:
             self.last_reject = "no_strike_far_enough"
             return None
@@ -313,7 +334,8 @@ class PaperWeeklySell:
                 "forward": pos.forward,
                 "iv": pos.iv,
                 "atm": atm,
-                "reason": f"{self.sd:g} SD, {self.sessions} sessions to expiry",
+                "reason": (f"{self.width_pts:g} pts wide" if self.width_pts else f"{self.sd:g} SD")
+                + f", {self.sessions} sessions to expiry",
             }
         )
         if ev is None:
@@ -449,6 +471,8 @@ class PaperWeeklySell:
             "name": BOOKS.get(self.strategy, {}).get("name", self.strategy),
             "enabled": True,
             "wing_pct": self.wing_pct,
+            "sessions": self.sessions,
+            "width_pts": self.width_pts,
             "last_reject": self.last_reject,
             "position": None,
         }

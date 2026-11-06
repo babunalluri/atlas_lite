@@ -12,8 +12,10 @@ from atlas_lite.recorder import (
     STRUCTURE_NAME_RE,
     SheetRecorder,
     list_recording_files,
+    maintain_recordings,
     recording_files_for_day,
     safe_recording_path,
+    sensex_structure_day_path,
     structure_day_path,
     write_day_archive,
 )
@@ -83,3 +85,48 @@ def test_append_structure_one_line(tmp_path: Path, monkeypatch) -> None:
     lines = path.read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 1
     assert '"atm":23450' in lines[0]
+
+
+def test_sensex_structure_goes_to_its_own_file(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("ATLAS_LITE_RECORD", "1")
+    now = datetime(2026, 11, 10, 11, 4, tzinfo=IST)
+    rec = SheetRecorder(tmp_path)
+    asyncio.run(rec.append_structure({"hm": "11:04", "atm": 23450}, now=now))
+    asyncio.run(rec.append_structure({"hm": "11:04", "atm": 80000}, now=now, sensex=True))
+    sx = sensex_structure_day_path(tmp_path, now=now)
+    assert sx.name == "sensex-structure-2026-11-10.jsonl" and STRUCTURE_NAME_RE.match(sx.name)
+    assert '"atm":80000' in sx.read_text() and '"atm":80000' not in structure_day_path(tmp_path, now=now).read_text()
+    # The NIFTY price builders read structure-*: the SENSEX file must not match that glob.
+    assert [p.name for p in tmp_path.glob("structure-*.jsonl*")] == ["structure-2026-11-10.jsonl"]
+    assert safe_recording_path(tmp_path, sx.name) == sx.resolve()
+
+
+def test_todays_sensex_structure_is_not_compressed_while_live(tmp_path: Path) -> None:
+    now = datetime(2026, 11, 10, 11, 4, tzinfo=IST)
+    live = tmp_path / "sensex-structure-2026-11-10.jsonl"
+    done = tmp_path / "sensex-structure-2026-11-06.jsonl"
+    live.write_text("{}\n"); done.write_text("{}\n")
+    maintain_recordings(tmp_path, now=now, keep_days=30)
+    assert live.is_file() and (tmp_path / "sensex-structure-2026-11-06.jsonl.gz").is_file()
+
+
+def test_engine_structure_snapshot_uses_strike_steps(tmp_path: Path) -> None:
+    from datetime import date
+    from types import SimpleNamespace
+
+    from atlas_lite.feed_engine import FeedEngine
+
+    class Uni:
+        strike_step = 100
+        expiry = date(2026, 11, 12)
+
+        def option_symbol(self, k: int, opt: str) -> str:
+            return f"BFO:SENSEX26N12{k}{opt}"
+
+    nb = SimpleNamespace(enabled=True, universe=Uni(), atm=SimpleNamespace(strike=80000, ce_symbol="BFO:SENSEX26N1280000CE",
+                         pe_symbol="BFO:SENSEX26N1280000PE"), next_universe=None)
+    rows = {"BFO:SENSEX26N1280000CE": {"last_price": 300.0}, "BFO:SENSEX26N1280500PE": {"last_price": 500.0}}
+    eng = SimpleNamespace(notebooks={"sensex": nb}, book=SimpleNamespace(get=rows.get), _spot=lambda _nb: 80010.0)
+    snap = FeedEngine._structure_snapshot(eng, datetime(2026, 11, 10, 9, 16, tzinfo=IST), "sensex")
+    assert sorted(snap["wings"]) == ["+100", "+200", "+500", "-100", "-200", "-500"]
+    assert snap["ce"] == 300.0 and snap["wings"]["+500"]["pe"] == 500.0 and snap["atm"] == 80000

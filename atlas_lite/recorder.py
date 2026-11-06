@@ -26,7 +26,7 @@ DEFAULT_RECORD_START = (9, 0)
 DEFAULT_RECORD_END = (15, 35)
 DEFAULT_RECORD_KEEP_DAYS = 365
 RECORDING_NAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}\.jsonl(?:\.gz)?$")
-STRUCTURE_NAME_RE = re.compile(r"^structure-\d{4}-\d{2}-\d{2}\.jsonl(?:\.gz)?$")
+STRUCTURE_NAME_RE = re.compile(r"^(?:sensex-)?structure-\d{4}-\d{2}-\d{2}\.jsonl(?:\.gz)?$")
 DEPTH_NAME_RE = re.compile(r"^depth-\d{4}-\d{2}-\d{2}\.jsonl(?:\.gz)?$")
 RECORDING_DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _RECORDING_DAY_IN_NAME_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
@@ -115,6 +115,12 @@ def structure_day_path(base_dir: Path, *, now: datetime | None = None) -> Path:
     """One compact options-structure file per IST day (wings + next-week ATM)."""
     now = now or datetime.now(IST)
     return base_dir / f"structure-{now.strftime('%Y-%m-%d')}.jsonl"
+
+
+def sensex_structure_day_path(base_dir: Path, *, now: datetime | None = None) -> Path:
+    """The same once-a-minute structure for SENSEX. Its own file: NIFTY builders read structure-*."""
+    now = now or datetime.now(IST)
+    return base_dir / f"sensex-structure-{now.strftime('%Y-%m-%d')}.jsonl"
 
 
 def depth_day_path(base_dir: Path, *, now: datetime | None = None) -> Path:
@@ -292,6 +298,7 @@ def maintain_recordings(
             if day == today and (
                 path.name.startswith("depth-")
                 or path.name.startswith("structure-")
+                or path.name.startswith("sensex-structure-")
                 or path.name == open_slot
             ):
                 continue
@@ -318,6 +325,9 @@ def write_day_archive(base_dir: Path, day: str) -> tuple[Path, str]:
     structure = _day_side_file(base_dir, "structure", day)
     if structure is not None:
         files.append(structure)
+    sensex_structure = _day_side_file(base_dir, "sensex-structure", day)
+    if sensex_structure is not None:
+        files.append(sensex_structure)
     depth = _day_side_file(base_dir, "depth", day)
     if depth is not None:
         files.append(depth)
@@ -600,13 +610,15 @@ class SheetRecorder:
         row: dict[str, Any],
         *,
         now: datetime | None = None,
+        sensex: bool = False,
     ) -> None:
         now = now or datetime.now(IST)
         if not is_record_session(now):
             return
         line = json.dumps(row, default=str, separators=(",", ":")) + "\n"
         async with self._lock:
-            path = structure_day_path(self.base_dir, now=now)
+            day_path = sensex_structure_day_path if sensex else structure_day_path
+            path = day_path(self.base_dir, now=now)
             await asyncio.to_thread(_append_line, path, line)
 
     async def append_depth(

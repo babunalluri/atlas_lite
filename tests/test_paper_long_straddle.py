@@ -6,7 +6,7 @@ import json
 from datetime import date, datetime
 from pathlib import Path
 
-from atlas_lite.paper_long_straddle import LEDGER_NAME, PaperLongStraddle
+from atlas_lite.paper_long_straddle import LEDGER_NAME, VARIANTS, PaperLongStraddle
 
 DAY = "2026-10-29"  # Thursday
 EXPIRY = date(2026, 11, 3)
@@ -280,3 +280,80 @@ def test_open_logs_the_entry_conditions(tmp_path) -> None:
 def test_open_without_spot_or_vix_still_trades(tmp_path) -> None:
     ev = frame(mk(tmp_path), t("09:16"), quotes(120, 120))
     assert ev["event"] == "open" and ev["context"] == {"ce_pe_imbalance": 0.0}
+
+
+def mk_variant(tmp_path: Path, name: str) -> PaperLongStraddle:
+    cfg = VARIANTS[name]
+    return PaperLongStraddle(path=tmp_path / cfg["ledger"], strategy=name, name=cfg["name"], **cfg["kwargs"])
+
+
+def test_trail_sells_15_percent_below_the_peak_once_up_10_percent(tmp_path) -> None:
+    b = mk_variant(tmp_path, "long_straddle_trail")
+    frame(b, t("09:16"), quotes(120, 120))  # paid 241
+    assert frame(b, t("09:30"), quotes(160, 100)) is None  # bids 259: +7.5%, not armed
+    assert frame(b, t("09:40"), quotes(200, 100)) is None  # bids 299: armed, peak 299
+    assert frame(b, t("09:50"), quotes(160, 100)) is None  # bids 259 > 299 x 0.85 = 254.15
+    ev = frame(b, t("10:00"), quotes(155, 100))  # bids 254 <= 254.15
+    assert ev["event"] == "close" and ev["reason"] == "trail" and ev["exit"] == 254.0 and ev["pnl_known"] is True
+
+
+def test_trail_never_armed_falls_back_to_1300(tmp_path) -> None:
+    b = mk_variant(tmp_path, "long_straddle_trail")
+    frame(b, t("09:16"), quotes(120, 120))
+    assert frame(b, t("10:00"), quotes(125, 120)) is None
+    assert frame(b, t("11:00"), quotes(110, 110)) is None  # down but never armed
+    assert frame(b, t("13:00"), quotes(115, 115))["reason"] == "time"
+
+
+def test_leg50_sells_the_losing_leg_and_rides_the_other_to_1300(tmp_path) -> None:
+    b = mk_variant(tmp_path, "long_straddle_leg50")
+    frame(b, t("09:16"), quotes(120, 120))  # each leg paid 120.5
+    assert frame(b, t("09:30"), quotes(61, 200)) is None  # CE bid 60.5 > 60.25
+    ev = frame(b, t("09:40"), quotes(60, 210))  # CE bid 59.5 <= 60.25
+    assert ev["event"] == "leg_close" and ev["leg"] == "ce" and ev["px"] == 59.5
+    assert frame(b, t("10:00"), quotes(20, 100)) is None  # PE is not sold too, and no straddle stop
+    ev = frame(b, t("13:00"), quotes(5, 260))
+    assert ev["reason"] == "time" and ev["sold_leg"] == "ce"
+    assert ev["exit"] == round(59.5 + 259.5, 2)
+    assert ev["pnl_gross"] == round((59.5 + 259.5 - 241.0) * 65, 2)
+
+
+def test_leg50_restart_keeps_the_sold_leg(tmp_path) -> None:
+    b = mk_variant(tmp_path, "long_straddle_leg50")
+    frame(b, t("09:16"), quotes(120, 120))
+    frame(b, t("09:40"), quotes(60, 210))
+    again = mk_variant(tmp_path, "long_straddle_leg50")
+    assert again.position is not None and again.position.sold_leg == "ce" and again.position.sold_px == 59.5
+    assert again.position.ce_fill == 120.5
+    assert frame(again, t("13:00"), quotes(5, 260))["exit"] == 319.0
+
+
+class _Flag:
+    def is_enabled(self) -> bool:
+        return True
+
+
+class _Risk:
+    def __init__(self, blocks: bool) -> None:
+        self.blocks, self.asked = blocks, []
+
+    def check(self, book, now, *, selling=False):
+        self.asked.append((book, selling))
+        return {"ok": not self.blocks, "blocks": self.blocks, "reasons": ["week_stop:-5100"] if self.blocks else []}
+
+
+def test_enforced_risk_no_keeps_the_live_day_on_paper(tmp_path) -> None:
+    risk = _Risk(blocks=True)
+    b = PaperLongStraddle(path=tmp_path / LEDGER_NAME, order_client=object(), live_flag=_Flag(), risk=risk)
+    b._open_live = lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not go live"))  # type: ignore[method-assign]
+    ev = frame(b, t("09:16"), quotes(120, 120))
+    assert ev["event"] == "open" and ev["live"] is False and risk.asked == [("long_straddle", False)]
+    lines = [json.loads(x) for x in b.path.read_text().splitlines()]
+    assert lines[0]["event"] == "live_risk_block" and lines[0]["reasons"] == ["week_stop:-5100"]
+
+
+def test_shadow_risk_check_is_asked_but_live_goes_ahead(tmp_path) -> None:
+    risk = _Risk(blocks=False)
+    b = PaperLongStraddle(path=tmp_path / LEDGER_NAME, order_client=object(), live_flag=_Flag(), risk=risk)
+    b._open_live = lambda *a, **k: {"event": "live_start"}  # type: ignore[method-assign]
+    assert frame(b, t("09:16"), quotes(120, 120)) == {"event": "live_start"} and len(risk.asked) == 1
