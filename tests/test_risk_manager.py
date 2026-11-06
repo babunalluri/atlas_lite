@@ -29,17 +29,17 @@ def test_clean_account_passes_and_logs(tmp_path) -> None:
 
 def test_week_stop_counts_live_closes_since_monday_only(tmp_path) -> None:
     ledger(tmp_path, close("2026-10-30", -9000),  # last week: ignored
-           close("2026-11-03", -2500), close("2026-11-04", -2600), close("2026-11-05", 400, live=False))
+           close("2026-11-03", -7500), close("2026-11-04", -7600), close("2026-11-05", 400, live=False))
     out = RiskManager(tmp_path, enforce=False).check("long_straddle", NOW)
-    assert out["week_pnl"] == -5100 and "week_stop:-5100" in out["reasons"]
+    assert out["week_pnl"] == -15100 and "week_stop:-15100" in out["reasons"]
     assert out["ok"] is False and out["blocks"] is False  # shadow: logged, never blocks
 
 
 def test_day_stop_includes_arb_and_blocks_when_enforced(tmp_path) -> None:
     (tmp_path / "arb").mkdir()
-    (tmp_path / "arb" / "live-state-2026-11-06.json").write_text(json.dumps({"day": "2026-11-06", "day_pnl": -2100}))
+    (tmp_path / "arb" / "live-state-2026-11-06.json").write_text(json.dumps({"day": "2026-11-06", "day_pnl": -8100}))
     out = RiskManager(tmp_path, enforce=True).check("long_straddle", NOW)
-    assert out["day_pnl"] == -2100 and out["blocks"] is True and any(r.startswith("day_stop") for r in out["reasons"])
+    assert out["day_pnl"] == -8100 and out["blocks"] is True and any(r.startswith("day_stop") for r in out["reasons"])
 
 
 def test_kill_rule_three_stops_in_a_row_and_reset(tmp_path) -> None:
@@ -79,15 +79,15 @@ def test_built_in_event_calendar(tmp_path) -> None:
 
 
 def test_a_live_close_not_yet_on_disk_still_counts(tmp_path) -> None:
-    ledger(tmp_path, close("2026-11-05", -3000))
-    pending = [{"event": "close", "day": "2026-11-06", "ts": "2026-11-06T13:00:00+05:30", "pnl": -2500.0,
+    ledger(tmp_path, close("2026-11-05", -7000))
+    pending = [{"event": "close", "day": "2026-11-06", "ts": "2026-11-06T13:00:00+05:30", "pnl": -8500.0,
                 "reason": "time", "live": True, "strategy": "long_straddle"}]
     rm = RiskManager(tmp_path, enforce=True, pending=lambda: pending)
     out = rm.check("long_straddle", NOW)
-    assert out["day_pnl"] == -2500 and out["week_pnl"] == -5500 and out["blocks"] is True
-    assert set(out["reasons"]) == {"day_stop:-2500", "week_stop:-5500"}
+    assert out["day_pnl"] == -8500 and out["week_pnl"] == -15500 and out["blocks"] is True
+    assert {"day_stop:-8500", "week_stop:-15500"} <= set(out["reasons"])  # the kill rule fires too (beyond worst day)
     pending.clear()  # written to the ledger: counted once, from the file
-    assert RiskManager(tmp_path, pending=lambda: pending).check("long_straddle", NOW)["week_pnl"] == -3000
+    assert RiskManager(tmp_path, pending=lambda: pending).check("long_straddle", NOW)["week_pnl"] == -7000
 
 
 def test_kill_counts_only_stop_exits(tmp_path) -> None:

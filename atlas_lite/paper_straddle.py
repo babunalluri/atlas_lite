@@ -79,7 +79,8 @@ class QuoteSource(Protocol):
 
 
 def paper_enabled() -> bool:
-    raw = os.environ.get("ATLAS_LITE_PAPER", "1").strip().lower()
+    """Retired 6 Nov 2026 (never past paper): off by default; ATLAS_LITE_PAPER=1 turns it back on."""
+    raw = os.environ.get("ATLAS_LITE_PAPER", "0").strip().lower()
     return raw in ("1", "true", "yes")
 
 

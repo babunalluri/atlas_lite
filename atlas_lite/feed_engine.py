@@ -67,6 +67,11 @@ from atlas_lite.paper_weekly_sell import (
     PaperWeeklySell,
     paper_weekly_sell_enabled,
 )
+from atlas_lite.paper_expiry_sell import (
+    BOOKS as EXPIRY_SELL_BOOKS,
+    PaperExpirySell,
+    paper_expiry_sell_enabled,
+)
 from atlas_lite.paper_factor import (
     LEDGER_NAME as FACTOR_LEDGER,
     STRATEGY as FACTOR_STRATEGY,
@@ -268,6 +273,7 @@ RETIRED_PAPER_STRATEGIES = frozenset(
         "factor_paper",
         "ai_agent",
         "short_iron_condor",
+        "short_iron_fly",
     }
 )
 
@@ -379,6 +385,14 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
         "15:25, 2 sessions before Tuesday expiry · sell put/call 1,000 pts apart (F ± 500) · no wings · 1 lot",
         "stop at 15:25 daily if cost ≥ 3× credit · else hold to expiry, close 15:29",
     ),
+    "expiry_eve_strangle": (
+        "09:16, 1 session before expiry · buy 5% wings, sell CE/PE nearest F ± 0.5% · 1 lot, 2 if VIX ≥ 17",
+        "per-leg stop when a short leg doubles · else hold to expiry day, close 15:14",
+    ),
+    "expiry_day_straddle": (
+        "09:16 on expiry day, only if VIX ≥ 13 · buy 5% wings, sell ATM CE+PE · 1 lot, 2 if VIX ≥ 17",
+        "per-leg stop at +50% · else close 15:14",
+    ),
     "factor_paper": (
         "09:30–14:44 · spot ≥50 pt from open → buy ATM CE/PE · skip VIX ≥5% over open · "
         "1 lot · max 3/day · −₹2k day stop · side blocks",
@@ -441,6 +455,7 @@ class FeedEngine:
     _paper_ai_agent: PaperAiAgent | None = field(default=None, repr=False)
     _paper_factor: PaperFactor | None = field(default=None, repr=False)
     _paper_weekly: dict[str, PaperWeeklySell] = field(default_factory=dict, repr=False)
+    _paper_expiry: dict[str, PaperExpirySell] = field(default_factory=dict, repr=False)
     _paper_v3: PaperScalperV3 | None = field(default=None, repr=False)
     _paper_v3_variants: dict[str, PaperScalperV3] = field(default_factory=dict, repr=False)
     _paper_long_str: PaperLongStraddle | None = field(default=None, repr=False)
@@ -775,6 +790,14 @@ class FeedEngine:
                     sessions=cfg.get("sessions", WEEKLY_SELL_SESSIONS), width_pts=cfg.get("width_pts"),
                 )
             self._log.info("weekly option-selling paper books: %s (qty %d, no live orders)", ", ".join(self._paper_weekly), lot)
+        if paper_expiry_sell_enabled():
+            lot = self._nifty_option_lot()
+            for name, cfg in EXPIRY_SELL_BOOKS.items():
+                self._paper_expiry[name] = PaperExpirySell(
+                    path=self.data_dir / cfg["ledger"], strategy=name, sessions=cfg["sessions"], dist=cfg["dist"],
+                    wing_pct=cfg["wing_pct"], stop=cfg["stop"], min_vix=cfg["min_vix"], lot_size=lot, name=cfg["name"],
+                )
+            self._log.info("expiry-week selling paper books: %s (lot %d, no live orders)", ", ".join(self._paper_expiry), lot)
         if paper_factor_enabled():
             lot = self._nifty_option_lot()
             self._paper_factor = PaperFactor(path=self.data_dir / FACTOR_LEDGER, lot_size=lot)
@@ -833,7 +856,7 @@ class FeedEngine:
             self._tasks.append(asyncio.create_task(self._paper_ai_agent_loop()))
         if self._paper_factor is not None:
             self._tasks.append(asyncio.create_task(self._paper_factor_loop()))
-        if self._paper_weekly:
+        if self._paper_weekly or self._paper_expiry:
             self._tasks.append(asyncio.create_task(self._paper_weekly_loop()))
         if self._paper_v3 is not None or self._paper_v3_variants:
             self._tasks.append(asyncio.create_task(self._paper_v3_loop()))
@@ -3099,7 +3122,7 @@ class FeedEngine:
         return self._gamma_oi.reading(spot=self._spot(nb), vix=vix, now=now)
 
     async def _paper_weekly_loop(self) -> None:
-        """Weekly NIFTY strangle / 5%-wing condor paper books. Positions carry overnight."""
+        """Weekly NIFTY selling and expiry-week selling paper books. Positions carry overnight."""
         interval = max(1.0, STREAM_INTERVAL_MS / 1000.0)
         while True:
             try:
@@ -3128,6 +3151,14 @@ class FeedEngine:
                             atm=atm,
                             allow_entry=allow,
                         )
+                    except Exception as exc:  # noqa: BLE001
+                        self._log.warning("%s paper book failed: %s", name, exc)
+                vix = quote_ltp(self.book.get(VIX_SYMBOLS[0])) if (self._paper_expiry and VIX_SYMBOLS) else None
+                for name, ebook in self._paper_expiry.items():
+                    try:
+                        allow = self._agent_gates.entries_allowed(name, now) if self._agent_gates else True
+                        ebook.on_frame(now=now, book=self.book, expiry=expiry, strikes=strikes, option_symbol=option_symbol,
+                                       atm=atm, vix=vix, allow_entry=allow)
                     except Exception as exc:  # noqa: BLE001
                         self._log.warning("%s paper book failed: %s", name, exc)
                 await asyncio.sleep(interval)
@@ -3772,6 +3803,13 @@ class FeedEngine:
             body[name] = (
                 wbook.snapshot(self.book)
                 if wbook is not None
+                else {"ok": True, "mode": "paper", "enabled": False, "live_orders": False, "book": name, "name": cfg["name"]}
+            )
+        for name, cfg in EXPIRY_SELL_BOOKS.items():
+            ebook = self._paper_expiry.get(name)
+            body[name] = (
+                ebook.snapshot(self.book)
+                if ebook is not None
                 else {"ok": True, "mode": "paper", "enabled": False, "live_orders": False, "book": name, "name": cfg["name"]}
             )
         if self._paper_factor is None:

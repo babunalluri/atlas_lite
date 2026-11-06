@@ -4,10 +4,10 @@ Before a live book sends its entry orders it asks check(); each answer is writte
 data/risk_checks.jsonl. In shadow mode (default) the answer is logged and never blocks;
 ATLAS_LITE_RISK_ENFORCE=1 makes a "no" keep the book on paper for that entry.
 
-Rules (limits set by the operator, 6 Nov 2026):
+Rules (limits set by the operator 6 Nov 2026; raised the same evening to fit the expiry-week selling plan):
 
-- Day stop: live P&L closed today across all live books <= -DAY_STOP (Rs 2,000) -> no new live entries.
-- Week stop: live P&L closed since Monday <= -WEEK_STOP (Rs 5,000) -> no new live entries
+- Day stop: live P&L closed today across all live books <= -DAY_STOP (Rs 8,000) -> no new live entries.
+- Week stop: live P&L closed since Monday <= -WEEK_STOP (Rs 15,000) -> no new live entries
   until the next week (or a reset).
 - Kill rule per book: its last 3 live closes were all stops, or one live loss was worse than
   its backtest's worst day -> that book stays paper until reset (data/risk_reset.json).
@@ -32,8 +32,9 @@ from zoneinfo import ZoneInfo
 from atlas_lite.log_util import get_logger
 
 IST = ZoneInfo("Asia/Kolkata")
-DAY_STOP = 2_000.0
-WEEK_STOP = 5_000.0
+# Sized from the expiry-week selling plan (1 lot, 2024-26): a 1-in-20 bad week ~ -Rs 7.5k, worst week -Rs 15k.
+DAY_STOP = 8_000.0
+WEEK_STOP = 15_000.0
 KILL_STOPS_IN_A_ROW = 3
 LOG_NAME = "risk_checks.jsonl"
 EVENTS_NAME = "event_days.json"

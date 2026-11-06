@@ -2382,6 +2382,8 @@
       <div class="history-detail" id="weeklyStrangleLine">Weekly strangle: —</div>
       <div class="history-detail" id="weeklyCondorLine">Weekly condor: —</div>
       <div class="history-detail" id="weeklyStrangle1000Line">Weekly strangle 1,000: —</div>
+      <div class="history-detail" id="expiryEveStrangleLine">Expiry-eve strangle: —</div>
+      <div class="history-detail" id="expiryDayStraddleLine">Expiry-day straddle: —</div>
       <div class="history-detail" id="agentMacroLine">Macro: —</div>
       <div class="history-detail" id="agentDecision">Last cycle: —</div>
       <div class="history-table-wrap">
@@ -6910,9 +6912,11 @@
         ? `buys the ATM straddle at 09:16, trails from +${Math.round(ls.trail_start * 100)}% (exit ${Math.round(ls.trail_gap * 100)}% off the peak) or sells at 13:00`
         : ls.leg_stop
         ? `buys the ATM straddle at 09:16, sells a leg at −${Math.round(ls.leg_stop * 100)}%, the rest at 13:00`
+        : ls.run_trail
+        ? `buys the ATM straddle at 09:16; a winner at 13:00 runs to 15:00 (exit ${Math.round(ls.run_trail * 100)}% off the peak), else sells at 13:00`
         : "buys the ATM straddle at 09:16, sells at 13:00";
       const sold = pos && pos.sold_leg ? ` · ${pos.sold_leg.toUpperCase()} sold` : "";
-      const peak = pos && pos.peak != null ? ` · peak ${pos.peak}` : "";
+      const peak = (pos && pos.peak != null ? ` · peak ${pos.peak}` : "") + (pos && pos.running ? " · running past 13:00" : "");
       const stop = pos && pos.stop != null ? ` · stop ${pos.stop}` : "";
       const mode = pos && pos.live ? " · LIVE" : "";
       const manual = pos && pos.manual_needed ? " · EXIT FAILED — close manually in Kite" : "";
@@ -6956,6 +6960,25 @@
       line.textContent =
         `${name} · exp ${pos.expiry} · ${pos.legs.join(", ")} · credit ${pos.credit}` +
         ` · cost now ${pos.cost_now ?? "—"} (stop ${pos.stop_level}) · open PnL ${pos.open_pnl ?? "—"}`;
+    }
+
+    function renderExpirySell(elId, eb) {
+      const line = document.getElementById(elId);
+      if (!line) return;
+      const name = eb.name || eb.book || "Expiry book";
+      if (!eb.enabled) {
+        line.textContent = `${name} · off (ATLAS_LITE_PAPER_EXPIRY_SELL=0)`;
+        return;
+      }
+      const pos = eb.position;
+      if (!pos) {
+        const when = eb.sessions === 0 ? "09:16 on expiry day" : "09:16 the session before expiry";
+        const gate = eb.min_vix ? ` if VIX ≥ ${eb.min_vix}` : "";
+        line.textContent = `${name} · FLAT · enters ${when}${gate}` + (eb.last_reject ? ` · ${eb.last_reject}` : "");
+        return;
+      }
+      line.textContent =
+        `${name} · exp ${pos.expiry} · qty ${pos.qty} (VIX ${pos.vix ?? "—"}) · ${pos.legs.join(", ")} · open PnL ${pos.open_pnl ?? "—"}`;
     }
 
     function renderAgentLive(st, paper) {
@@ -7137,6 +7160,8 @@
         renderWeeklySell("weeklyStrangleLine", paper.weekly_strangle || {});
         renderWeeklySell("weeklyCondorLine", paper.weekly_condor5 || {});
         renderWeeklySell("weeklyStrangle1000Line", paper.weekly_strangle1000 || {});
+        renderExpirySell("expiryEveStrangleLine", paper.expiry_eve_strangle || {});
+        renderExpirySell("expiryDayStraddleLine", paper.expiry_day_straddle || {});
         if (macroEl) {
           macroEl.textContent =
             `Macro as_of ${macro.fetched_at || "—"} · crude ${fmtMacroPct(macro.crude)} · gold ${fmtMacroPct(macro.gold)} · USDINR ${fmtMacroPct(macro.usdinr)} · ES ${fmtMacroPct(macro.es_futures)} · headlines ${((macro.headlines || []).length)}`;

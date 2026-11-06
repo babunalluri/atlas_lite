@@ -3,7 +3,7 @@
 Status: **risk manager built locally in shadow mode** (`atlas_lite/risk_manager.py`, asked before the long
 straddle's live entry; not deployed). The rest is design. Each phase is deployed only on your go.
 
-Operator answers (6 Nov): no alerts; account day stop −₹2,000, week stop −₹5,000; SEBI rules checked by
+Operator answers (6 Nov): no alerts; account day stop −₹2,000, week stop −₹5,000 (raised the same evening to −₹8,000 / −₹15,000 for the expiry-week selling plan); SEBI rules checked by
 me (below); static IP already whitelisted.
 
 ## Goal
@@ -52,8 +52,8 @@ One file, `data/live_books.json`, lists the books allowed to trade live, edited 
 |---|---|---|
 | Margin | Kite basket margin for the new orders ≤ funds available − ₹20k buffer | ₹2.5L is shared; a rejected second leg leaves a naked position |
 | Priority | When two books want margin, the higher priority wins; the other stays paper that day | Two selling books together exceed ₹2.5L |
-| Account day stop | Live closed P&L today across books (arb included) ≤ **−₹2,000** → no new live entries; open trades keep their own exits | One bad day must not become three |
-| Account week stop | ≤ **−₹5,000** since Monday → no new live entries until next week | Your limit |
+| Account day stop | Live closed P&L today across books (arb included) ≤ **−₹8,000** → no new live entries; open trades keep their own exits | One bad day must not become three |
+| Account week stop | ≤ **−₹15,000** since Monday → no new live entries until next week | Your limit |
 | Book kill rule | 3 stop-outs in a row, or one loss beyond the backtest's worst day → that book back to paper | From `doc/todo.md`; a broken edge shows here first |
 | Event days | No new selling entries on RBI policy (4 Dec, 5 Feb), the session after a US FOMC decision (10 Dec, 28 Jan), Union Budget (1 Feb); `data/event_days.json` adds more | Gap risk |
 | Cut-off | No new orders after 15:10; MIS square-off 15:14 is Zerodha's | Same as the live straddle |
