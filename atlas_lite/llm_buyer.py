@@ -7,7 +7,7 @@ vs day high, ATM call/put prices and the straddle path, days to expiry, its own 
 BUY_CE / BUY_PE / WAIT / DONE_FOR_DAY when flat, HOLD / EXIT when holding. It also sees the previous session's
 open, high, low and close (from the engine's 1-minute bars). Evidence is thin: the 8 Nov 2026 replays (gpt-4.1,
 dates hidden) were 5-minute, full-day, on four hand-picked days (+Rs 6,581 / -Rs 1,296 / +Rs 3,449 / -Rs 2,444);
-this 1-minute opening-hour setup has not been replayed.
+this all-day, 1-minute setup has not been replayed.
 
 Code, not the LLM, owns the risk:
 - Day loss stop DAY_LOSS_LIMIT: today's closed P&L plus the open position at bids, after estimated charges,
@@ -64,7 +64,7 @@ EXIT_AT, LIVE_ORDERS_UNTIL = "15:05", "15:10"  # Zerodha squares F&O MIS off at 
 DECIDE_EVERY_MIN = 1
 MAX_ENTRIES = 2
 MAX_ENTRIES_IF_POSITIVE = 4  # more entries while today's closed P&L is positive (profit lock applies)
-MAX_ERRORS_HOLDING = 3  # LLM errors in a row while holding -> sell (about 15 minutes without a working LLM)
+MAX_ERRORS_HOLDING = 10  # LLM errors in a row while holding -> sell (~10 minutes without a working LLM at 1/min)
 DAY_LOSS_LIMIT = 2_000.0
 PROFIT_LOCK = 0.5  # extra trades on a winning day: keep at least half of the day's best closed P&L
 MONTH_LOSS_LIMIT = 10_000.0
@@ -163,7 +163,7 @@ class LlmDecider:
                 r.raise_for_status()
                 txt = str(r.json()["choices"][0]["message"]["content"] or "")
                 out = json.loads(txt[txt.find("{"): txt.rfind("}") + 1])
-                # The prompt is the replayed one (no factors requested: asking changed decisions); kept if offered.
+                # Factors are not requested (asking for them changed decisions in a test); kept only if offered.
                 factors = out.get("factors") if isinstance(out.get("factors"), list) else []
                 return {"action": str(out.get("action") or "").upper(), "reason": str(out.get("reason") or "")[:300],
                         "factors": [str(f)[:60] for f in factors[:4]], "provider": name, "model": model,
@@ -193,7 +193,7 @@ class LlmBuyer:
     live_flag: Any = None
     decider: Any = None
     strategy: str = STRATEGY
-    # Timing (defaults: the opening hour, one decision a minute); fields so the hours can be extended later.
+    # Timing (defaults: all day, one decision a minute); fields so a window can be set per book.
     first_decision: str = FIRST_DECISION
     last_entry: str = LAST_ENTRY
     last_decision_at: str = LAST_DECISION

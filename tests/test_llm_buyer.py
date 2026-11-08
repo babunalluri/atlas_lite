@@ -404,19 +404,20 @@ def test_engine_abandons_a_hung_llm_call_and_asks_again(monkeypatch) -> None:
     assert applied[0]["error"] == "llm_hung"
 
 
-def test_three_llm_errors_in_a_row_while_holding_sell(tmp_path: Path) -> None:
+def test_llm_errors_in_a_row_while_holding_sell(tmp_path: Path) -> None:
     b, q = book_at(tmp_path), Book()
     frame(b, "10:00", q)
     b.apply(t("10:00"), {"hm": "10:00", "action": "BUY_CE"}, q)
     err = {"action": "", "error": "openai:ReadTimeout:"}
-    assert b.apply(t("10:05"), {"hm": "10:05", **err}, q) is None
-    assert b.apply(t("10:10"), {"hm": "10:10", "action": "HOLD"}, q) is None  # a valid answer resets the count
-    assert b.apply(t("10:15"), {"hm": "10:15", **err}, q) is None
-    assert b.apply(t("10:20"), {"hm": "10:20", **err}, q) is None and b.position is not None
-    ev = b.apply(t("10:25"), {"hm": "10:25", **err}, q)
+    assert b.apply(t("10:01"), {"hm": "10:01", **err}, q) is None
+    assert b.apply(t("10:02"), {"hm": "10:02", "action": "HOLD"}, q) is None  # a valid answer resets the count
+    for i in range(M.MAX_ERRORS_HOLDING - 1):
+        hm = f"10:{3 + i:02d}"
+        assert b.apply(t(hm), {"hm": hm, **err}, q) is None and b.position is not None
+    ev = b.apply(t("10:30"), {"hm": "10:30", **err}, q)
     assert ev["event"] == "close" and ev["reason"] == "llm_unavailable" and b.position is None
-    assert b.apply(t("10:30"), {"hm": "10:30", **err}, q) is None  # flat: errors never trade
-
+    assert b.apply(t("10:31"), {"hm": "10:31", **err}, q) is None  # flat: errors never trade
+    assert M.MAX_ERRORS_HOLDING == 10  # ~10 minutes at one question a minute
 
 def test_paper_open_needs_its_ledger_line(tmp_path: Path) -> None:
     b, q = book_at(tmp_path), Book()
@@ -452,7 +453,8 @@ def test_errors_in_a_row_survive_a_restart(tmp_path: Path) -> None:
     b, q = book_at(tmp_path), Book()
     frame(b, "10:00", q)
     b.apply(t("10:00"), {"hm": "10:00", "action": "BUY_CE"}, q)
-    for hm in ("10:05", "10:10"):
+    for i in range(M.MAX_ERRORS_HOLDING - 1):
+        hm = f"10:{5 + i:02d}"
         b.apply(t(hm), {"hm": hm, "action": "", "error": "openai:ReadTimeout:"}, q)
     import atlas_lite.llm_buyer as mod
     real_now = mod.datetime
@@ -460,14 +462,14 @@ def test_errors_in_a_row_survive_a_restart(tmp_path: Path) -> None:
     class FakeDT(real_now):
         @classmethod
         def now(cls, tz=None):
-            return t("10:12")
+            return t("10:14")
 
     mod.datetime = FakeDT
     try:
         b2 = book_at(tmp_path)
     finally:
         mod.datetime = real_now
-    assert b2.errors_in_row == 2 and b2.position is not None
+    assert b2.errors_in_row == M.MAX_ERRORS_HOLDING - 1 and b2.position is not None
     frame(b2, "10:15", q)
     ev = b2.apply(t("10:15"), {"hm": "10:15", "action": "", "error": "openai:ReadTimeout:"}, q)
     assert ev["event"] == "close" and ev["reason"] == "llm_unavailable"  # the third error, across the restart
@@ -477,9 +479,11 @@ def test_unusable_answers_count_as_errors_while_holding(tmp_path: Path) -> None:
     b, q = book_at(tmp_path), Book()
     frame(b, "10:00", q)
     b.apply(t("10:00"), {"hm": "10:00", "action": "BUY_CE"}, q)
-    for hm, act in (("10:05", "SELL_ALL"), ("10:10", "BUY_PE")):  # not allowed while holding
+    for i in range(M.MAX_ERRORS_HOLDING - 1):  # not allowed while holding
+        hm = f"10:{1 + i:02d}"
+        act = ("SELL_ALL", "BUY_PE")[i % 2]
         assert b.apply(t(hm), {"hm": hm, "action": act}, q) is None and b.position is not None
-    assert b.errors_in_row == 2 and ledger(b)[-1]["valid"] is False
+    assert b.errors_in_row == M.MAX_ERRORS_HOLDING - 1 and ledger(b)[-1]["valid"] is False
     ev = b.apply(t("10:15"), {"hm": "10:15", "action": "MAYBE"}, q)
     assert ev["event"] == "close" and ev["reason"] == "llm_unavailable"
 
