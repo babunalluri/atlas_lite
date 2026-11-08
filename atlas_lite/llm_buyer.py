@@ -5,7 +5,8 @@ path and range, % change, VIX and its change, ATM IV against today's high/low, I
 vs day high, ATM call/put prices and the straddle path, days to expiry, its own position and P&L) and answers
 BUY_CE / BUY_PE / WAIT / DONE_FOR_DAY when flat, HOLD / EXIT when holding. Same prompt and inputs as the
 8 Nov 2026 replay (scratchpad llm_replay.py, gpt-4.1, dates hidden): 7 Oct -Rs 1,296, 8 Oct +Rs 6,581,
-13 Oct +Rs 3,449. Three hand-picked days only: this book is the forward test.
+13 Oct +Rs 3,449. Three hand-picked days only. The trader is now Claude Sonnet 5.5 via OpenRouter (MODEL_OPENROUTER);
+its own replay is scratchpad book_replay_all.py.
 
 Code, not the LLM, owns the risk:
 - Day loss stop DAY_LOSS_LIMIT: today's closed P&L plus the open position at bids, after estimated charges,
@@ -63,8 +64,12 @@ EST_CHARGES = 80.0  # a buy and a sell of one ATM lot, for the running day-loss 
 SLIP_PTS = 1.0
 FUNDS_HEADROOM = 1.10
 TAG_PREFIX = "llm"
-MODEL_OPENROUTER, MODEL_OPENAI = "openai/gpt-4.1", "gpt-4.1"
+MODEL_OPENROUTER = "anthropic/claude-sonnet-5.5"  # the trader (operator's choice, 8 Nov 2026)
+# No OpenAI fallback: OpenAI can't serve this model, and a different model is a different trader. If OpenRouter
+# fails the book waits / holds (and sells after MAX_ERRORS_HOLDING failures while holding).
+MODEL_OPENAI: str | None = None
 LLM_TIMEOUT_S = 25.0
+LLM_MAX_TOKENS = 600
 LIVE_EVENTS = frozenset({"order_intent", "order_sent", "order_send_error", "order_cancel_sent", "order_final",
                          "live_phase", "manual_needed", "live_mark"})
 
@@ -95,7 +100,7 @@ def _f(x: Any) -> float | None:
 
 
 class LlmDecider:
-    """One chat call: OpenRouter first (if configured), then the OpenAI key. Never raises."""
+    """One chat call through OpenRouter (and the OpenAI key only if MODEL_OPENAI is set). Never raises."""
 
     def __init__(self, credentials: Any, *, post: Callable[..., Any] | None = None) -> None:
         self.credentials = credentials
@@ -106,14 +111,16 @@ class LlmDecider:
         out = []
         if c is not None and getattr(c, "api_key", "") and "openrouter" in str(getattr(c, "base_url", "")):
             out.append(("openrouter", c.api_key, c.base_url, MODEL_OPENROUTER))
-        if c is not None and getattr(c, "openai_api_key", ""):
+        if MODEL_OPENAI and c is not None and getattr(c, "openai_api_key", ""):
             out.append(("openai", c.openai_api_key, c.openai_base_url or "https://api.openai.com/v1", MODEL_OPENAI))
         return out
 
     def decide(self, state: dict[str, Any]) -> dict[str, Any]:
         errors = []
         for name, key, base, model in self.targets():
-            body = {"model": model, "temperature": 0.1, "max_tokens": 120,
+            # Sonnet 5.5 always reasons on OpenRouter (it can't be disabled); at the default effort its thinking
+            # could use the whole token budget and return no answer. Low effort answers directly; 600 is headroom.
+            body = {"model": model, "temperature": 0.1, "max_tokens": LLM_MAX_TOKENS, "reasoning": {"effort": "low"},
                     "messages": [{"role": "system", "content": SYSTEM_PROMPT},
                                  {"role": "user", "content": json.dumps(state, separators=(",", ":"))}]}
             try:

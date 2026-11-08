@@ -70,10 +70,13 @@ def test_decider_parses_and_fails_over_to_openai() -> None:
             return Resp(402, "")
         return Resp(200, 'Sure: {"action": "buy_pe", "reason": "new lows", "factors": ["new day low", "PCR 0.82"]}')
 
-    out = LlmDecider(Creds(), post=post).decide({"time": "10:40"})
-    assert out == {"action": "BUY_PE", "reason": "new lows", "factors": ["new day low", "PCR 0.82"],
-                   "provider": "openai", "model": "gpt-4.1", "inputs": {"time": "10:40"}}
-    assert [m for _, m in calls] == ["openai/gpt-4.1", "gpt-4.1"]
+    out = LlmDecider(Creds(), post=post).decide({"time": "10:40"})  # OpenRouter 402, no OpenAI fallback
+    assert out["action"] == "" and out["error"].startswith("openrouter:") and out["inputs"] == {"time": "10:40"}
+    assert [m for _, m in calls] == ["anthropic/claude-sonnet-5.5"]
+    calls.clear()
+    out = LlmDecider(Creds(), post=lambda url, **kw: (calls.append(kw["json"]["model"]),
+                     Resp(200, '{"action": "buy_pe", "reason": "new lows"}'))[1]).decide({"time": "10:40"})
+    assert out["action"] == "BUY_PE" and out["provider"] == "openrouter" and out["model"] == "anthropic/claude-sonnet-5.5"
     assert LlmDecider(None).decide({})["error"] == "no_llm_credentials"
 
 
