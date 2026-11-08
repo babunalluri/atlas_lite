@@ -128,6 +128,7 @@ from atlas_lite.metrics import (
     quote_oi,
     quote_oi_day_high,
     quote_session_open,
+    session_open_baseline,
     quote_volume,
     resolve_atm_iv,
     atm_ref_price,
@@ -405,8 +406,8 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
         "per-leg stop at +50% · else close 15:14",
     ),
     "llm_buyer": (
-        "09:20–14:30 · every 5 min an LLM decides: buy 1 lot ATM CE or PE, wait, or stop for the day · max 2 entries",
-        "LLM exits (HOLD/EXIT) · day loss −₹2,000 enforced by code · flat by 15:05 · live only when ticked",
+        "09:16–10:10 · every minute an LLM decides: buy 1 lot ATM CE or PE · 2 entries, up to 4 while the day is positive",
+        "LLM exits · −₹2,000 day stop · extra trades keep half the day's best profit · flat 10:15 · live when ticked",
     ),
     "sensex_expiry_eve_strangle": (
         "SENSEX (Thu expiry) · 09:16, 1 session before expiry · buy 5% wings, sell CE/PE nearest F ± 0.5% · "
@@ -795,15 +796,16 @@ class FeedEngine:
         if paper_llm_buyer_enabled():
             from atlas_lite.day_live_flag import DayLiveFlag
 
-            # Live only on a day the operator ticks "Live LLM buyer" and the host allows it.
+            # 09:15-10:15, one decision a minute: live only on a day the operator ticks "Live LLM buyer" and the
+            # host allows it; paper otherwise.
             self._llm_buyer_live = DayLiveFlag(self.data_dir / LLM_BUYER_LIVE_FLAG, LLM_BUYER_LIVE_ENV)
             self._llm_buyer = LlmBuyer(
                 path=self.data_dir / LLM_BUYER_LEDGER, lot_size=self._nifty_option_lot(),
                 order_client=KiteOrderClient(self.credentials_path), live_flag=self._llm_buyer_live,
                 decider=LlmDecider(read_llm_credentials()),
             )
-            self._log.info("llm_buyer book qty %d (LLM picks ATM CE/PE every 5 min; live when ticked, allowed=%s)",
-                           self._llm_buyer.qty, self._llm_buyer_live.allowed())
+            self._log.info("llm_buyer book: 09:15-10:15, 1 min (live when ticked, allowed=%s)",
+                           self._llm_buyer_live.allowed())
         if paper_long_straddle_tp20_enabled():
             self._paper_long_str_tp20 = PaperLongStraddle(
                 path=self.data_dir / LONG_STRADDLE_TP20_LEDGER, lot_size=self._nifty_option_lot(),
@@ -903,7 +905,7 @@ class FeedEngine:
         if self._paper_long_str is not None or self._paper_long_str_tp20 is not None or self._paper_long_str_variants:
             self._tasks.append(asyncio.create_task(self._paper_long_straddle_loop()))
         if self._llm_buyer is not None:
-            self._tasks.append(asyncio.create_task(self._llm_buyer_loop()))
+            self._tasks.append(asyncio.create_task(self._llm_buyer_loop(self._llm_buyer)))
         if self._agent is not None:
             self._tasks.append(asyncio.create_task(self._agent_loop()))
 
@@ -3154,12 +3156,9 @@ class FeedEngine:
                 self._log.warning("long_straddle paper book failed: %s", exc)
                 await asyncio.sleep(1.0)
 
-    async def _llm_buyer_loop(self) -> None:
-        """LLM option buyer: the book's frame every second (stops, live orders); an LLM decision every 5 minutes,
+    async def _llm_buyer_loop(self, book: LlmBuyer) -> None:
+        """One LLM buyer book: its frame every second (stops, live orders); an LLM decision every few minutes,
         asked in the background so a slow reply never delays the day-loss stop."""
-        book = self._llm_buyer
-        if book is None:
-            return
         interval = max(1.0, STREAM_INTERVAL_MS / 1000.0)
         pending: asyncio.Task | None = None
         pending_hm, pending_at, pending_state = "", 0.0, {}
@@ -3177,6 +3176,12 @@ class FeedEngine:
                     continue
                 hm = now.strftime("%H:%M")
                 feed = self.build_feed("nifty") if "09:15" <= hm <= "15:30" and "nifty" in self.notebooks else {}
+                if feed and not feed.get("error"):  # yesterday's open/high/low/close (retried until the bars have it)
+                    nb = self.notebooks.get("nifty")
+                    prev_day = book.ensure_prev_day(
+                        now.strftime("%Y-%m-%d"), hm, lambda: list(nb.bar_builder.bars) if nb and nb.bar_builder else [])
+                    if prev_day:
+                        feed = {**feed, "prev_day": prev_day}
                 # In a worker thread: a live order call must not block the engine.
                 await asyncio.to_thread(book.on_frame, now=now, feed=feed, book=self.book)
                 if pending is not None and pending.done():
@@ -3190,7 +3195,7 @@ class FeedEngine:
                     pending_state = book.state(now, self.book)
                     book.decided.add(hm)  # one question per 5-minute slot, however long the reply takes
                     pending = asyncio.create_task(asyncio.to_thread(book.decider.decide, pending_state))
-                if self._llm_buyer_live is not None and hm >= "15:30":
+                if book.live_flag is not None and self._llm_buyer_live is not None and hm >= "15:30":
                     if self._llm_buyer_live.turn_off_if_on(source="day_end"):
                         self._log.info("llm_buyer live auto-off at session end")
                 await asyncio.sleep(interval)
@@ -3926,7 +3931,7 @@ class FeedEngine:
             self._llm_buyer.snapshot(self.book)
             if self._llm_buyer is not None
             else {"ok": True, "mode": "paper", "enabled": False, "live_orders": False, "book": "llm_buyer",
-                  "name": "LLM option buyer"}
+                  "name": "LLM buyer"}
         )
         if self._paper_factor is None:
             body["factor_paper"] = {
@@ -4605,9 +4610,8 @@ class FeedEngine:
             vix_ltp = quote_ltp(vix_row)
             if vix_ltp is None:
                 continue
-            if self.session.vix_open is None:
-                session_open = quote_session_open(vix_row)
-                self.session.vix_open = session_open if session_open is not None else vix_ltp
+            # A stored open of 0 made "VIX change" equal VIX itself on 17 of 32 recorded days.
+            self.session.vix_open = session_open_baseline(self.session.vix_open, vix_row, vix_ltp)
             self.session.vix_last = float(vix_ltp)
             feed["vix"] = round(float(vix_ltp), 3)
             feed["vix_chg"] = round(vix_ltp - float(self.session.vix_open), 3)

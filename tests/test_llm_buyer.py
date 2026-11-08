@@ -34,8 +34,15 @@ def feed(spot: float = 24000.0) -> dict:
             "oi_vs_day_high": 99.0, "index_nifty_chg": 0.2}
 
 
+# The mechanics tests (stops, kill switch, restarts, live orders) run on a wide day so their times read
+# naturally; the book's own hours (09:16-10:15, every minute) are tested below with its defaults.
+WIDE = dict(first_decision="09:20", last_entry="14:30", last_decision_at="15:00", exit_at="15:05",
+            live_orders_until="15:10", decide_every_min=5, max_entries_if_positive=2, path_every_min=30,
+            straddle_every_min=15)
+
+
 def book_at(tmp_path: Path, **kw) -> LlmBuyer:
-    return LlmBuyer(path=tmp_path / "llm.jsonl", lot_size=65, **kw)
+    return LlmBuyer(path=tmp_path / "llm.jsonl", lot_size=65, **{**WIDE, **kw})
 
 
 def frame(b: LlmBuyer, hm: str, q: Book, day: str = DAY):
@@ -367,7 +374,7 @@ def test_engine_abandons_a_hung_llm_call_and_asks_again(monkeypatch) -> None:
             return {"action": "WAIT", "reason": "ok"}
 
     class FakeBook:
-        strategy, live, position = "llm_buyer", None, object()  # "holding": skips the weekend idle path
+        strategy, live, position, live_flag = "llm_buyer", None, object(), None  # "holding": skips the weekend idle
         decider, decided = Decider(), set()
 
         def on_frame(self, **kw):
@@ -387,7 +394,7 @@ def test_engine_abandons_a_hung_llm_call_and_asks_again(monkeypatch) -> None:
                           build_feed=lambda nb: {})
 
     async def run():
-        task = asyncio.create_task(fe.FeedEngine._llm_buyer_loop(eng))
+        task = asyncio.create_task(fe.FeedEngine._llm_buyer_loop(eng, eng._llm_buyer))
         await asyncio.sleep(3.5)
         task.cancel()
         release.set()
@@ -503,3 +510,119 @@ def test_restart_with_open_live_trade_and_box_already_off_sells(tmp_path: Path, 
     kite.fill_all(91.0)
     ev = frame(b2, "10:06", q)
     assert ev["event"] == "close" and ev["live"] and ev["reason"] == "ui_off"
+
+
+
+def hour_book(tmp_path: Path, **kw) -> LlmBuyer:
+    return LlmBuyer(path=tmp_path / "h.jsonl", lot_size=65, **kw)  # the book's own defaults
+
+
+def test_hour_book_schedule_prompt_and_tags(tmp_path: Path) -> None:
+    b, q = hour_book(tmp_path), Book()
+    frame(b, "09:15", q)
+    assert not b.decision_due(t("09:15")) and b.decision_due(t("09:16"))
+    frame(b, "09:16", q)
+    assert b.decision_due(t("09:17"))  # every minute
+    frame(b, "10:10", q)
+    assert b.decision_due(t("10:10")) and not b.decision_due(t("10:11"))  # last entry 10:10 when flat
+    assert "closed at 10:15" in M.SYSTEM_PROMPT and "up to four times while today's realised P&L is positive" in M.SYSTEM_PROMPT
+    b.apply(t("10:10"), {"hm": "10:10", "action": "BUY_CE"}, q)
+    assert b.decision_due(t("10:14")) and not b.decision_due(t("10:15"))  # holding: decisions to 10:14
+    ev = frame(b, "10:15", q)
+    assert ev["event"] == "close" and ev["reason"] == "square_off"  # flat at 10:15
+    kite = FakeKite()
+    b2 = hour_book(tmp_path / "live", order_client=kite, live_flag=Flag())
+    frame(b2, "09:20", q)
+    b2.apply(t("09:20"), {"hm": "09:20", "action": "BUY_PE"}, q)
+    assert kite.orders[0]["tag"].startswith("llm")  # its order tags
+
+
+def test_hour_book_extra_trades_only_while_positive(tmp_path: Path) -> None:
+    b, q = hour_book(tmp_path), Book()
+    frame(b, "09:20", q)
+    for hm in ("09:20", "09:25"):  # two winners
+        frame(b, hm, q)
+        b.apply(t(hm), {"hm": hm, "action": "BUY_CE"}, q)
+        q.px[CE] += 20.0
+        b.apply(t(hm), {"hm": hm, "action": "EXIT"}, q)
+    frame(b, "09:30", q)
+    assert b.entries == 2 and b.day_realized > 0 and b.decision_due(t("09:30"))  # a 3rd is allowed
+    b2, q2 = hour_book(tmp_path / "loss"), Book()
+    frame(b2, "09:20", q2)
+    for hm in ("09:20", "09:25"):  # two losers
+        frame(b2, hm, q2)
+        b2.apply(t(hm), {"hm": hm, "action": "BUY_CE"}, q2)
+        q2.px[CE] -= 5.0
+        b2.apply(t(hm), {"hm": hm, "action": "EXIT"}, q2)
+    frame(b2, "09:30", q2)
+    assert b2.entries == 2 and b2.day_realized < 0 and not b2.decision_due(t("09:30"))
+    assert b2.apply(t("09:30"), {"hm": "09:30", "action": "BUY_PE"}, q2) is None
+    assert M.MAX_ENTRIES == 2 and M.MAX_ENTRIES_IF_POSITIVE == 4
+
+
+def test_profit_lock_sells_an_extra_trade_at_half_the_days_best(tmp_path: Path) -> None:
+    b, q = hour_book(tmp_path), Book()
+    frame(b, "09:20", q)
+    for hm in ("09:20", "09:25"):
+        frame(b, hm, q)
+        b.apply(t(hm), {"hm": hm, "action": "BUY_CE"}, q)
+        q.px[CE] += 20.0
+        b.apply(t(hm), {"hm": hm, "action": "EXIT"}, q)
+    best = b.day_realized
+    frame(b, "09:30", q)
+    b.apply(t("09:30"), {"hm": "09:30", "action": "BUY_CE"}, q)  # the 3rd, extra trade
+    fill = b.position.fill
+    q.px[CE] = fill + 0.5 - (best * 0.5 / 65) + 3.0  # day P&L just above half of the best: hold
+    assert frame(b, "09:31", q) is None and b.position is not None
+    q.px[CE] = fill + 0.5 - (best * 0.5 / 65) - 3.0  # below half: sell and stop
+    ev = frame(b, "09:32", q)
+    assert ev["event"] == "close" and ev["reason"] == "profit_lock" and b.stopped == "profit_lock"
+    assert b.day_realized > 0  # the winning hour stayed a winning hour
+
+
+def test_previous_session_ohlc_reaches_the_llm(tmp_path: Path) -> None:
+    bars = [{"t": "2026-11-06 09:15", "o": 24900.0, "h": 24950.0, "l": 24880.0, "c": 24940.0},
+            {"t": "2026-11-06 15:29", "o": 25010.0, "h": 25040.0, "l": 25000.0, "c": 25030.4},
+            {"t": "2026-11-09 09:15", "o": 25100.0, "h": 25120.0, "l": 25090.0, "c": 25110.0}]
+    pd = M.prev_day_ohlc(bars, "2026-11-09")
+    assert pd == {"date": "2026-11-06", "open": 24900.0, "high": 25040.0, "low": 24880.0, "close": 25030.4}
+    assert M.prev_day_ohlc(bars[2:], "2026-11-09") is None
+    b, q = hour_book(tmp_path), Book()
+    b.on_frame(now=t("09:16"), feed={**feed(), "prev_day": pd}, book=q)
+    st = b.state(t("09:16"), q)
+    assert (st["prev_day_open"], st["prev_day_high"], st["prev_day_low"], st["prev_day_close"]) == (24900.0, 25040.0, 24880.0, 25030.4)
+    assert st["day_high"] and st["day_low"]  # today's high and low were already in the view
+
+
+def test_previous_session_ohlc_is_retried_until_the_bars_have_it(tmp_path: Path) -> None:
+    b = hour_book(tmp_path)
+    bars: list[dict] = []  # bars still loading after a restart
+    calls = []
+
+    def provider():
+        calls.append(1)
+        return list(bars)
+
+    assert b.ensure_prev_day("2026-11-09", "09:15", provider) is None
+    assert b.ensure_prev_day("2026-11-09", "09:15", provider) is None and len(calls) == 1  # once a minute
+    bars += [{"t": "2026-11-06 09:15", "o": 24900.0, "h": 25040.0, "l": 24880.0, "c": 25030.0}]
+    pd = b.ensure_prev_day("2026-11-09", "09:16", provider)
+    assert pd and pd["close"] == 25030.0
+    assert b.ensure_prev_day("2026-11-09", "09:17", provider) is pd and len(calls) == 2  # kept once found
+    assert b.ensure_prev_day("2026-11-10", "09:15", lambda: []) is None  # a new day starts afresh
+
+
+def test_no_buy_without_its_decision_line_but_exit_still_goes(tmp_path: Path) -> None:
+    b, q = book_at(tmp_path), Book()
+    frame(b, "10:00", q)
+    real = b._append
+    b._append = lambda e: None if e.get("event") == "decision" else real(e)
+    assert b.apply(t("10:00"), {"hm": "10:00", "action": "BUY_CE"}, q) is None
+    assert b.position is None and b.last_reject == "ledger_write_failed"
+    b._append = real
+    frame(b, "10:05", q)
+    b.apply(t("10:05"), {"hm": "10:05", "action": "BUY_CE"}, q)
+    assert b.position is not None
+    b._append = lambda e: None if e.get("event") == "decision" else real(e)
+    ev = b.apply(t("10:10"), {"hm": "10:10", "action": "EXIT"}, q)
+    assert ev["event"] == "close" and b.position is None  # getting out is never blocked

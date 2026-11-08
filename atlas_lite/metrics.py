@@ -139,11 +139,22 @@ def quote_ltp(row: dict[str, Any] | None) -> float | None:
 
 
 def quote_session_open(row: dict[str, Any] | None) -> float | None:
-    """Session open from Kite ``ohlc.open``. Returns None if the quote has no open yet."""
+    """Session open from Kite ``ohlc.open``. Returns None if the quote has no open yet. Kite sends an open of 0
+    before the first trade of the day (seen on VIX): 0 or less is "not known yet", never a price."""
     if not row:
         return None
     ohlc = row.get("ohlc") if isinstance(row.get("ohlc"), dict) else {}
-    return pick_float(ohlc, "open")
+    v = pick_float(ohlc, "open")
+    return v if v is not None and v > 0 else None
+
+
+def session_open_baseline(stored: float | None, row: dict[str, Any] | None, ltp: float) -> float:
+    """Today's open for a "change since open": Kite's open once known (it wins over a stand-in), else the
+    stored value, else the first price seen. A stored 0 is never kept."""
+    session_open = quote_session_open(row)
+    if session_open is not None:
+        return session_open
+    return stored if stored else float(ltp)
 
 
 def quote_oi(row: dict[str, Any] | None) -> float | None:

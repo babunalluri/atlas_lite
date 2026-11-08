@@ -124,3 +124,16 @@ def test_build_indices_includes_unresolved_fut_card() -> None:
     assert fut["group"] == "fut"
     assert fut["symbol"] == "NFO:NIFTY26SEPFUT"
     assert "ltp" not in fut
+
+
+def test_vix_change_baseline_never_uses_a_zero_open() -> None:
+    from atlas_lite.metrics import quote_session_open, session_open_baseline
+
+    zero = {"last_price": 14.33, "ohlc": {"open": 0}}
+    assert quote_session_open(zero) is None  # Kite sends open 0 before the first trade
+    base = session_open_baseline(None, zero, 14.33)  # first VIX seen stands in
+    assert base == 14.33 and round(14.5 - base, 2) == 0.17  # "change" is small, not the whole VIX
+    assert session_open_baseline(0.0, zero, 14.4) == 14.4  # a stored 0 is never kept
+    real = {"last_price": 14.6, "ohlc": {"open": 14.1}}
+    assert session_open_baseline(base, real, 14.6) == 14.1  # Kite's open wins once known
+    assert session_open_baseline(14.1, {"last_price": 14.7, "ohlc": {}}, 14.7) == 14.1
