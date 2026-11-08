@@ -11,8 +11,8 @@ Code, not the LLM, owns the risk:
 - Day loss stop DAY_LOSS_LIMIT: today's closed P&L plus the open position at bids, after estimated charges,
   checked every frame. Hit -> exit at once and no more entries today.
 - At most MAX_ENTRIES a day; no new entry after LAST_ENTRY; everything is sold at EXIT_AT.
-- An LLM error or timeout is treated as WAIT / HOLD; MAX_ERRORS_HOLDING errors in a row while holding sell
-  the position ("llm_unavailable"). A decision that no longer fits the position (a buy while holding, an
+- An LLM error, timeout or unusable answer (not an allowed action) is treated as WAIT / HOLD;
+  MAX_ERRORS_HOLDING of them in a row while holding sell the position ("llm_unavailable"). A decision that no longer fits the position (a buy while holding, an
   exit while flat) is ignored.
 
 Live (intraday MIS, 1 lot): decided at each entry, on a day the dashboard checkbox "Live LLM buyer" is ticked
@@ -20,7 +20,8 @@ and the host allows it (ATLAS_LITE_LLM_BUYER_LIVE_ALLOWED=1). Before buying, the
 must fit the funds Kite shows available, and live stops for the month at MONTH_LOSS_LIMIT. Orders are run by
 atlas_lite/live_straddle.py with a single leg (tagged orders, holdings from this book's own fills).
 Kill switch: unticking the box (after it was on today) sells an open live position at once (reason "ui_off")
-and stops the book for the rest of the day, paper entries included. A live trade still open from a ticked
+and stops the book for the rest of the day, paper entries included. The 15:30 auto-off (source "day_end") is
+not a kill. No order is sent after LIVE_ORDERS_UNTIL (Zerodha squares MIS off itself at 15:14). A live trade still open from a ticked
 day is also sold if the box is found off after a restart.
 
 Paper fills: buy at ask, sell at bid when quotes have them, else last price +/- SLIP_PTS. Kite charges.
@@ -236,6 +237,8 @@ class LlmBuyer:
             self.day = today
             if kind == "decision":
                 self.decided.add(str(ev.get("hm")))
+                ok = ev.get("valid") if "valid" in ev else ev.get("action") != "ERROR"
+                self.errors_in_row = 0 if ok else self.errors_in_row + 1
             elif kind == "live_start":
                 self.entries += 1  # a live entry counts from its start line (its "open" comes once filled)
             elif kind == "live_abort":
@@ -363,9 +366,11 @@ class LlmBuyer:
         self._append({"event": "decision", "ts": now.isoformat(), "day": self.day, "hm": hm, "action": act or "ERROR",
                       "reason": out.get("reason"), "factors": out.get("factors") or [], "error": out.get("error"),
                       "provider": out.get("provider"), "model": out.get("model"), "holding": holding,
+                      "valid": act in (("HOLD", "EXIT") if holding else ("BUY_CE", "BUY_PE", "WAIT", "DONE_FOR_DAY")),
                       "inputs": out.get("inputs") or {}})
-        self.errors_in_row = 0 if act else self.errors_in_row + 1
-        if holding and not act and self.errors_in_row >= MAX_ERRORS_HOLDING:
+        valid = act in (("HOLD", "EXIT") if holding else ("BUY_CE", "BUY_PE", "WAIT", "DONE_FOR_DAY"))
+        self.errors_in_row = 0 if valid else self.errors_in_row + 1  # an unusable answer counts as an error
+        if holding and not valid and self.errors_in_row >= MAX_ERRORS_HOLDING:
             self._log.warning("llm_buyer: %d LLM errors in a row while holding -> selling", self.errors_in_row)
             return self._exit(now, book, "llm_unavailable")
         if not holding and act in ("BUY_CE", "BUY_PE"):
@@ -525,12 +530,13 @@ class LlmBuyer:
             return
         try:
             on = bool(self.live_flag.is_enabled())
+            source = str((self.live_flag.snapshot() or {}).get("source") or "")
         except Exception:  # noqa: BLE001 - an unreadable switch never sells anything by itself
             return
         if on:
             self.live_on_day = today
             return
-        if now.strftime("%H:%M") >= LIVE_ORDERS_UNTIL:  # the 15:30 auto-off is not an operator stop
+        if source == "day_end":  # the engine's 15:30 auto-off is not an operator stop
             return
         armed = self.live_on_day == today or (self.live is not None and self.live.day == today)
         if not armed:

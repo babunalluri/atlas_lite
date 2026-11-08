@@ -7219,7 +7219,8 @@
         return;
       }
       if (!want && !window.confirm(
-        "Turn OFF the LLM buyer for today?\n\nAny open live position is sold at market now, and the book takes no more trades today.",
+        "Turn OFF the LLM buyer for today?\n\nAny open live position is sold at market now, and the book takes no more trades today. " +
+        "After 15:10 no order can be sent: Zerodha squares MIS positions off itself at 15:14.",
       )) {
         box.checked = true;
         return;

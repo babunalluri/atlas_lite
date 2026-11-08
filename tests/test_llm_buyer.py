@@ -241,13 +241,13 @@ def test_live_month_limit_and_funds_skip(tmp_path: Path) -> None:
 
 class SwitchFlag:
     def __init__(self) -> None:
-        self.on = True
+        self.on, self.source = True, "ui"
 
     def is_enabled(self) -> bool:
         return self.on
 
     def snapshot(self) -> dict:
-        return {"enabled": self.on, "allowed": True}
+        return {"enabled": self.on, "allowed": True, "source": self.source}
 
 
 def test_unticking_the_box_sells_the_live_position_and_stops_for_the_day(tmp_path: Path) -> None:
@@ -302,7 +302,7 @@ def test_session_end_auto_off_is_not_a_kill(tmp_path: Path) -> None:
     flag = SwitchFlag()
     b, q = book_at(tmp_path, order_client=FakeKite(), live_flag=flag), Book()
     frame(b, "15:20", q)
-    flag.on = False  # the engine's 15:30 auto-off
+    flag.on, flag.source = False, "day_end"  # the engine's 15:30 auto-off
     frame(b, "15:30", q)
     assert b.stopped == "" and not any(e.get("why") == "ui_off" for e in (ledger(b) if b.path.exists() else []))
 
@@ -431,3 +431,76 @@ def test_every_decision_keeps_its_inputs_and_factors(tmp_path: Path) -> None:
     assert snap["factors"] == ["new day low"] and snap["inputs"]["vix"] == 14.0
     b.apply(t("10:45"), {"hm": "10:45", "action": "", "error": "openai:ReadTimeout:", "inputs": st}, q)
     assert [e for e in ledger(b) if e["event"] == "decision"][-1]["inputs"]["time"] == "10:40"  # errors keep them too
+
+
+def test_untick_after_1510_still_stops_the_book(tmp_path: Path) -> None:
+    flag = SwitchFlag()
+    b, q = book_at(tmp_path, order_client=FakeKite(), live_flag=flag), Book()
+    frame(b, "15:11", q)
+    flag.on = False  # the operator unticks late (source "ui")
+    frame(b, "15:12", q)
+    assert b.stopped == "ui_off"
+
+
+def test_errors_in_a_row_survive_a_restart(tmp_path: Path) -> None:
+    b, q = book_at(tmp_path), Book()
+    frame(b, "10:00", q)
+    b.apply(t("10:00"), {"hm": "10:00", "action": "BUY_CE"}, q)
+    for hm in ("10:05", "10:10"):
+        b.apply(t(hm), {"hm": hm, "action": "", "error": "openai:ReadTimeout:"}, q)
+    import atlas_lite.llm_buyer as mod
+    real_now = mod.datetime
+
+    class FakeDT(real_now):
+        @classmethod
+        def now(cls, tz=None):
+            return t("10:12")
+
+    mod.datetime = FakeDT
+    try:
+        b2 = book_at(tmp_path)
+    finally:
+        mod.datetime = real_now
+    assert b2.errors_in_row == 2 and b2.position is not None
+    frame(b2, "10:15", q)
+    ev = b2.apply(t("10:15"), {"hm": "10:15", "action": "", "error": "openai:ReadTimeout:"}, q)
+    assert ev["event"] == "close" and ev["reason"] == "llm_unavailable"  # the third error, across the restart
+
+
+def test_unusable_answers_count_as_errors_while_holding(tmp_path: Path) -> None:
+    b, q = book_at(tmp_path), Book()
+    frame(b, "10:00", q)
+    b.apply(t("10:00"), {"hm": "10:00", "action": "BUY_CE"}, q)
+    for hm, act in (("10:05", "SELL_ALL"), ("10:10", "BUY_PE")):  # not allowed while holding
+        assert b.apply(t(hm), {"hm": hm, "action": act}, q) is None and b.position is not None
+    assert b.errors_in_row == 2 and ledger(b)[-1]["valid"] is False
+    ev = b.apply(t("10:15"), {"hm": "10:15", "action": "MAYBE"}, q)
+    assert ev["event"] == "close" and ev["reason"] == "llm_unavailable"
+
+
+def test_restart_with_open_live_trade_and_box_already_off_sells(tmp_path: Path, monkeypatch) -> None:
+    kite, q, flag = FakeKite(), Book(), SwitchFlag()
+    b = book_at(tmp_path, order_client=kite, live_flag=flag)
+    frame(b, "10:00", q)
+    b.apply(t("10:00"), {"hm": "10:00", "action": "BUY_PE", "reason": "lows"}, q)
+    kite.fill_all(90.0)
+    frame(b, "10:01", q)
+    assert b.live.phase == "holding"
+    flag.on = False  # the box is unticked while the engine is down
+    import atlas_lite.llm_buyer as mod
+    real_now = mod.datetime
+
+    class FakeDT(real_now):
+        @classmethod
+        def now(cls, tz=None):
+            return t("10:05")
+
+    monkeypatch.setattr(mod, "datetime", FakeDT)
+    b2 = book_at(tmp_path, order_client=kite, live_flag=flag)  # restart: the live trade is restored
+    monkeypatch.setattr(mod, "datetime", real_now)
+    assert b2.live is not None and b2.live.legs == ("pe",)
+    frame(b2, "10:05", q)
+    assert b2.stopped == "ui_off" and [o["transaction_type"] for o in kite.orders] == ["BUY", "SELL"]
+    kite.fill_all(91.0)
+    ev = frame(b2, "10:06", q)
+    assert ev["event"] == "close" and ev["live"] and ev["reason"] == "ui_off"
