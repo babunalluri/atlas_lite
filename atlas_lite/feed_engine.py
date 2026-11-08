@@ -387,21 +387,21 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
         "stop at 15:25 daily if cost ≥ 3× credit · else hold to expiry, close 15:29",
     ),
     "expiry_eve_strangle": (
-        "09:16, 1 session before expiry · buy 5% wings, sell CE/PE nearest F ± 0.5% · 1 lot, 2 if VIX ≥ 17",
+        "09:16, 1 session before expiry · buy 5% wings, sell CE/PE nearest F ± 0.5% · 1 lot",
         "per-leg stop when a short leg doubles · else hold to expiry day, close 15:14",
     ),
     "expiry_day_straddle": (
-        "09:16 on expiry day, only if VIX ≥ 13 · buy 5% wings, sell ATM CE+PE · 1 lot, 2 if VIX ≥ 17",
+        "09:16 on expiry day, only if VIX ≥ 13 · buy 5% wings, sell ATM CE+PE · 1 lot",
         "per-leg stop at +50% · else close 15:14",
     ),
     "sensex_expiry_eve_strangle": (
         "SENSEX (Thu expiry) · 09:16, 1 session before expiry · buy 5% wings, sell CE/PE nearest F ± 0.5% · "
-        "1 lot, 2 if VIX ≥ 17",
+        "1 lot",
         "per-leg stop when a short leg doubles · else hold to expiry day, close 15:14 · not backtested on SENSEX",
     ),
     "sensex_expiry_day_straddle": (
         "SENSEX (Thu expiry) · 09:16 on expiry day, only if VIX ≥ 13 · buy 5% wings, sell ATM CE+PE · "
-        "1 lot, 2 if VIX ≥ 17",
+        "1 lot",
         "per-leg stop at +50% · else close 15:14 · not backtested on SENSEX",
     ),
     "factor_paper": (

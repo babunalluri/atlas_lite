@@ -63,7 +63,8 @@ def ledger(b: PaperExpirySell) -> list[dict]:
 
 def test_helpers() -> None:
     assert nearest([22850, 22900, 22950], 22910) == 22900
-    assert lots_for_vix(16.9) == 1 and lots_for_vix(17.0) == 2 and lots_for_vix(None) == 1
+    assert lots_for_vix(30.0) == 1 and lots_for_vix(None) == 1  # 1 lot always by default
+    assert lots_for_vix(16.9, 17.0) == 1 and lots_for_vix(17.0, 17.0) == 2
 
 
 def test_eve_strangle_enters_once_with_wings_first(tmp_path: Path) -> None:
@@ -95,7 +96,7 @@ def test_eve_strangle_leg_stop_then_expiry_close(tmp_path: Path) -> None:
     assert close["pnl_gross"] > stop_loss  # the put decayed, recovering part of the call's stop loss
 
 
-def test_expiry_day_straddle_skips_low_vix_and_doubles_at_high_vix(tmp_path: Path) -> None:
+def test_expiry_day_straddle_skips_low_vix_and_stays_one_lot_at_high_vix(tmp_path: Path) -> None:
     b = day(tmp_path)
     assert frame(b, t(EVE, "09:17"), chain()) is None  # not expiry day
     assert frame(b, t("2026-11-03", "09:17"), chain(), vix=12.4) is None
@@ -103,7 +104,7 @@ def test_expiry_day_straddle_skips_low_vix_and_doubles_at_high_vix(tmp_path: Pat
     assert frame(b, t("2026-11-03", "09:18"), chain(), vix=20.0) is None  # decided for this expiry
     b2 = day(tmp_path / "x")
     ev = frame(b2, t("2026-11-03", "09:17"), chain(), vix=18.0)
-    assert ev["event"] == "open" and ev["lots"] == 2 and ev["qty"] == 130
+    assert ev["event"] == "open" and ev["lots"] == 1 and ev["qty"] == 65
     assert [(x["strike"], x["sign"]) for x in ev["legs"] if x["sign"] < 0] == [(23000, -1), (23000, -1)]
 
 

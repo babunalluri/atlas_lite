@@ -1,4 +1,4 @@
-"""Expiry-week NIFTY and SENSEX selling paper books, with VIX deciding whether to trade and how many lots.
+"""Expiry-week NIFTY and SENSEX selling paper books, with VIX deciding whether the straddle trades; 1 lot each.
 Paper only, never Kite orders. The research below is NIFTY's; the SENSEX books run the same rules untested.
 
 Research (6 Nov 2026, real NSE option prices Apr 2019 – Nov 2026, rules picked on 2019–23 and
@@ -12,8 +12,9 @@ judged on 2024–26; scratchpad fresh_search.py / sell_dynamic.py / sell_combo.p
   Per-leg stop at +50%. Close 15:14. +Rs 1,595 / +Rs 1,527 (t 4.6 / 4.0); 5% wings
   +Rs 1,092 / +Rs 1,309. VIX < 13 days earned ~nothing.
 - Both together with 5% wings (fits Rs 2.5L margin): +Rs 2,659 / +Rs 2,510 a week, worst week
-  -Rs 31k / -Rs 15k, no losing year. Profit rises with VIX in every variant, so lots double at
-  VIX >= 17.
+  -Rs 31k / -Rs 15k, no losing year. Doubling lots at VIX >= 17 adds profit but more drawdown (worst week
+  -Rs 87k in Mar 2020); 1 lot always has the best profit per unit of drawdown in both periods (8 Nov
+  re-test, scratchpad rich_premium.py), so the books trade 1 lot. ``size_up_vix`` can switch doubling back on.
 
 Wings, when set, are bought first at the strikes nearest F*(1 +- 5%), as backtested, and
 held to the close. Fills: sells at bid, buys at ask, else last price -/+ SLIP_PTS. Kite charges.
@@ -44,7 +45,7 @@ EXIT_AT = (15, 14)
 MARKET_OPEN, MARKET_CLOSE = (9, 15), (15, 30)  # stops are checked only while the market trades
 SLIP_PTS = 1.0
 DEFAULT_LOT_SIZE = 65
-SIZE_UP_VIX = 17.0
+SIZE_UP_VIX: float | None = None  # 1 lot always; 17.0 doubled lots at VIX >= 17 until 8 Nov 2026
 
 BOOKS: dict[str, dict[str, Any]] = {
     "expiry_eve_strangle": {"index": "nifty", "ledger": "paper_expiry_eve_strangle.jsonl", "sessions": 1, "dist": 0.005,

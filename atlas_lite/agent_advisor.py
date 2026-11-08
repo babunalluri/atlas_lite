@@ -775,8 +775,8 @@ class AgentAdvisor:
 
     @staticmethod
     def _failover_status(status_code: int) -> bool:
-        """Retry on auth / billing / rate-limit / upstream outages."""
-        return status_code in (401, 402, 403, 429) or status_code >= 500
+        """Retry on auth / billing / retired model (404) / rate-limit / upstream outages."""
+        return status_code in (401, 402, 403, 404, 429) or status_code >= 500
 
     def _provider_targets(self) -> list[tuple[str, str, str, str]]:
         """Ordered (name, api_key, base_url, model) targets."""

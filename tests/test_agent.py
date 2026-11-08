@@ -235,6 +235,12 @@ def test_chat_failsover_to_openai_on_402(tmp_path: Path) -> None:
     assert any("api.openai.com" in u for u in calls)
 
 
+def test_failover_on_retired_model_404_but_not_bad_request() -> None:
+    # OpenRouter answers 404 when a model is retired (anthropic/claude-sonnet-4, Nov 2026).
+    assert AgentAdvisor._failover_status(404) is True
+    assert AgentAdvisor._failover_status(400) is False
+
+
 def test_macro_day_pct_and_null_field() -> None:
     assert _day_pct(110.0, 100.0) == 10.0
     assert _day_pct(None, 100.0) is None
