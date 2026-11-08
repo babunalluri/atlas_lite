@@ -2071,6 +2071,144 @@
     .chain-up { color: var(--pass); }
     .chain-down { color: var(--fail); }
     .chain-muted { color: var(--muted); }
+
+    /* ---- Trading books dialog (Agent) ---- */
+    .agent-dialog { width: min(1240px, 100%); max-height: 92vh; padding: 16px 18px 18px; }
+    .agent-head { align-items: flex-start; margin-bottom: 10px; }
+    .agent-title { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+    .agent-title h2 { font-size: 1.05rem; letter-spacing: 0.01em; }
+    .agent-subtitle { font-size: 0.75rem; color: var(--muted); }
+    .agent-toolbar {
+      display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px;
+      padding: 8px 10px; margin-bottom: 14px;
+      border: 1px solid var(--line); border-radius: 10px; background: var(--card-bg-bottom);
+    }
+    .agent-actions, .agent-account { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .agent-auth { font-size: 0.75rem; color: var(--muted); }
+    .agent-btn {
+      height: 30px; padding: 0 12px; border-radius: 8px; cursor: pointer;
+      border: 1px solid var(--control-border); background: var(--parity-bg); color: var(--ink);
+      font: 600 0.78rem/1 ui-sans-serif, system-ui, sans-serif;
+    }
+    .agent-btn:hover { border-color: var(--accent); }
+    .agent-btn:focus-visible, .agent-token summary:focus-visible, .agent-diagnostics summary:focus-visible,
+    .switch-input:focus-visible + .switch-track { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .agent-btn.primary { background: color-mix(in srgb, var(--accent) 18%, var(--parity-bg)); border-color: color-mix(in srgb, var(--accent) 55%, var(--control-border)); }
+    .agent-token { position: relative; }
+    .agent-token summary {
+      list-style: none; cursor: pointer; font-size: 0.75rem; color: var(--muted);
+      padding: 6px 8px; border-radius: 8px; border: 1px dashed var(--line);
+    }
+    .agent-token summary::-webkit-details-marker { display: none; }
+    .agent-token-body { display: flex; gap: 6px; margin-top: 6px; }
+    .agent-token-body input {
+      min-width: 11rem; height: 30px; padding: 0 8px; border-radius: 8px;
+      border: 1px solid var(--control-border); background: var(--panel); color: var(--ink);
+    }
+    .agent-section-title {
+      display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px;
+      margin: 16px 0 8px; font-size: 0.72rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase;
+    }
+    .agent-section-title span { font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--muted); font-size: 0.72rem; }
+    .live-switches { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px; }
+    .live-switch {
+      display: flex; align-items: flex-start; gap: 10px; cursor: pointer;
+      padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card-bg-bottom);
+    }
+    .live-switch:has(.switch-input:checked) {
+      border-color: color-mix(in srgb, var(--fail) 55%, var(--line));
+      background: color-mix(in srgb, var(--fail) 9%, var(--card-bg-bottom));
+    }
+    .live-switch:has(.switch-input:disabled) { cursor: not-allowed; opacity: 0.75; }
+    .switch-input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+    .switch-track {
+      flex: 0 0 auto; position: relative; width: 34px; height: 20px; margin-top: 1px; border-radius: 999px;
+      background: var(--line); transition: background 0.15s ease;
+    }
+    .switch-track::after {
+      content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
+      background: var(--ink); transition: transform 0.15s ease;
+    }
+    .switch-input:checked + .switch-track { background: var(--fail); }
+    .switch-input:checked + .switch-track::after { transform: translateX(14px); background: #fff; }
+    .live-switch-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 0.75rem; color: var(--muted); line-height: 1.35; }
+    .live-switch-text strong { color: var(--ink); font-size: 0.8rem; }
+    .book-group { margin-top: 10px; }
+    .book-group-title { margin: 0 0 6px; font-size: 0.7rem; font-weight: 700; color: var(--muted); }
+    .book-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 8px; }
+    .book-card {
+      display: flex; flex-direction: column; gap: 8px; min-width: 0;
+      padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px;
+      background: linear-gradient(180deg, var(--card-bg-top), var(--card-bg-bottom));
+      box-shadow: inset 3px 0 0 var(--book-accent, var(--line));
+    }
+    .book-card[data-state="open"] { --book-accent: var(--accent); }
+    .book-card[data-state="live"], .book-card[data-state="alert"] { --book-accent: var(--fail); }
+    .book-card[data-state="stopped"] { --book-accent: var(--warn); }
+    .book-card[data-state="off"] { opacity: 0.6; }
+    .book-src { display: none; }
+    .book-view { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+    .book-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .book-name { font-size: 0.8rem; font-weight: 700; color: var(--ink); min-width: 0; }
+    .book-right { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+    .book-pnl { font: 700 0.85rem/1 ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+    .book-pnl.up { color: var(--pass); }
+    .book-pnl.down { color: var(--fail); }
+    .state-pill {
+      font-size: 0.62rem; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase;
+      padding: 3px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); background: var(--parity-bg);
+    }
+    .state-pill.open { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+    .state-pill.live, .state-pill.alert { color: var(--fail); border-color: color-mix(in srgb, var(--fail) 45%, transparent); background: var(--fail-bg); }
+    .state-pill.stopped { color: var(--warn); border-color: var(--warn-border); background: var(--warn-bg); }
+    .book-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+    .book-chip {
+      font-size: 0.7rem; color: var(--ink); padding: 3px 7px; border-radius: 6px;
+      background: var(--parity-bg); border: 1px solid var(--card-divider); font-variant-numeric: tabular-nums;
+    }
+    .book-note { font-size: 0.72rem; line-height: 1.45; color: var(--muted); }
+    .agent-diagnostics { margin-top: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--card-bg-bottom); }
+    .agent-diagnostics summary { cursor: pointer; padding: 9px 12px; font-size: 0.75rem; font-weight: 700; color: var(--muted); }
+    .agent-diagnostics .history-detail { margin: 0 10px 10px; }
+    .agent-gates { max-height: none; }
+    .agent-gates td:nth-child(2) { text-transform: uppercase; font-weight: 700; font-size: 0.66rem; letter-spacing: 0.05em; }
+    .agent-gate-actions { display: flex; gap: 4px; justify-content: flex-end; }
+    .agent-gate-actions button {
+      height: 24px; padding: 0 9px; border-radius: 6px; cursor: pointer;
+      border: 1px solid var(--control-border); background: var(--parity-bg); color: var(--ink);
+      font: 600 0.7rem/1 ui-sans-serif, system-ui, sans-serif;
+    }
+    .agent-gate-actions button:hover { border-color: var(--accent); }
+    .agent-gate-actions button[data-gate-mode="pause"]:hover { border-color: var(--fail); color: var(--fail); }
+    @media (max-width: 720px) {
+      #agentModal { padding: 0; }
+      .agent-dialog { width: 100%; height: 100dvh; max-height: 100dvh; border-radius: 0; border: 0; padding: 12px; }
+      .agent-toolbar { flex-direction: column; align-items: stretch; }
+      .agent-actions .agent-btn { flex: 1; }
+      .book-grid { grid-template-columns: 1fr; }
+      .agent-gates table { min-width: 560px; }
+    }
+
+    /* ---- Small screens: nothing wider than the screen; wide pieces scroll inside their own box ---- */
+    @media (max-width: 900px) {
+      .header-meta { flex-wrap: wrap; justify-content: center; white-space: normal; row-gap: 6px; }
+      .header-meta-end { flex-wrap: wrap; justify-content: center; white-space: normal; row-gap: 6px; }
+      .header-actions { flex-wrap: wrap; justify-content: center; }
+      .header-title-row { flex-wrap: wrap; justify-content: center; }
+    }
+    @media (max-width: 1100px) {
+      html, body { overflow-x: hidden; }
+      .chain-bar { justify-content: flex-start; overflow-x: auto; }
+      .chain-summary { justify-content: flex-start; }
+      .chain-table-wrap { width: 100%; }
+      .chart-toolbar { flex-wrap: nowrap; overflow-x: auto; }
+      .chart-toolbar-group { flex-wrap: nowrap; }
+    }
+    @media (max-width: 600px) {
+      header { padding: 6px 8px; }
+      .header-legs { display: none; }
+      .page-layout { padding: 8px; }
+    }
   </style>
 </head>
 <body data-theme="dark">
@@ -2341,59 +2479,138 @@
   </div>
   <div class="history-modal" id="agentModal" aria-hidden="true">
     <div class="history-backdrop" id="agentBackdrop"></div>
-    <section class="history-dialog" id="agentPanel" role="dialog" aria-modal="true" aria-label="Paper AI agent">
-      <div class="history-head">
-        <h2>Paper trading agent</h2>
+    <section class="history-dialog agent-dialog" id="agentPanel" role="dialog" aria-modal="true" aria-label="Trading books">
+      <div class="history-head agent-head">
+        <div class="agent-title">
+          <h2>Trading books</h2>
+          <span class="agent-subtitle" id="agentMeta">Paper fills only · agent opens CE/PE · no live orders</span>
+        </div>
         <button type="button" class="history-close" id="agentClose">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
           Close
         </button>
       </div>
-      <div class="history-toolbar">
-        <button type="button" id="agentAdviseBtn">Run trade cycle</button>
-        <button type="button" id="agentRefreshBtn">Refresh</button>
-        <label class="history-meta" for="agentLiveToggle" style="display:inline-flex;align-items:center;gap:6px;" title="Real Kite orders for agent_paper only — requires sign-in">
-          <input type="checkbox" id="agentLiveToggle" />
-          Live agent
-        </label>
-        <button type="button" id="agentLoginBtn">Sign in</button>
-        <button type="button" id="agentLogoutBtn" style="display:none;">Sign out</button>
-        <span class="history-meta" id="agentAuthLine"></span>
-        <label class="history-meta" for="agentApiToken" style="display:inline-flex;align-items:center;gap:6px;" title="Optional — gates / advise">
-          API token
-          <input type="password" id="agentApiToken" autocomplete="off" placeholder="X-Atlas-Token" style="min-width:10rem;padding:4px 8px;" />
-        </label>
-        <button type="button" id="agentTokenSaveBtn">Save token</button>
-        <span class="history-meta" id="agentMeta">Paper fills only · agent opens CE/PE · no live orders</span>
+      <div class="agent-toolbar">
+        <div class="agent-actions">
+          <button type="button" class="agent-btn primary" id="agentAdviseBtn">Run trade cycle</button>
+          <button type="button" class="agent-btn" id="agentRefreshBtn">Refresh</button>
+        </div>
+        <div class="agent-account">
+          <span class="agent-auth" id="agentAuthLine"></span>
+          <button type="button" class="agent-btn" id="agentLoginBtn">Sign in</button>
+          <button type="button" class="agent-btn" id="agentLogoutBtn" style="display:none;">Sign out</button>
+          <details class="agent-token">
+            <summary>API token</summary>
+            <div class="agent-token-body">
+              <input type="password" id="agentApiToken" autocomplete="off" placeholder="X-Atlas-Token" aria-label="API token" />
+              <button type="button" class="agent-btn" id="agentTokenSaveBtn">Save token</button>
+            </div>
+          </details>
+        </div>
       </div>
-      <div class="history-detail" id="agentLiveLine">Live: off (paper only)</div>
-      <div class="history-detail" id="agentPositionLine">Agent book: —</div>
-      <div class="history-detail" id="longStraddleLine">Long straddle: —</div>
-      <label class="history-meta" for="straddleLiveToggle" style="display:inline-flex;align-items:center;gap:6px;margin:0 0 0.4rem 0;" title="Real Kite orders for today's 09:16 long straddle (1 lot) — requires sign-in; good for today only">
-        <input type="checkbox" id="straddleLiveToggle" />
-        <span id="straddleLiveLabel">Live straddle (today only)</span>
-      </label>
-      <div class="history-detail" id="llmBuyerLine">LLM option buyer: —</div>
-      <label class="history-meta" for="llmBuyerLiveToggle" style="display:inline-flex;align-items:center;gap:6px;margin:0 0 0.4rem 0;" title="Real Kite orders for today's LLM option buyer (1 lot ATM CE or PE, −₹2,000 day stop) — requires sign-in; good for today only">
-        <input type="checkbox" id="llmBuyerLiveToggle" />
-        <span id="llmBuyerLiveLabel">Live LLM buyer (today only)</span>
-      </label>
-      <div class="history-detail" id="longStraddleTpLine">Long straddle +20% TP: —</div>
-      <div class="history-detail" id="longStraddleTrailLine">Long straddle trail: —</div>
-      <div class="history-detail" id="longStraddleLeg50Line">Long straddle leg −50%: —</div>
-      <div class="history-detail" id="scalperV3Line">Scalper v3: —</div>
-      <div class="history-detail" id="scalperV31415Line">Scalper v3 14:15 hold: —</div>
-      <div class="history-detail" id="scalperV3WingsLine">Scalper v3 + 1,000 wings: —</div>
-      <div class="history-detail" id="weeklyStrangleLine">Weekly strangle: —</div>
-      <div class="history-detail" id="weeklyCondorLine">Weekly condor: —</div>
-      <div class="history-detail" id="weeklyStrangle1000Line">Weekly strangle 1,000: —</div>
-      <div class="history-detail" id="expiryEveStrangleLine">Expiry-eve strangle: —</div>
-      <div class="history-detail" id="expiryDayStraddleLine">Expiry-day straddle: —</div>
-      <div class="history-detail" id="sensexExpiryEveStrangleLine">SENSEX expiry-eve strangle: —</div>
-      <div class="history-detail" id="sensexExpiryDayStraddleLine">SENSEX expiry-day straddle: —</div>
-      <div class="history-detail" id="agentMacroLine">Macro: —</div>
-      <div class="history-detail" id="agentDecision">Last cycle: —</div>
-      <div class="history-table-wrap">
+
+      <h3 class="agent-section-title">Live trading <span>real Kite orders · each switch is good for today only</span></h3>
+      <div class="live-switches">
+        <label class="live-switch" for="agentLiveToggle" title="Real Kite orders for agent_paper only — requires sign-in">
+          <input type="checkbox" class="switch-input" id="agentLiveToggle" />
+          <span class="switch-track" aria-hidden="true"></span>
+          <span class="live-switch-text"><strong>Agent</strong><span id="agentLiveLine">Live: off (paper only)</span></span>
+        </label>
+        <label class="live-switch" for="straddleLiveToggle" title="Real Kite orders for today's 09:16 long straddle (1 lot) — requires sign-in; good for today only">
+          <input type="checkbox" class="switch-input" id="straddleLiveToggle" />
+          <span class="switch-track" aria-hidden="true"></span>
+          <span class="live-switch-text"><strong>Long straddle</strong><span id="straddleLiveLabel">Live straddle (today only)</span></span>
+        </label>
+        <label class="live-switch" for="llmBuyerLiveToggle" title="Real Kite orders for today's LLM option buyer (1 lot ATM CE or PE, −₹2,000 day stop) — requires sign-in; good for today only">
+          <input type="checkbox" class="switch-input" id="llmBuyerLiveToggle" />
+          <span class="switch-track" aria-hidden="true"></span>
+          <span class="live-switch-text"><strong>LLM option buyer</strong><span id="llmBuyerLiveLabel">Live LLM buyer (today only)</span></span>
+        </label>
+      </div>
+
+      <h3 class="agent-section-title">Books <span>paper unless its live switch is on</span></h3>
+      <section class="book-group" aria-label="Directional">
+        <h4 class="book-group-title">Directional</h4>
+        <div class="book-grid">
+          <article class="book-card" data-src="agentPositionLine" data-title="Agent · scalper v2">
+            <div class="history-detail book-src" id="agentPositionLine">Agent · scalper v2: —</div>
+          </article>
+          <article class="book-card" data-src="llmBuyerLine" data-title="LLM option buyer">
+            <div class="history-detail book-src" id="llmBuyerLine">LLM option buyer: —</div>
+          </article>
+        </div>
+      </section>
+      <section class="book-group" aria-label="Expiry-week selling">
+        <h4 class="book-group-title">Expiry-week selling</h4>
+        <div class="book-grid">
+          <article class="book-card" data-src="expiryEveStrangleLine" data-title="NIFTY expiry-eve strangle">
+            <div class="history-detail book-src" id="expiryEveStrangleLine">NIFTY expiry-eve strangle: —</div>
+          </article>
+          <article class="book-card" data-src="expiryDayStraddleLine" data-title="NIFTY expiry-day straddle">
+            <div class="history-detail book-src" id="expiryDayStraddleLine">NIFTY expiry-day straddle: —</div>
+          </article>
+          <article class="book-card" data-src="sensexExpiryEveStrangleLine" data-title="SENSEX expiry-eve strangle">
+            <div class="history-detail book-src" id="sensexExpiryEveStrangleLine">SENSEX expiry-eve strangle: —</div>
+          </article>
+          <article class="book-card" data-src="sensexExpiryDayStraddleLine" data-title="SENSEX expiry-day straddle">
+            <div class="history-detail book-src" id="sensexExpiryDayStraddleLine">SENSEX expiry-day straddle: —</div>
+          </article>
+        </div>
+      </section>
+      <section class="book-group" aria-label="Weekly selling">
+        <h4 class="book-group-title">Weekly selling</h4>
+        <div class="book-grid">
+          <article class="book-card" data-src="weeklyStrangleLine" data-title="Weekly strangle">
+            <div class="history-detail book-src" id="weeklyStrangleLine">Weekly strangle: —</div>
+          </article>
+          <article class="book-card" data-src="weeklyCondorLine" data-title="Weekly condor 5%">
+            <div class="history-detail book-src" id="weeklyCondorLine">Weekly condor 5%: —</div>
+          </article>
+          <article class="book-card" data-src="weeklyStrangle1000Line" data-title="Weekly strangle 1,000">
+            <div class="history-detail book-src" id="weeklyStrangle1000Line">Weekly strangle 1,000: —</div>
+          </article>
+        </div>
+      </section>
+      <section class="book-group" aria-label="Scalper v3">
+        <h4 class="book-group-title">Scalper v3</h4>
+        <div class="book-grid">
+          <article class="book-card" data-src="scalperV3Line" data-title="Scalper v3 · 13:00">
+            <div class="history-detail book-src" id="scalperV3Line">Scalper v3 · 13:00: —</div>
+          </article>
+          <article class="book-card" data-src="scalperV31415Line" data-title="Scalper v3 · 14:15 hold">
+            <div class="history-detail book-src" id="scalperV31415Line">Scalper v3 · 14:15 hold: —</div>
+          </article>
+          <article class="book-card" data-src="scalperV3WingsLine" data-title="Scalper v3 · 1,000 wings">
+            <div class="history-detail book-src" id="scalperV3WingsLine">Scalper v3 · 1,000 wings: —</div>
+          </article>
+        </div>
+      </section>
+      <section class="book-group" aria-label="Long straddle">
+        <h4 class="book-group-title">Long straddle</h4>
+        <div class="book-grid">
+          <article class="book-card" data-src="longStraddleLine" data-title="Long straddle · 13:00">
+            <div class="history-detail book-src" id="longStraddleLine">Long straddle · 13:00: —</div>
+          </article>
+          <article class="book-card" data-src="longStraddleTpLine" data-title="Long straddle · +20% TP">
+            <div class="history-detail book-src" id="longStraddleTpLine">Long straddle · +20% TP: —</div>
+          </article>
+          <article class="book-card" data-src="longStraddleTrailLine" data-title="Long straddle · trail">
+            <div class="history-detail book-src" id="longStraddleTrailLine">Long straddle · trail: —</div>
+          </article>
+          <article class="book-card" data-src="longStraddleLeg50Line" data-title="Long straddle · leg −50%">
+            <div class="history-detail book-src" id="longStraddleLeg50Line">Long straddle · leg −50%: —</div>
+          </article>
+        </div>
+      </section>
+
+      <details class="agent-diagnostics">
+        <summary>Agent diagnostics</summary>
+        <div class="history-detail" id="agentMacroLine">Macro: —</div>
+        <div class="history-detail" id="agentDecision">Last cycle: —</div>
+      </details>
+
+      <h3 class="agent-section-title">Book gates <span>allow · skip new entries · pause</span></h3>
+      <div class="history-table-wrap agent-gates">
         <table class="history-table" id="agentGatesTable">
           <thead>
             <tr><th>Book</th><th>Mode</th><th>Source</th><th>Until</th><th>Reason</th><th></th></tr>
@@ -8543,6 +8760,81 @@
     refreshNiftyCandles();
     startCandlePoll();
     connect();
+
+    // Trading books dialog: each book's render function writes a one-line status into its hidden .book-src
+    // element; this turns that line into the card's name, state pill, P&L, detail chips and a note.
+    (function () {
+      const LONG = 46;
+      function bookState(text) {
+        if (/MANUAL CHECK|manual_needed/i.test(text)) return ["alert", "Check"];
+        if (/\boff \(|locked off|retired/i.test(text)) return ["off", "Off"];
+        if (/\bLIVE\b/.test(text)) return ["live", "Live"];
+        if (/day loss stop|stopped|done for today/i.test(text)) return ["stopped", "Stopped"];
+        if (/\bFLAT\b/.test(text)) return ["flat", "Flat"];
+        if (/pending/i.test(text)) return ["open", "Pending"];
+        if (/open PnL|\bOPEN\b|\bqty\b|\sx\d+\s/.test(text)) return ["open", "Open"];
+        return ["flat", "—"];
+      }
+      function pnlOf(text) {
+        const m = text.match(/open PnL\s+([−-]?[\d,]+(?:\.\d+)?)/) || text.match(/day PnL\s+([−-]?[\d,]+(?:\.\d+)?)/);
+        if (!m) return null;
+        const v = Number(m[1].replace("−", "-").replace(/,/g, ""));
+        return Number.isFinite(v) ? v : null;
+      }
+      function el(tag, cls, text) {
+        const e = document.createElement(tag);
+        if (cls) e.className = cls;
+        if (text != null) e.textContent = text;
+        return e;
+      }
+      function renderCard(card) {
+        const src = card.querySelector(".book-src");
+        if (!src) return;
+        const text = (src.textContent || "").trim();
+        const [state, label] = bookState(text);
+        card.dataset.state = state;
+        const segs = text.split(" · ").map((x) => x.trim()).filter(Boolean);
+        const first = segs.shift() || "";
+        const extra = /^Agent book/.test(first) ? first.replace(/^Agent book\s*(FLAT|OPEN)?\s*/, "") : "";
+        if (extra) segs.unshift(extra);
+        const chips = [], notes = [];
+        for (const seg of segs) {
+          if (seg === "FLAT") continue;
+          const flatWhy = seg.match(/^FLAT \((.+)\)$/);
+          const piece = flatWhy ? flatWhy[1] : seg;
+          (piece.length > LONG ? notes : chips).push(piece);
+        }
+        let view = card.querySelector(".book-view");
+        if (!view) {
+          view = el("div", "book-view");
+          card.appendChild(view);
+        }
+        view.replaceChildren();
+        const head = el("div", "book-head");
+        head.appendChild(el("span", "book-name", card.dataset.title || first));
+        const right = el("span", "book-right");
+        const pnl = pnlOf(text);
+        if (pnl != null && pnl !== 0) {
+          right.appendChild(el("span", `book-pnl ${pnl > 0 ? "up" : "down"}`,
+            `${pnl > 0 ? "+" : "−"}₹${Math.abs(Math.round(pnl)).toLocaleString("en-IN")}`));
+        }
+        right.appendChild(el("span", `state-pill ${state}`, label));
+        head.appendChild(right);
+        view.appendChild(head);
+        if (chips.length) {
+          const box = el("div", "book-chips");
+          chips.forEach((c) => box.appendChild(el("span", "book-chip", c)));
+          view.appendChild(box);
+        }
+        notes.forEach((n) => view.appendChild(el("div", "book-note", n)));
+        if (!chips.length && !notes.length && text.endsWith("—")) view.appendChild(el("div", "book-note", "Waiting for data…"));
+      }
+      document.querySelectorAll("#agentPanel .book-card").forEach((card) => {
+        renderCard(card);
+        const src = card.querySelector(".book-src");
+        if (src) new MutationObserver(() => renderCard(card)).observe(src, { childList: true, characterData: true, subtree: true });
+      });
+    })();
   </script>
 </body>
 </html>

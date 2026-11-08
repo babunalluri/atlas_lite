@@ -342,6 +342,10 @@ def test_live_buy_not_sent_when_ledger_write_fails(tmp_path: Path) -> None:
     b._append = lambda e: None if e.get("event") == "order_intent" else real(e)
     b.apply(t("10:00"), {"hm": "10:00", "action": "BUY_CE"}, q)
     assert not kite.orders and b.last_reject == "ledger_write_failed"
+    assert b.entries == 0 and b.live is None  # the slot is given back
+    b._append = real
+    b2 = book_at(tmp_path, order_client=kite, live_flag=Flag())  # a restart honours the abort
+    assert b2.live is None
 
 
 def test_engine_abandons_a_hung_llm_call_and_asks_again(monkeypatch) -> None:
@@ -405,3 +409,11 @@ def test_three_llm_errors_in_a_row_while_holding_sell(tmp_path: Path) -> None:
     ev = b.apply(t("10:25"), {"hm": "10:25", **err}, q)
     assert ev["event"] == "close" and ev["reason"] == "llm_unavailable" and b.position is None
     assert b.apply(t("10:30"), {"hm": "10:30", **err}, q) is None  # flat: errors never trade
+
+
+def test_paper_open_needs_its_ledger_line(tmp_path: Path) -> None:
+    b, q = book_at(tmp_path), Book()
+    frame(b, "10:00", q)
+    b._append = lambda e: None
+    assert b.apply(t("10:00"), {"hm": "10:00", "action": "BUY_CE"}, q) is None
+    assert b.position is None and b.entries == 0 and b.last_reject == "ledger_write_failed"

@@ -226,6 +226,8 @@ class LlmBuyer:
                 live_events.append(ev)
             elif kind == "close" and ev.get("live"):
                 live_start = None
+            elif kind == "live_abort":
+                live_start = None  # nothing was sent for it
             if d != today:
                 continue
             self.day = today
@@ -233,6 +235,8 @@ class LlmBuyer:
                 self.decided.add(str(ev.get("hm")))
             elif kind == "live_start":
                 self.entries += 1  # a live entry counts from its start line (its "open" comes once filled)
+            elif kind == "live_abort":
+                self.entries -= 1
             elif kind == "open":
                 if not ev.get("live"):
                     self.entries += 1
@@ -407,13 +411,17 @@ class LlmBuyer:
             return None
         if self.live_enabled():
             return self._open_live(now, leg, str(symbol), strike, px, reason)
+        ev = self._append({"event": "open", "ts": now.isoformat(), "day": self.day, "leg": leg, "symbol": symbol,
+                           "strike": strike, "qty": self.qty, "fill": round(px, 2), "entry": round(px, 2),
+                           "side": "long", "reason": reason})
+        if ev is None:  # no ledger line, no position (a restart could not know about it)
+            self.last_reject = "ledger_write_failed"
+            return None
         self.entries += 1
         self.position = Position(day=self.day, leg=leg, symbol=str(symbol), strike=strike, qty=self.qty, fill=round(px, 2),
                                  opened_at=now.isoformat(), reason=reason)
         self.last_reject = None
-        return self._append({"event": "open", "ts": now.isoformat(), "day": self.day, "leg": leg, "symbol": symbol,
-                             "strike": strike, "qty": self.qty, "fill": round(px, 2), "entry": round(px, 2),
-                             "side": "long", "reason": reason})
+        return ev
 
     def _open_live(self, now: datetime, leg: str, symbol: str, strike: int, ask: float, reason: str) -> dict[str, Any] | None:
         m = self.day[:7]
@@ -444,9 +452,14 @@ class LlmBuyer:
         self.live = LiveStraddle(day=self.day, strike=strike, ce_symbol=start["ce_symbol"], pe_symbol=start["pe_symbol"],
                                  qty=self.qty, expiry_day=False, log=self._live_log, legs=(leg,), tag_prefix=TAG_PREFIX)
         if not self.live.place(self.order_client, leg, "BUY", self.qty):
-            self.last_reject = "ledger_write_failed"  # nothing sent; the live layer closes it as entry_failed
+            # The order intent could not be written, so nothing was sent: drop the trade and give the slot back.
+            self.entries -= 1
+            self.live, self.live_meta = None, {}
+            self._append({"event": "live_abort", "ts": now.isoformat(), "day": self.day, "live": True,
+                          "why": "ledger_write_failed"})
+            self.last_reject = "ledger_write_failed"
             self._log.warning("LIVE llm_buyer buy NOT sent (ledger write failed) %s", symbol)
-            return start
+            return None
         self.last_reject = None
         self._log.warning("LIVE llm_buyer bought %s x%d (%s)", symbol, self.qty, reason)
         return start
