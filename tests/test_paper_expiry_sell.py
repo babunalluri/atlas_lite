@@ -149,3 +149,43 @@ def test_close_reports_entry_and_exit(tmp_path: Path) -> None:
     frame(b, t("2026-11-03", "09:17"), chain())
     ev = frame(b, t("2026-11-03", "15:14"), chain(scale=0.2))
     assert ev["entry"] > 0 and ev["exit"] is not None and ev["exit"] < ev["entry"]
+
+
+def test_sensex_books_use_their_own_chain_and_lot(tmp_path: Path) -> None:
+    from atlas_lite.instruments import option_lot_size
+    from atlas_lite.paper_expiry_sell import BOOKS
+
+    assert {BOOKS[n]["index"] for n in BOOKS} == {"nifty", "sensex"}
+    assert BOOKS["sensex_expiry_day_straddle"]["min_vix"] == BOOKS["expiry_day_straddle"]["min_vix"]
+    fo_csv = ("name,instrument_type,expiry,lot_size\nSENSEX,CE,2026-11-12,20\nNIFTY,CE,2026-11-09,65\n")
+    assert option_lot_size(fo_csv, "SENSEX", expiry=date(2026, 11, 12), default=1) == 20
+    assert option_lot_size(fo_csv, "SENSEX", expiry=date(2026, 11, 19), default=1) == 1
+
+    sx_exp, sx_f = date(2026, 11, 12), 76000  # Thursday expiry, 100-pt strikes
+    sx_strikes = list(range(70000, 82100, 100))
+
+    def sx_sym(k: int, opt: str) -> str:
+        return f"BFO:SENSEX26N12{k}{opt}"
+
+    rows = {}
+    for k in sx_strikes:
+        for opt in ("CE", "PE"):
+            px = max(0.05, round(max(0.0, (sx_f - k) if opt == "CE" else (k - sx_f)) + 300 * math.exp(-abs(k - sx_f) / 600), 2))
+            rows[sx_sym(k, opt)] = {"last_price": px, "bid": max(0.05, px - 1), "ask": px + 1}
+    b = PaperExpirySell(path=tmp_path / "sx.jsonl", strategy="sensex_expiry_day_straddle", sessions=0, dist=0.0,
+                        wing_pct=0.05, stop=0.5, min_vix=13.0, lot_size=20)
+    assert b.on_frame(now=t("2026-11-11", "09:17"), book=Book(rows), expiry=sx_exp, strikes=sx_strikes,
+                      option_symbol=sx_sym, atm=sx_f, vix=15.0) is None  # Wednesday: not expiry day
+    ev = b.on_frame(now=t("2026-11-12", "09:17"), book=Book(rows), expiry=sx_exp, strikes=sx_strikes,
+                    option_symbol=sx_sym, atm=sx_f, vix=15.0)
+    assert ev["event"] == "open" and ev["qty"] == 20
+    assert [(x["strike"], x["opt"], x["sign"]) for x in ev["legs"]] == [
+        (79800, "CE", 1), (72200, "PE", 1), (76000, "CE", -1), (76000, "PE", -1)]
+
+
+def test_missing_chain_is_reported_then_cleared(tmp_path: Path) -> None:
+    b = day(tmp_path)
+    assert b.on_frame(now=t("2026-11-03", "09:17"), book=Book(chain()), expiry=None, strikes=[], option_symbol=None,
+                      atm=None, vix=15.0) is None
+    assert b.last_reject == "no_chain"
+    assert frame(b, t("2026-11-03", "09:17"), chain())["event"] == "open" and b.last_reject is None

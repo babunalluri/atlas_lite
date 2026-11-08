@@ -2384,6 +2384,8 @@
       <div class="history-detail" id="weeklyStrangle1000Line">Weekly strangle 1,000: —</div>
       <div class="history-detail" id="expiryEveStrangleLine">Expiry-eve strangle: —</div>
       <div class="history-detail" id="expiryDayStraddleLine">Expiry-day straddle: —</div>
+      <div class="history-detail" id="sensexExpiryEveStrangleLine">SENSEX expiry-eve strangle: —</div>
+      <div class="history-detail" id="sensexExpiryDayStraddleLine">SENSEX expiry-day straddle: —</div>
       <div class="history-detail" id="agentMacroLine">Macro: —</div>
       <div class="history-detail" id="agentDecision">Last cycle: —</div>
       <div class="history-table-wrap">
@@ -7162,6 +7164,8 @@
         renderWeeklySell("weeklyStrangle1000Line", paper.weekly_strangle1000 || {});
         renderExpirySell("expiryEveStrangleLine", paper.expiry_eve_strangle || {});
         renderExpirySell("expiryDayStraddleLine", paper.expiry_day_straddle || {});
+        renderExpirySell("sensexExpiryEveStrangleLine", paper.sensex_expiry_eve_strangle || {});
+        renderExpirySell("sensexExpiryDayStraddleLine", paper.sensex_expiry_day_straddle || {});
         if (macroEl) {
           macroEl.textContent =
             `Macro as_of ${macro.fetched_at || "—"} · crude ${fmtMacroPct(macro.crude)} · gold ${fmtMacroPct(macro.gold)} · USDINR ${fmtMacroPct(macro.usdinr)} · ES ${fmtMacroPct(macro.es_futures)} · headlines ${((macro.headlines || []).length)}`;

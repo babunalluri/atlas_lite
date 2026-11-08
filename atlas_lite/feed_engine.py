@@ -88,6 +88,7 @@ from atlas_lite.instruments import (
     full_chain_symbols,
     lookup_token,
     nifty_option_lot_size,
+    option_lot_size,
     parse_fo_csv,
     parse_next_option_universe,
     resolve_atm_legs,
@@ -393,6 +394,16 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
         "09:16 on expiry day, only if VIX ≥ 13 · buy 5% wings, sell ATM CE+PE · 1 lot, 2 if VIX ≥ 17",
         "per-leg stop at +50% · else close 15:14",
     ),
+    "sensex_expiry_eve_strangle": (
+        "SENSEX (Thu expiry) · 09:16, 1 session before expiry · buy 5% wings, sell CE/PE nearest F ± 0.5% · "
+        "1 lot, 2 if VIX ≥ 17",
+        "per-leg stop when a short leg doubles · else hold to expiry day, close 15:14 · not backtested on SENSEX",
+    ),
+    "sensex_expiry_day_straddle": (
+        "SENSEX (Thu expiry) · 09:16 on expiry day, only if VIX ≥ 13 · buy 5% wings, sell ATM CE+PE · "
+        "1 lot, 2 if VIX ≥ 17",
+        "per-leg stop at +50% · else close 15:14 · not backtested on SENSEX",
+    ),
     "factor_paper": (
         "09:30–14:44 · spot ≥50 pt from open → buy ATM CE/PE · skip VIX ≥5% over open · "
         "1 lot · max 3/day · −₹2k day stop · side blocks",
@@ -456,6 +467,7 @@ class FeedEngine:
     _paper_factor: PaperFactor | None = field(default=None, repr=False)
     _paper_weekly: dict[str, PaperWeeklySell] = field(default_factory=dict, repr=False)
     _paper_expiry: dict[str, PaperExpirySell] = field(default_factory=dict, repr=False)
+    _option_lots: dict[tuple[str, Any], int] = field(default_factory=dict, repr=False)  # (index, expiry) -> lot
     _paper_v3: PaperScalperV3 | None = field(default=None, repr=False)
     _paper_v3_variants: dict[str, PaperScalperV3] = field(default_factory=dict, repr=False)
     _paper_long_str: PaperLongStraddle | None = field(default=None, repr=False)
@@ -791,13 +803,13 @@ class FeedEngine:
                 )
             self._log.info("weekly option-selling paper books: %s (qty %d, no live orders)", ", ".join(self._paper_weekly), lot)
         if paper_expiry_sell_enabled():
-            lot = self._nifty_option_lot()
             for name, cfg in EXPIRY_SELL_BOOKS.items():
                 self._paper_expiry[name] = PaperExpirySell(
                     path=self.data_dir / cfg["ledger"], strategy=name, sessions=cfg["sessions"], dist=cfg["dist"],
-                    wing_pct=cfg["wing_pct"], stop=cfg["stop"], min_vix=cfg["min_vix"], lot_size=lot, name=cfg["name"],
+                    wing_pct=cfg["wing_pct"], stop=cfg["stop"], min_vix=cfg["min_vix"],
+                    lot_size=self._index_option_lot(cfg["index"]), name=cfg["name"],
                 )
-            self._log.info("expiry-week selling paper books: %s (lot %d, no live orders)", ", ".join(self._paper_expiry), lot)
+            self._log.info("expiry-week selling paper books: %s (no live orders)", ", ".join(self._paper_expiry))
         if paper_factor_enabled():
             lot = self._nifty_option_lot()
             self._paper_factor = PaperFactor(path=self.data_dir / FACTOR_LEDGER, lot_size=lot)
@@ -3010,6 +3022,19 @@ class FeedEngine:
                 self._log.warning("paper AI agent failed: %s", exc)
                 await asyncio.sleep(1.0)
 
+    def _index_option_lot(self, index: str) -> int:
+        """Option lot for the index's current expiry (NIFTY 65, SENSEX 20 in Nov 2026)."""
+        nb = self.notebooks.get(index)
+        if not (nb and nb.universe):
+            return self._nifty_option_lot() if index == "nifty" else 20
+        key = (index, nb.universe.expiry)
+        if key not in self._option_lots:  # the CSV scan is slow; the paper loop asks every second
+            self._option_lots[key] = (
+                nifty_option_lot_size(nb.fo_csv, expiry=nb.universe.expiry) if index == "nifty"
+                else option_lot_size(nb.fo_csv, index.upper(), expiry=nb.universe.expiry, default=20)
+            )
+        return self._option_lots[key]
+
     def _nifty_option_lot(self) -> int:
         """NIFTY option lot for the current expiry; falls back to the iron-fly book, then 65."""
         nifty_nb = self.notebooks.get("nifty")
@@ -3154,11 +3179,20 @@ class FeedEngine:
                     except Exception as exc:  # noqa: BLE001
                         self._log.warning("%s paper book failed: %s", name, exc)
                 vix = quote_ltp(self.book.get(VIX_SYMBOLS[0])) if (self._paper_expiry and VIX_SYMBOLS) else None
+                chains = {"nifty": (expiry, strikes, option_symbol, atm)}
+                snb = self.notebooks.get("sensex")
+                if snb and snb.enabled and snb.universe:
+                    chains["sensex"] = (snb.universe.expiry, list((snb.chain_cache or ([], [], []))[0]),
+                                        snb.universe.option_symbol, int(snb.atm.strike) if snb.atm else None)
                 for name, ebook in self._paper_expiry.items():
                     try:
+                        index = EXPIRY_SELL_BOOKS[name]["index"]
+                        e_exp, e_strikes, e_sym, e_atm = chains.get(index, (None, [], None, None))
+                        if ebook.position is None:  # lot follows the exchange's contract for a new trade
+                            ebook.lot_size = self._index_option_lot(index)
                         allow = self._agent_gates.entries_allowed(name, now) if self._agent_gates else True
-                        ebook.on_frame(now=now, book=self.book, expiry=expiry, strikes=strikes, option_symbol=option_symbol,
-                                       atm=atm, vix=vix, allow_entry=allow)
+                        ebook.on_frame(now=now, book=self.book, expiry=e_exp, strikes=e_strikes, option_symbol=e_sym,
+                                       atm=e_atm, vix=vix, allow_entry=allow)
                     except Exception as exc:  # noqa: BLE001
                         self._log.warning("%s paper book failed: %s", name, exc)
                 await asyncio.sleep(interval)

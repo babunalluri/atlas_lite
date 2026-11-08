@@ -433,9 +433,14 @@ def lookup_token(source: dict[str, int] | list[str], symbol: str) -> int | None:
 
 def nifty_option_lot_size(nfo_csv: str, *, expiry: date | None = None) -> int:
     """Lot size for NIFTY options (currently 65). Fallback 65 if CSV has no row."""
-    reader = csv.DictReader(io.StringIO(nfo_csv or ""))
+    return option_lot_size(nfo_csv, "NIFTY", expiry=expiry, default=65)
+
+
+def option_lot_size(fo_csv: str, name: str, *, expiry: date | None = None, default: int) -> int:
+    """Lot size for ``name`` options (NIFTY 65, SENSEX 20 in Nov 2026). ``default`` if the CSV has no row."""
+    reader = csv.DictReader(io.StringIO(fo_csv or ""))
     for row in reader:
-        if (row.get("name") or "").strip().upper() != "NIFTY":
+        if (row.get("name") or "").strip().upper() != name.upper():
             continue
         inst_type = (row.get("instrument_type") or "").strip().upper()
         if inst_type not in {"CE", "PE"}:
@@ -450,4 +455,4 @@ def nifty_option_lot_size(nfo_csv: str, *, expiry: date | None = None) -> int:
             continue
         if lot > 0:
             return lot
-    return 65
+    return default

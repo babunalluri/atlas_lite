@@ -1,5 +1,5 @@
-"""Expiry-week NIFTY selling paper books, with VIX deciding whether to trade and how many lots.
-Paper only, never Kite orders.
+"""Expiry-week NIFTY and SENSEX selling paper books, with VIX deciding whether to trade and how many lots.
+Paper only, never Kite orders. The research below is NIFTY's; the SENSEX books run the same rules untested.
 
 Research (6 Nov 2026, real NSE option prices Apr 2019 – Nov 2026, rules picked on 2019–23 and
 judged on 2024–26; scratchpad fresh_search.py / sell_dynamic.py / sell_combo.py):
@@ -47,10 +47,19 @@ DEFAULT_LOT_SIZE = 65
 SIZE_UP_VIX = 17.0
 
 BOOKS: dict[str, dict[str, Any]] = {
-    "expiry_eve_strangle": {"ledger": "paper_expiry_eve_strangle.jsonl", "sessions": 1, "dist": 0.005, "wing_pct": 0.05,
-                            "stop": 1.0, "min_vix": None, "name": "Expiry-eve strangle ±0.5% (5% wings)"},
-    "expiry_day_straddle": {"ledger": "paper_expiry_day_straddle.jsonl", "sessions": 0, "dist": 0.0, "wing_pct": 0.05,
-                            "stop": 0.5, "min_vix": 13.0, "name": "Expiry-day straddle (5% wings)"},
+    "expiry_eve_strangle": {"index": "nifty", "ledger": "paper_expiry_eve_strangle.jsonl", "sessions": 1, "dist": 0.005,
+                            "wing_pct": 0.05, "stop": 1.0, "min_vix": None, "name": "Expiry-eve strangle ±0.5% (5% wings)"},
+    "expiry_day_straddle": {"index": "nifty", "ledger": "paper_expiry_day_straddle.jsonl", "sessions": 0, "dist": 0.0,
+                            "wing_pct": 0.05, "stop": 0.5, "min_vix": 13.0, "name": "Expiry-day straddle (5% wings)"},
+    # Same rules on SENSEX (BSE, Thursday expiry). Not backtested on SENSEX: this paper run is the test.
+    # India VIX (NIFTY options) stands in for SENSEX volatility; charges use the NSE schedule (BSE's
+    # option transaction charge is within ~0.003% of NSE's).
+    "sensex_expiry_eve_strangle": {"index": "sensex", "ledger": "paper_sensex_expiry_eve_strangle.jsonl", "sessions": 1,
+                                   "dist": 0.005, "wing_pct": 0.05, "stop": 1.0, "min_vix": None,
+                                   "name": "SENSEX expiry-eve strangle ±0.5% (5% wings)"},
+    "sensex_expiry_day_straddle": {"index": "sensex", "ledger": "paper_sensex_expiry_day_straddle.jsonl", "sessions": 0,
+                                   "dist": 0.0, "wing_pct": 0.05, "stop": 0.5, "min_vix": 13.0,
+                                   "name": "SENSEX expiry-day straddle (5% wings)"},
 }
 
 
@@ -335,8 +344,13 @@ class PaperExpirySell:
             if all(leg.exit is not None for leg in pos.legs if leg.sign < 0):
                 return self._close(now, book, "all_legs_stopped")
             return out
-        if expiry is None or option_symbol is None or atm is None or not _is_nse_trading_day(today):
+        if not _is_nse_trading_day(today):
             return None
+        if expiry is None or option_symbol is None or atm is None:
+            self.last_reject = "no_chain"  # shown on the dashboard: the index's option chain is not loaded
+            return None
+        if self.last_reject == "no_chain":
+            self.last_reject = None
         if self.entered_for == expiry.isoformat():
             return None
         if not hm_ge(now, ENTRY_AT) or hm_ge(now, ENTRY_CLOSED):
