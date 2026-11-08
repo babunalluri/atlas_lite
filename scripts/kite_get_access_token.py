@@ -164,7 +164,21 @@ def main() -> int:
     print(f"user_id: {session.get('user_id', '')}")
     print("Token expires around 06:00 IST tomorrow.")
     _sync_credentials_to_oci(path)
+    _pull_recordings()
     return 0
+
+
+def _pull_recordings() -> None:
+    """Move earlier days' tick recordings from OCI to this laptop (scripts/pull_recordings.sh)."""
+    if "--no-oci" in sys.argv or "--no-pull" in sys.argv:
+        return
+    import subprocess
+
+    print("\nMoving earlier recordings from OCI to data/recordings ...")
+    try:
+        subprocess.run(["bash", str(ROOT / "scripts" / "pull_recordings.sh")], check=True, timeout=900)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        print(f"Recordings pull skipped: {exc}", file=sys.stderr)
 
 
 def _sync_credentials_to_oci(path: Path) -> None:
