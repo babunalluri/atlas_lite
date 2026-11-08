@@ -2167,6 +2167,16 @@
       background: var(--parity-bg); border: 1px solid var(--card-divider); font-variant-numeric: tabular-nums;
     }
     .book-note { font-size: 0.72rem; line-height: 1.45; color: var(--muted); }
+    .book-inputs { border-top: 1px solid var(--card-divider); padding-top: 6px; }
+    .book-inputs summary { cursor: pointer; font-size: 0.72rem; font-weight: 700; color: var(--accent); }
+    .book-inputs .book-chips { margin: 6px 0; }
+    .book-chip.factor { border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+    .book-inputs-list {
+      display: grid; grid-template-columns: minmax(7rem, max-content) 1fr; gap: 3px 10px; margin: 0;
+      max-height: 260px; overflow: auto; font-size: 0.68rem;
+    }
+    .book-inputs-list dt { color: var(--muted); }
+    .book-inputs-list dd { margin: 0; color: var(--ink); font-family: ui-monospace, monospace; word-break: break-word; }
     .agent-diagnostics { margin-top: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--card-bg-bottom); }
     .agent-diagnostics summary { cursor: pointer; padding: 9px 12px; font-size: 0.75rem; font-weight: 700; color: var(--muted); }
     .agent-diagnostics .history-detail { margin: 0 10px 10px; }
@@ -2537,6 +2547,11 @@
           </article>
           <article class="book-card" data-src="llmBuyerLine" data-title="LLM option buyer">
             <div class="history-detail book-src" id="llmBuyerLine">LLM option buyer: —</div>
+            <details class="book-inputs" id="llmBuyerInputs" hidden>
+              <summary id="llmBuyerInputsTitle">What it saw</summary>
+              <div class="book-chips" id="llmBuyerFactors"></div>
+              <dl class="book-inputs-list" id="llmBuyerInputsList"></dl>
+            </details>
           </article>
         </div>
       </section>
@@ -7138,6 +7153,35 @@
       line.textContent = `LLM option buyer · ${head} · entries ${lb.entries ?? 0}/${lb.max_entries ?? 2} · `
         + `day PnL ${lb.day_realized ?? 0} (stop −${lb.day_loss_limit ?? 2000})${said}`
         + (lb.last_reject ? ` · ${lb.last_reject}` : "");
+      renderLlmBuyerInputs(d);
+    }
+
+    // The factors the LLM named and every input it was given at its last decision.
+    function renderLlmBuyerInputs(d) {
+      const box = document.getElementById("llmBuyerInputs");
+      const chips = document.getElementById("llmBuyerFactors");
+      const list = document.getElementById("llmBuyerInputsList");
+      const title = document.getElementById("llmBuyerInputsTitle");
+      if (!box || !chips || !list || !title) return;
+      const inputs = d && d.inputs && typeof d.inputs === "object" ? d.inputs : null;
+      box.hidden = !inputs || !Object.keys(inputs).length;
+      if (box.hidden) return;
+      title.textContent = `What it saw at ${d.hm} · ${d.action}`;
+      chips.replaceChildren(...(d.factors || []).map((f) => {
+        const c = document.createElement("span");
+        c.className = "book-chip factor";
+        c.textContent = f;
+        return c;
+      }));
+      const show = (v) => Array.isArray(v) ? v.join(" → ") : (v && typeof v === "object")
+        ? Object.entries(v).map(([k, x]) => `${k}: ${x ?? "—"}`).join(", ") : String(v ?? "—");
+      list.replaceChildren(...Object.entries(inputs).flatMap(([k, v]) => {
+        const dt = document.createElement("dt");
+        dt.textContent = k.replace(/_/g, " ");
+        const dd = document.createElement("dd");
+        dd.textContent = show(v);
+        return [dt, dd];
+      }));
     }
 
     function renderLlmBuyerLive(live) {
@@ -8807,7 +8851,7 @@
         let view = card.querySelector(".book-view");
         if (!view) {
           view = el("div", "book-view");
-          card.appendChild(view);
+          card.insertBefore(view, src.nextSibling);  // above any extra panel the card carries
         }
         view.replaceChildren();
         const head = el("div", "book-head");

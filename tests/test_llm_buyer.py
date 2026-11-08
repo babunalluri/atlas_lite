@@ -68,10 +68,11 @@ def test_decider_parses_and_fails_over_to_openai() -> None:
         calls.append((url, kw["json"]["model"]))
         if "openrouter" in url:
             return Resp(402, "")
-        return Resp(200, 'Sure: {"action": "buy_pe", "reason": "new lows"}')
+        return Resp(200, 'Sure: {"action": "buy_pe", "reason": "new lows", "factors": ["new day low", "PCR 0.82"]}')
 
     out = LlmDecider(Creds(), post=post).decide({"time": "10:40"})
-    assert out == {"action": "BUY_PE", "reason": "new lows", "provider": "openai", "model": "gpt-4.1"}
+    assert out == {"action": "BUY_PE", "reason": "new lows", "factors": ["new day low", "PCR 0.82"],
+                   "provider": "openai", "model": "gpt-4.1", "inputs": {"time": "10:40"}}
     assert [m for _, m in calls] == ["openai/gpt-4.1", "gpt-4.1"]
     assert LlmDecider(None).decide({})["error"] == "no_llm_credentials"
 
@@ -417,3 +418,16 @@ def test_paper_open_needs_its_ledger_line(tmp_path: Path) -> None:
     b._append = lambda e: None
     assert b.apply(t("10:00"), {"hm": "10:00", "action": "BUY_CE"}, q) is None
     assert b.position is None and b.entries == 0 and b.last_reject == "ledger_write_failed"
+
+
+def test_every_decision_keeps_its_inputs_and_factors(tmp_path: Path) -> None:
+    b, q = book_at(tmp_path), Book()
+    frame(b, "10:40", q)
+    st = b.state(t("10:40"), q)
+    b.apply(t("10:40"), {"hm": "10:40", "action": "BUY_PE", "reason": "lows", "factors": ["new day low"], "inputs": st}, q)
+    ev = [e for e in ledger(b) if e["event"] == "decision"][-1]
+    assert ev["inputs"]["pcr"] == 1.05 and ev["inputs"]["atm_strike"] == 24000 and ev["factors"] == ["new day low"]
+    snap = b.snapshot(q)["last_decision"]
+    assert snap["factors"] == ["new day low"] and snap["inputs"]["vix"] == 14.0
+    b.apply(t("10:45"), {"hm": "10:45", "action": "", "error": "openai:ReadTimeout:", "inputs": st}, q)
+    assert [e for e in ledger(b) if e["event"] == "decision"][-1]["inputs"]["time"] == "10:40"  # errors keep them too

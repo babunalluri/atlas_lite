@@ -122,11 +122,14 @@ class LlmDecider:
                 r.raise_for_status()
                 txt = str(r.json()["choices"][0]["message"]["content"] or "")
                 out = json.loads(txt[txt.find("{"): txt.rfind("}") + 1])
+                # The prompt is the replayed one (no factors requested: asking changed decisions); kept if offered.
+                factors = out.get("factors") if isinstance(out.get("factors"), list) else []
                 return {"action": str(out.get("action") or "").upper(), "reason": str(out.get("reason") or "")[:300],
-                        "provider": name, "model": model}
+                        "factors": [str(f)[:60] for f in factors[:4]], "provider": name, "model": model,
+                        "inputs": state}
             except Exception as exc:  # noqa: BLE001 - try the next provider; the book treats errors as WAIT/HOLD
                 errors.append(f"{name}:{type(exc).__name__}:{getattr(getattr(exc, 'response', None), 'status_code', '')}")
-        return {"action": "", "reason": "", "error": ";".join(errors) or "no_llm_credentials"}
+        return {"action": "", "reason": "", "error": ";".join(errors) or "no_llm_credentials", "inputs": state}
 
 
 @dataclass
@@ -354,10 +357,13 @@ class LlmBuyer:
         holding = self.position is not None or self.live is not None
         self.decided.add(hm)
         self.last_decision = {"hm": hm, "action": act or "ERROR", "reason": out.get("reason") or out.get("error"),
-                              "provider": out.get("provider")}
+                              "factors": out.get("factors") or [], "provider": out.get("provider"),
+                              "inputs": out.get("inputs") or {}}
+        # The full input the LLM saw is kept with its answer, so every decision can be audited later.
         self._append({"event": "decision", "ts": now.isoformat(), "day": self.day, "hm": hm, "action": act or "ERROR",
-                      "reason": out.get("reason"), "error": out.get("error"), "provider": out.get("provider"),
-                      "model": out.get("model"), "holding": holding})
+                      "reason": out.get("reason"), "factors": out.get("factors") or [], "error": out.get("error"),
+                      "provider": out.get("provider"), "model": out.get("model"), "holding": holding,
+                      "inputs": out.get("inputs") or {}})
         self.errors_in_row = 0 if act else self.errors_in_row + 1
         if holding and not act and self.errors_in_row >= MAX_ERRORS_HOLDING:
             self._log.warning("llm_buyer: %d LLM errors in a row while holding -> selling", self.errors_in_row)

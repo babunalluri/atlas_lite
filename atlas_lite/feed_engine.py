@@ -3162,15 +3162,15 @@ class FeedEngine:
             return
         interval = max(1.0, STREAM_INTERVAL_MS / 1000.0)
         pending: asyncio.Task | None = None
-        pending_hm, pending_at = "", 0.0
+        pending_hm, pending_at, pending_state = "", 0.0, {}
         while True:
             try:
                 now = datetime.now(IST)
                 if pending is not None and not pending.done() and time.monotonic() - pending_at > LLM_BUYER_HUNG_S:
                     # A call hung past its own timeouts: drop it (a late answer is ignored) so the next slot asks.
                     self._log.warning("llm_buyer: LLM call for %s hung > %.0fs, abandoned", pending_hm, LLM_BUYER_HUNG_S)
-                    await asyncio.to_thread(book.apply, now, {"hm": pending_hm, "action": "", "error": "llm_hung"},
-                                            self.book, allow_entry=False)
+                    await asyncio.to_thread(book.apply, now, {"hm": pending_hm, "action": "", "error": "llm_hung",
+                                                              "inputs": pending_state}, self.book, allow_entry=False)
                     pending = None
                 if now.weekday() >= 5 and book.position is None and book.live is None:
                     await asyncio.sleep(30.0)
@@ -3187,8 +3187,9 @@ class FeedEngine:
                     await asyncio.to_thread(book.apply, now, out, self.book, allow_entry=allow)
                 if pending is None and book.decider is not None and book.decision_due(now):
                     pending_hm, pending_at = hm, time.monotonic()
+                    pending_state = book.state(now, self.book)
                     book.decided.add(hm)  # one question per 5-minute slot, however long the reply takes
-                    pending = asyncio.create_task(asyncio.to_thread(book.decider.decide, book.state(now, self.book)))
+                    pending = asyncio.create_task(asyncio.to_thread(book.decider.decide, pending_state))
                 if self._llm_buyer_live is not None and hm >= "15:30":
                     if self._llm_buyer_live.turn_off_if_on(source="day_end"):
                         self._log.info("llm_buyer live auto-off at session end")
