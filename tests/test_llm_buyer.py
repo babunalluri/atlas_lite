@@ -417,7 +417,7 @@ def test_llm_errors_in_a_row_while_holding_sell(tmp_path: Path) -> None:
     ev = b.apply(t("10:30"), {"hm": "10:30", **err}, q)
     assert ev["event"] == "close" and ev["reason"] == "llm_unavailable" and b.position is None
     assert b.apply(t("10:31"), {"hm": "10:31", **err}, q) is None  # flat: errors never trade
-    assert M.MAX_ERRORS_HOLDING == 10  # ~10 minutes at one question a minute
+    assert M.MAX_ERRORS_HOLDING == 5  # ~5 minutes at one question a minute
 
 def test_paper_open_needs_its_ledger_line(tmp_path: Path) -> None:
     b, q = book_at(tmp_path), Book()
