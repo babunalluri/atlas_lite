@@ -2373,6 +2373,11 @@
         <input type="checkbox" id="straddleLiveToggle" />
         <span id="straddleLiveLabel">Live straddle (today only)</span>
       </label>
+      <div class="history-detail" id="llmBuyerLine">LLM option buyer: —</div>
+      <label class="history-meta" for="llmBuyerLiveToggle" style="display:inline-flex;align-items:center;gap:6px;margin:0 0 0.4rem 0;" title="Real Kite orders for today's LLM option buyer (1 lot ATM CE or PE, −₹2,000 day stop) — requires sign-in; good for today only">
+        <input type="checkbox" id="llmBuyerLiveToggle" />
+        <span id="llmBuyerLiveLabel">Live LLM buyer (today only)</span>
+      </label>
       <div class="history-detail" id="longStraddleTpLine">Long straddle +20% TP: —</div>
       <div class="history-detail" id="longStraddleTrailLine">Long straddle trail: —</div>
       <div class="history-detail" id="longStraddleLeg50Line">Long straddle leg −50%: —</div>
@@ -6898,6 +6903,81 @@
       }
     });
 
+    // LLM option buyer: status line + its own live switch (/api/llm_buyer/live).
+    function renderLlmBuyer(lb) {
+      const line = document.getElementById("llmBuyerLine");
+      if (!line) return;
+      if (!lb.enabled) {
+        line.textContent = "LLM option buyer · off (ATLAS_LITE_PAPER_LLM_BUYER=0)";
+        return;
+      }
+      const d = lb.last_decision;
+      const said = d ? ` · ${d.hm} ${d.action}${d.reason ? ` — ${d.reason}` : ""}` : "";
+      const pos = lb.position;
+      const head = pos
+        ? `${pos.live ? "LIVE" : "paper"} ${pos.option} ${pos.symbol} x${pos.qty} @ ${pos.entry} · open PnL ${pos.open_pnl ?? "—"}`
+          + (pos.manual_needed ? " · MANUAL CHECK NEEDED" : "")
+        : `FLAT${lb.stopped ? ` (${{ day_loss: "day loss stop hit", ui_off: "stopped: live box unticked", done_for_day: "done for today" }[lb.stopped] || lb.stopped})` : ""}`;
+      line.textContent = `LLM option buyer · ${head} · entries ${lb.entries ?? 0}/${lb.max_entries ?? 2} · `
+        + `day PnL ${lb.day_realized ?? 0} (stop −${lb.day_loss_limit ?? 2000})${said}`
+        + (lb.last_reject ? ` · ${lb.last_reject}` : "");
+    }
+
+    function renderLlmBuyerLive(live) {
+      const toggle = document.getElementById("llmBuyerLiveToggle");
+      const label = document.getElementById("llmBuyerLiveLabel");
+      if (!toggle || !label) return;
+      const allowed = !!(live && live.allowed);
+      const on = !!(live && live.enabled);
+      if (toggle !== document.activeElement) toggle.checked = on;
+      toggle.disabled = !allowed && !on;
+      const stale = !!(live && live.stale);
+      label.textContent = !allowed
+        ? "Live LLM buyer · locked on this host (ATLAS_LITE_LLM_BUYER_LIVE_ALLOWED=0)"
+        : on ? "Live LLM buyer · ON for today (real orders, 1 lot, −₹2,000 day stop)"
+          : stale ? `Live LLM buyer · was ticked on ${live.day || "an earlier day"} — not active today, tick again to trade live`
+            : "Live LLM buyer (today only)";
+    }
+
+    function loadLlmBuyerLive() {
+      fetch("/api/llm_buyer/live")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => renderLlmBuyerLive(d && d.live))
+        .catch(() => {});
+    }
+
+    document.getElementById("llmBuyerLiveToggle")?.addEventListener("change", async (ev) => {
+      const box = ev.target;
+      const want = !!box.checked;
+      if (want && !window.confirm(
+        "Turn ON live orders for today's LLM option buyer?\n\nAn LLM decides every 5 minutes whether to buy 1 lot of the ATM NIFTY " +
+        "call or put with real money (MIS), and when to sell. The code exits and stops for the day at −₹2,000, and sells " +
+        "everything by 15:05. Good for today only.\n\nUntick it any time to sell an open live position at once and stop the book for today.",
+      )) {
+        box.checked = false;
+        return;
+      }
+      if (!want && !window.confirm(
+        "Turn OFF the LLM buyer for today?\n\nAny open live position is sold at market now, and the book takes no more trades today.",
+      )) {
+        box.checked = true;
+        return;
+      }
+      try {
+        const resp = await fetch(`/api/llm_buyer/live?enabled=${want ? "true" : "false"}`, {
+          method: "POST", credentials: "same-origin",
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (resp.status === 401) throw new Error("Not signed in — required for Live LLM buyer");
+        if (!resp.ok || data.ok === false) throw new Error(data.detail || `HTTP ${resp.status}`);
+        renderLlmBuyerLive(data.live);
+      } catch (err) {
+        box.checked = !want;
+        const label = document.getElementById("llmBuyerLiveLabel");
+        if (label) label.textContent = `Live LLM buyer toggle failed: ${err.message || err}`;
+      }
+    });
+
     function renderLongStraddle(ls, elId = "longStraddleLine", flag = "ATLAS_LITE_PAPER_LONG_STRADDLE") {
       const line = document.getElementById(elId);
       if (!line) return;
@@ -7153,6 +7233,8 @@
         }
         renderLongStraddle(paper.long_straddle || {});
         loadStraddleLive();
+        renderLlmBuyer(paper.llm_buyer || {});
+        loadLlmBuyerLive();
         renderLongStraddle(paper.long_straddle_tp20 || {}, "longStraddleTpLine", "ATLAS_LITE_PAPER_LONG_STRADDLE_TP20");
         renderLongStraddle(paper.long_straddle_trail || {}, "longStraddleTrailLine", "ATLAS_LITE_PAPER_LONG_STRADDLE_TRAIL");
         renderLongStraddle(paper.long_straddle_leg50 || {}, "longStraddleLeg50Line", "ATLAS_LITE_PAPER_LONG_STRADDLE_LEG50");

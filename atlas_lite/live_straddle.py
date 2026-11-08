@@ -93,6 +93,8 @@ class LiveStraddle:
     qty: int
     expiry_day: bool
     log: Callable[[dict[str, Any]], dict[str, Any] | None]  # durable ledger append; None = write failed
+    legs: tuple[str, ...] = LEGS  # ("ce",) or ("pe",) for a single option (the LLM buyer)
+    tag_prefix: str = TAG_PREFIX
     phase: str = "entering"
     exit_reason: str = ""
     intents: list[Intent] = field(default_factory=list)
@@ -141,7 +143,7 @@ class LiveStraddle:
     def place(self, client: Any, leg: str, side: str, qty: int) -> bool:
         """Durable intent first, then send. Returns False if the intent could not be written (nothing sent)."""
         self.seq += 1
-        tag = f"{TAG_PREFIX}{self.day[5:7]}{self.day[8:10]}{self.seq:02d}{leg}{'b' if side == 'BUY' else 's'}"
+        tag = f"{self.tag_prefix}{self.day[5:7]}{self.day[8:10]}{self.seq:02d}{leg}{'b' if side == 'BUY' else 's'}"
         it = Intent(tag=tag, leg=leg, side=side, qty=int(qty), symbol=self.symbol(leg), sent_at=time.time())
         if self.log({"event": "order_intent", "tag": tag, "leg": leg, "side": side, "qty": it.qty,
                      "symbol": it.symbol, "sent_at": it.sent_at, "seq": self.seq}) is None:
@@ -181,7 +183,7 @@ class LiveStraddle:
                     by_tag[str(t)] = r
         now = time.time()
         ours = {it.tag for it in self.intents}
-        for leg in LEGS:  # hand trades: filled MIS orders in this option without one of our tags
+        for leg in self.legs:  # hand trades: filled MIS orders in this option without one of our tags
             ts = self.symbol(leg).split(":", 1)[-1]
             net = 0
             for r in rows:
@@ -258,7 +260,7 @@ class LiveStraddle:
              exit_at: str, square_off_late: str) -> dict[str, Any] | None:
         """Advance one frame. Returns the finished result dict once done (else None)."""
         if self.day == today:  # another day's trade is never valued at today's prices
-            for leg in LEGS:
+            for leg in self.legs:
                 b = bids.get(leg)
                 if b and b > 0:
                     self.last_bids[leg] = float(b)
@@ -271,11 +273,11 @@ class LiveStraddle:
             self.refresh(client)  # best effort: cancel what is known, then close (estimated if anything left)
             self._cancel_stale(client, force=True)
             return self._finish("broker_square_off",
-                                estimated=any(self.held(leg) > 0 for leg in LEGS) or bool(self.book_error))
+                                estimated=any(self.held(leg) > 0 for leg in self.legs) or bool(self.book_error))
         if not self.refresh(client):
             return None
         self._cancel_stale(client)
-        live_bids = {leg: bids.get(leg) for leg in LEGS}
+        live_bids = {leg: bids.get(leg) for leg in self.legs}
         if bool(stop_loss) and self._stop_hit(stop_loss, live_bids):
             self.stop_since = self.stop_since or time.time()
         else:
@@ -287,12 +289,15 @@ class LiveStraddle:
                     self._set_phase("exiting", "time" if hm >= exit_at else "stop")
                     return self._exit_step(client)
                 return None
-            h = {leg: self.held(leg) for leg in LEGS}
-            if h["ce"] == 0 and h["pe"] == 0:
+            h = {leg: self.held(leg) for leg in self.legs}
+            if all(v == 0 for v in h.values()):
                 if self._written_off_uncertain():
                     return None  # an order written off after an uncertain send may still be listed: watch
                 return self._finish("entry_failed", estimated=False)
-            if h["ce"] == h["pe"]:
+            if len(set(h.values())) == 1:
+                if self.exit_reason:  # an exit was asked for while the buys were still working
+                    self._set_phase("exiting", self.exit_reason)
+                    return self._exit_step(client)
                 self._set_phase("holding")
                 return None
             self._set_phase("exiting", "entry_incomplete")
@@ -309,10 +314,19 @@ class LiveStraddle:
             return self._exit_step(client)
         return None
 
+    def request_exit(self, reason: str) -> None:
+        """Sell what is held at the next frame (an exit decided by the book, e.g. the LLM buyer's EXIT).
+        Buys still working finish first; the entering phase then moves straight to exiting."""
+        if self.phase == "holding":
+            self._set_phase("exiting", reason)
+        elif self.phase == "entering" and not self.exit_reason:
+            self.exit_reason = reason
+            self.log({"event": "live_phase", "phase": "entering", "reason": reason})
+
     def _stop_hit(self, stop_loss: float, bids: dict[str, float | None]) -> bool:
         """This frame's live bids only: a missing price is not a stop (and resets the confirmation)."""
         value = cost = 0.0
-        for leg in LEGS:
+        for leg in self.legs:
             q = self.held(leg)
             if q <= 0:
                 continue
@@ -326,7 +340,7 @@ class LiveStraddle:
 
     def _exit_step(self, client: Any) -> dict[str, Any] | None:
         now = time.time()
-        for leg in LEGS:
+        for leg in self.legs:
             q = self.held(leg)
             if q < 0:  # can't happen by construction; never add to it
                 if not self.manual_needed:
@@ -344,7 +358,7 @@ class LiveStraddle:
             if n >= MAX_SELLS and not self.manual_needed:
                 self.manual_needed = True
                 self.log({"event": "manual_needed", "why": f"{leg} still held after {n} sells"})
-        if all(self.held(leg) == 0 for leg in LEGS) and not self.working():
+        if all(self.held(leg) == 0 for leg in self.legs) and not self.working():
             if self._written_off_uncertain():
                 self._alarm("written_off", "an order written off after an uncertain send: watching until 15:20")
                 return None  # it may still be listed; the 15:20 / next-day path closes the trade
@@ -359,8 +373,8 @@ class LiveStraddle:
         bought = sum(p * q for p, q, s in fills if s == "buy")
         sold = sum(p * q for p, q, s in fills if s == "sell")
         left_value = 0.0
-        estimated = estimated or any(self.own(leg) != self.held(leg) for leg in LEGS) or bool(self.working())
-        for leg in LEGS:
+        estimated = estimated or any(self.own(leg) != self.held(leg) for leg in self.legs) or bool(self.working())
+        for leg in self.legs:
             q = self.own(leg)  # still held, or sold by hand at a price this book doesn't own
             if q > 0:  # value at the trade day's last bid seen; the cost price if none was seen
                 px = self.last_bids.get(leg) or self.cost(leg)[0]
@@ -380,9 +394,9 @@ class LiveStraddle:
     @classmethod
     def restore(cls, start: dict[str, Any], events: list[dict[str, Any]],
                 log: Callable[[dict[str, Any]], dict[str, Any] | None]) -> "LiveStraddle":
-        ls = cls(day=str(start["day"]), strike=int(start.get("atm") or 0), ce_symbol=str(start["ce_symbol"]),
-                 pe_symbol=str(start["pe_symbol"]), qty=int(start["qty"]), expiry_day=bool(start.get("expiry_day")),
-                 log=log)
+        ls = cls(day=str(start["day"]), strike=int(start.get("atm") or 0), ce_symbol=str(start.get("ce_symbol") or ""),
+                 pe_symbol=str(start.get("pe_symbol") or ""), qty=int(start["qty"]), expiry_day=bool(start.get("expiry_day")),
+                 log=log, legs=tuple(start.get("legs") or LEGS), tag_prefix=str(start.get("tag_prefix") or TAG_PREFIX))
         by_tag: dict[str, Intent] = {}
         for ev in events:
             kind = ev.get("event")
@@ -418,11 +432,12 @@ class LiveStraddle:
         for it in ls.intents:
             if not it.final and (it.send == "" or (it.send == "uncertain" and not it.returned_at)):
                 it.send, it.returned_at = "uncertain", now  # send outcome never recorded: wait from here
-        for leg in LEGS:  # the sell backoff continues from the last sell sent before the restart
+        for it in ls.intents:  # every order written off before the restart, not just the last one
+            if it.status == "NOT_PLACED" and it.send != "refused":
+                it.status, it.seen = "SENT", False  # a later listing may still show it: look again
+        for leg in ls.legs:  # the sell backoff continues from the last sell sent before the restart
             sent = [i.sent_at for i in ls.intents if i.leg == leg and i.side == "SELL"]
             n = ls.sells[leg]
             if sent and n:
                 ls.next_sell_at[leg] = max(sent) + (SELL_BACKOFF_S[n] if n < len(SELL_BACKOFF_S) else MANUAL_RETRY_S)
-            if it.status == "NOT_PLACED" and it.send != "refused":
-                it.status, it.seen = "SENT", False  # a later listing may still show it: look again
         return ls

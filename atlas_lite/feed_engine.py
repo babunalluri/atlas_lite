@@ -24,6 +24,16 @@ from atlas_lite.agent_live import AgentLiveFlag, LIVE_FLAG_NAME
 from atlas_lite.agent_policy import ADX_RANGE, ADX_TREND, apply_book_policy
 from atlas_lite.agent_advisor import AgentAdvisor, agent_enabled
 from atlas_lite.kite_orders import KiteOrderClient
+from atlas_lite.llm_buyer import (
+    LEDGER_NAME as LLM_BUYER_LEDGER,
+    LIVE_ENV as LLM_BUYER_LIVE_ENV,
+    LIVE_FLAG_NAME as LLM_BUYER_LIVE_FLAG,
+    LlmBuyer,
+    LlmDecider,
+    paper_llm_buyer_enabled,
+)
+
+LLM_BUYER_HUNG_S = 90.0  # an LLM question older than this is abandoned (provider timeouts are 25 s each)
 from atlas_lite.paper_agent import (
     STRATEGY as AGENT_STRATEGY,
     DEFAULT_LOT_SIZE as AGENT_LOT,
@@ -394,6 +404,10 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
         "09:16 on expiry day, only if VIX ≥ 13 · buy 5% wings, sell ATM CE+PE · 1 lot",
         "per-leg stop at +50% · else close 15:14",
     ),
+    "llm_buyer": (
+        "09:20–14:30 · every 5 min an LLM decides: buy 1 lot ATM CE or PE, wait, or stop for the day · max 2 entries",
+        "LLM exits (HOLD/EXIT) · day loss −₹2,000 enforced by code · flat by 15:05 · live only when ticked",
+    ),
     "sensex_expiry_eve_strangle": (
         "SENSEX (Thu expiry) · 09:16, 1 session before expiry · buy 5% wings, sell CE/PE nearest F ± 0.5% · "
         "1 lot",
@@ -474,6 +488,8 @@ class FeedEngine:
     _paper_long_str_tp20: PaperLongStraddle | None = field(default=None, repr=False)
     _paper_long_str_variants: dict[str, PaperLongStraddle] = field(default_factory=dict, repr=False)
     _straddle_live: Any = field(default=None, repr=False)
+    _llm_buyer: LlmBuyer | None = field(default=None, repr=False)
+    _llm_buyer_live: Any = field(default=None, repr=False)
     # Previous day's NIFTY open interest, for the dealer-gamma reading Scalper v3 logs.
     _gamma_oi: GammaOi | None = field(default=None, repr=False)
     _gamma_oi_tried_at: float = field(default=0.0, repr=False)
@@ -776,6 +792,18 @@ class FeedEngine:
                 "long_straddle book qty %d (09:16 balanced straddle, sold 13:00; live when ticked, allowed=%s)",
                 self._paper_long_str.qty, self._straddle_live.allowed(),
             )
+        if paper_llm_buyer_enabled():
+            from atlas_lite.day_live_flag import DayLiveFlag
+
+            # Live only on a day the operator ticks "Live LLM buyer" and the host allows it.
+            self._llm_buyer_live = DayLiveFlag(self.data_dir / LLM_BUYER_LIVE_FLAG, LLM_BUYER_LIVE_ENV)
+            self._llm_buyer = LlmBuyer(
+                path=self.data_dir / LLM_BUYER_LEDGER, lot_size=self._nifty_option_lot(),
+                order_client=KiteOrderClient(self.credentials_path), live_flag=self._llm_buyer_live,
+                decider=LlmDecider(read_llm_credentials()),
+            )
+            self._log.info("llm_buyer book qty %d (LLM picks ATM CE/PE every 5 min; live when ticked, allowed=%s)",
+                           self._llm_buyer.qty, self._llm_buyer_live.allowed())
         if paper_long_straddle_tp20_enabled():
             self._paper_long_str_tp20 = PaperLongStraddle(
                 path=self.data_dir / LONG_STRADDLE_TP20_LEDGER, lot_size=self._nifty_option_lot(),
@@ -874,6 +902,8 @@ class FeedEngine:
             self._tasks.append(asyncio.create_task(self._paper_v3_loop()))
         if self._paper_long_str is not None or self._paper_long_str_tp20 is not None or self._paper_long_str_variants:
             self._tasks.append(asyncio.create_task(self._paper_long_straddle_loop()))
+        if self._llm_buyer is not None:
+            self._tasks.append(asyncio.create_task(self._llm_buyer_loop()))
         if self._agent is not None:
             self._tasks.append(asyncio.create_task(self._agent_loop()))
 
@@ -3124,6 +3154,51 @@ class FeedEngine:
                 self._log.warning("long_straddle paper book failed: %s", exc)
                 await asyncio.sleep(1.0)
 
+    async def _llm_buyer_loop(self) -> None:
+        """LLM option buyer: the book's frame every second (stops, live orders); an LLM decision every 5 minutes,
+        asked in the background so a slow reply never delays the day-loss stop."""
+        book = self._llm_buyer
+        if book is None:
+            return
+        interval = max(1.0, STREAM_INTERVAL_MS / 1000.0)
+        pending: asyncio.Task | None = None
+        pending_hm, pending_at = "", 0.0
+        while True:
+            try:
+                now = datetime.now(IST)
+                if pending is not None and not pending.done() and time.monotonic() - pending_at > LLM_BUYER_HUNG_S:
+                    # A call hung past its own timeouts: drop it (a late answer is ignored) so the next slot asks.
+                    self._log.warning("llm_buyer: LLM call for %s hung > %.0fs, abandoned", pending_hm, LLM_BUYER_HUNG_S)
+                    await asyncio.to_thread(book.apply, now, {"hm": pending_hm, "action": "", "error": "llm_hung"},
+                                            self.book, allow_entry=False)
+                    pending = None
+                if now.weekday() >= 5 and book.position is None and book.live is None:
+                    await asyncio.sleep(30.0)
+                    continue
+                hm = now.strftime("%H:%M")
+                feed = self.build_feed("nifty") if "09:15" <= hm <= "15:30" and "nifty" in self.notebooks else {}
+                # In a worker thread: a live order call must not block the engine.
+                await asyncio.to_thread(book.on_frame, now=now, feed=feed, book=self.book)
+                if pending is not None and pending.done():
+                    out = dict(pending.result()) if not pending.cancelled() else {"action": "", "error": "cancelled"}
+                    out["hm"] = pending_hm
+                    pending = None
+                    allow = self._agent_gates.entries_allowed(book.strategy, now) if self._agent_gates else True
+                    await asyncio.to_thread(book.apply, now, out, self.book, allow_entry=allow)
+                if pending is None and book.decider is not None and book.decision_due(now):
+                    pending_hm, pending_at = hm, time.monotonic()
+                    book.decided.add(hm)  # one question per 5-minute slot, however long the reply takes
+                    pending = asyncio.create_task(asyncio.to_thread(book.decider.decide, book.state(now, self.book)))
+                if self._llm_buyer_live is not None and hm >= "15:30":
+                    if self._llm_buyer_live.turn_off_if_on(source="day_end"):
+                        self._log.info("llm_buyer live auto-off at session end")
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                self._log.warning("llm_buyer book failed: %s", exc)
+                await asyncio.sleep(1.0)
+
     async def _refresh_gamma_oi(self, now: datetime) -> None:
         """Load the previous session's open interest once a trading morning; retry every 10 min."""
         gamma = self._gamma_oi
@@ -3846,6 +3921,12 @@ class FeedEngine:
                 if ebook is not None
                 else {"ok": True, "mode": "paper", "enabled": False, "live_orders": False, "book": name, "name": cfg["name"]}
             )
+        body["llm_buyer"] = (
+            self._llm_buyer.snapshot(self.book)
+            if self._llm_buyer is not None
+            else {"ok": True, "mode": "paper", "enabled": False, "live_orders": False, "book": "llm_buyer",
+                  "name": "LLM option buyer"}
+        )
         if self._paper_factor is None:
             body["factor_paper"] = {
                 "ok": True,

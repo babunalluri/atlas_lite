@@ -565,6 +565,34 @@ async def api_straddle_live_set(
     return {"ok": True, "live": live}
 
 
+def _llm_buyer_live_flag():
+    from atlas_lite.day_live_flag import DayLiveFlag
+    from atlas_lite.llm_buyer import LIVE_ENV, LIVE_FLAG_NAME
+
+    return DayLiveFlag(DATA_DIR / LIVE_FLAG_NAME, LIVE_ENV)
+
+
+@app.get("/api/llm_buyer/live")
+async def api_llm_buyer_live_get() -> dict[str, Any]:
+    """LLM option buyer live switch: allowed on this host, and enabled for today."""
+    return {"ok": True, "live": await asyncio.to_thread(lambda: _llm_buyer_live_flag().snapshot())}
+
+
+@app.post("/api/llm_buyer/live")
+async def api_llm_buyer_live_set(
+    request: Request,
+    enabled: bool = Query(..., description="true = real Kite orders for today's LLM option buyer"),
+) -> dict[str, Any]:
+    """Toggle LLM-buyer live orders for today. Sign-in required to enable; disable always allowed."""
+    if enabled:
+        _ui_session_required(request)
+    try:
+        live = await asyncio.to_thread(lambda: _llm_buyer_live_flag().set_enabled(enabled, source="ui"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "live": live}
+
+
 @app.get("/api/agent/macro")
 async def api_agent_macro() -> dict[str, Any]:
     """Timestamped macro/sentiment snapshot used by the agent."""
