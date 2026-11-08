@@ -62,6 +62,7 @@ Checked every trading day. Tick items as done (`[x]`), add new ones with a date.
   - `long_straddle_trail`: 09:16 straddle; once bids +10%, sell 15% below the peak; −30% stop; else 13:00 (backtest +₹1,248/day, 64% positive).
   - `long_straddle_leg50`: 09:16 straddle; sell a leg once its bid is −50% vs its own cost; other leg to 13:00 (backtest +₹2,033/day, worst −₹3,219).
   - `scalper_v3_1415`: 14:15 ATM straddle sale, hold to 15:14, no target/stop (backtest +₹450/day, t 4.1, best of 6 times tried).
+- [x] **Holiday fix deployed 8 Nov (Sunday):** the holiday list had Mon 9 Nov instead of **Tue 10 Nov** (NSE list; Kite shows the NIFTY expiry on Mon 9 Nov). Without it every book would have skipped Monday's expiry. 24 Nov (Tue) is also a holiday: that week's expiry is Mon 23 Nov. This week's expiry-eve strangle was missed (its entry day was Fri 6 Nov, before the books were deployed); the expiry-day straddle's first trade is Mon 9 Nov.
   - `scalper_v3_wings`: v3 plus wings 1,000 pts out (iron fly); same target/stop on the net credit.
   - tp20 keeps running alongside (its ~27 Nov comparison stays).
   - **SENSEX option recording** (for a SENSEX morning-straddle test): `recordings/sensex-structure-DAY.jsonl` once a minute (ATM, ±100/200/500, next expiry), plus SENSEX ATM±1 bid/ask in the depth tape (rows carry `"index": "sensex"`). NIFTY files unchanged; the NIFTY builders never read the SENSEX file. ~8 MB/day more.

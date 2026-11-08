@@ -58,9 +58,11 @@ def ledger(b: PaperWeeklySell) -> list[dict]:
 
 def test_sessions_until_counts_trading_days_and_skips_holidays() -> None:
     assert sessions_until(date(2026, 10, 29), EXPIRY) == 3
-    # Mon 9 Nov 2026 is an NSE holiday: the 10 Nov expiry is entered on Wednesday 4 Nov.
-    assert sessions_until(date(2026, 11, 4), date(2026, 11, 10)) == 3
-    assert sessions_until(date(2026, 11, 5), date(2026, 11, 10)) == 2
+    # Tue 10 Nov 2026 is an NSE holiday, so the expiry moves to Mon 9 Nov (entered Wed 4 Nov)
+    # and the holiday is skipped when counting to the 17 Nov expiry.
+    assert sessions_until(date(2026, 11, 4), date(2026, 11, 9)) == 3
+    assert sessions_until(date(2026, 11, 6), date(2026, 11, 9)) == 1
+    assert sessions_until(date(2026, 11, 6), date(2026, 11, 17)) == 6
 
 
 def test_select_strikes_numbers() -> None:

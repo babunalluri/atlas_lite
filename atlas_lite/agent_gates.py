@@ -36,9 +36,9 @@ NSE_HOLIDAYS = frozenset(
         "2026-09-14",  # Ganesh Chaturthi (observed in some years)
         "2026-10-02",  # Gandhi Jayanti
         "2026-10-20",  # Dussehra (tentative)
-        "2026-11-08",  # Diwali Laxmi Pujan (tentative)
-        "2026-11-09",  # Diwali Balipratipada (tentative)
-        "2026-11-24",  # Guru Nanak Jayanti (tentative)
+        "2026-11-08",  # Diwali Laxmi Pujan (Sunday; Muhurat session only)
+        "2026-11-10",  # Diwali Balipratipada (NSE list; NIFTY expiry moves to Mon 9 Nov)
+        "2026-11-24",  # Guru Nanak Jayanti (NSE list; NIFTY expiry moves to Mon 23 Nov)
         "2026-12-25",  # Christmas
     }
 )
