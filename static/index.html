@@ -2535,7 +2535,7 @@
         <label class="live-switch" for="llmBuyerLiveToggle" title="Real Kite orders for today's LLM option buyer (1 lot ATM CE or PE, −₹2,000 day stop) — requires sign-in; good for today only">
           <input type="checkbox" class="switch-input" id="llmBuyerLiveToggle" />
           <span class="switch-track" aria-hidden="true"></span>
-          <span class="live-switch-text"><strong>LLM buyer · 09:15–10:15</strong><span id="llmBuyerLiveLabel">Live LLM buyer (today only)</span></span>
+          <span class="live-switch-text"><strong>LLM buyer</strong><span id="llmBuyerLiveLabel">Live LLM buyer (today only)</span></span>
         </label>
       </div>
 
@@ -2546,7 +2546,7 @@
           <article class="book-card" data-src="agentPositionLine" data-title="Agent · scalper v2">
             <div class="history-detail book-src" id="agentPositionLine">Agent · scalper v2: —</div>
           </article>
-          <article class="book-card" data-src="llmBuyerLine" data-title="LLM buyer · 09:15–10:15 · 1 min">
+          <article class="book-card" data-src="llmBuyerLine" data-title="LLM buyer · every minute">
             <div class="history-detail book-src" id="llmBuyerLine">LLM option buyer: —</div>
             <details class="book-inputs" id="llmBuyerInputs" hidden>
               <summary id="llmBuyerInputsTitle">What it saw</summary>
@@ -7199,7 +7199,7 @@
       const stale = !!(live && live.stale);
       label.textContent = !allowed
         ? "Live LLM buyer · locked on this host (ATLAS_LITE_LLM_BUYER_LIVE_ALLOWED=0)"
-        : on ? "ON for today: real orders 09:16–10:15, 1 lot, −₹2,000 day stop"
+        : on ? "ON for today: real orders · new trades 09:16–14:30 · 1 lot · −₹2,000 day stop"
           : stale ? `Live LLM buyer · was ticked on ${live.day || "an earlier day"} — not active today, tick again to trade live`
             : "Live LLM buyer (today only)";
     }
@@ -7215,9 +7215,10 @@
       const box = ev.target;
       const want = !!box.checked;
       if (want && !window.confirm(
-        "Turn ON live orders for today's LLM buyer (09:15–10:15)?\n\nFrom 09:16 to 10:10 an LLM decides every minute whether to buy 1 lot " +
-        "of the ATM NIFTY call or put with real money (MIS), and when to sell. 2 trades, up to 4 while the day is positive (extra trades keep " +
-        "half the day's best profit). The code sells and stops at −₹2,000, and sells everything at 10:15. Good for today only." +
+        "Turn ON live orders for today's LLM buyer?\n\nFrom 09:16 to 14:30 an LLM decides every minute whether to buy 1 lot " +
+        "of the ATM NIFTY call or put with real money (MIS). An open trade is then managed every minute until the LLM exits it " +
+        "(15:05 at the latest). 2 trades, up to 4 while the day is positive (extra trades keep half the day's best profit). " +
+        "The code sells and stops at −₹2,000. Good for today only." +
         "\n\nUntick it any time to sell an open live position at once and stop the book for today.",
       )) {
         box.checked = false;

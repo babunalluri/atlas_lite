@@ -523,18 +523,43 @@ def test_hour_book_schedule_prompt_and_tags(tmp_path: Path) -> None:
     assert not b.decision_due(t("09:15")) and b.decision_due(t("09:16"))
     frame(b, "09:16", q)
     assert b.decision_due(t("09:17"))  # every minute
-    frame(b, "10:10", q)
-    assert b.decision_due(t("10:10")) and not b.decision_due(t("10:11"))  # last entry 10:10 when flat
-    assert "closed at 10:15" in M.SYSTEM_PROMPT and "up to four times while today's realised P&L is positive" in M.SYSTEM_PROMPT
-    b.apply(t("10:10"), {"hm": "10:10", "action": "BUY_CE"}, q)
-    assert b.decision_due(t("10:14")) and not b.decision_due(t("10:15"))  # holding: decisions to 10:14
-    ev = frame(b, "10:15", q)
-    assert ev["event"] == "close" and ev["reason"] == "square_off"  # flat at 10:15
+    frame(b, "14:30", q)
+    assert b.decision_due(t("14:30"))
+    frame(b, "14:31", q)
+    assert not b.decision_due(t("14:31"))  # flat: no new trades after 14:30
+    assert "New trades only until 14:30" in M.SYSTEM_PROMPT and "held until 15:05" in M.SYSTEM_PROMPT
+    assert "up to four times while today's realised P&L is positive" in M.SYSTEM_PROMPT
     kite = FakeKite()
     b2 = hour_book(tmp_path / "live", order_client=kite, live_flag=Flag())
     frame(b2, "09:20", q)
     b2.apply(t("09:20"), {"hm": "09:20", "action": "BUY_PE"}, q)
     assert kite.orders[0]["tag"].startswith("llm")  # its order tags
+
+
+def test_an_open_trade_is_managed_after_the_entry_hour(tmp_path: Path) -> None:
+    b, q = hour_book(tmp_path), Book()
+    frame(b, "10:10", q)
+    b.apply(t("10:10"), {"hm": "10:10", "action": "BUY_CE"}, q)
+    assert frame(b, "10:15", q) is None and b.position is not None  # not sold at 10:15
+    frame(b, "11:30", q)
+    assert b.decision_due(t("11:30"))  # still asked every minute while holding
+    ev = b.apply(t("11:30"), {"hm": "11:30", "action": "EXIT", "reason": "target"}, q)
+    assert ev["event"] == "close" and ev["reason"] == "llm_exit"
+    frame(b, "11:31", q)
+    assert b.decision_due(t("11:31"))  # flat with entries left before 14:30: asked again
+    b2, q2 = hour_book(tmp_path / "late"), Book()
+    frame(b2, "10:05", q2)
+    b2.apply(t("10:05"), {"hm": "10:05", "action": "BUY_CE"}, q2)
+    for hm in ("12:00", "14:59"):
+        assert frame(b2, hm, q2) is None and b2.position is not None
+    ev = frame(b2, "15:05", q2)
+    assert ev["event"] == "close" and ev["reason"] == "square_off"  # the last-resort exit before Zerodha's
+    b3, q3 = hour_book(tmp_path / "stop"), Book()
+    frame(b3, "10:05", q3)
+    b3.apply(t("10:05"), {"hm": "10:05", "action": "BUY_PE"}, q3)
+    q3.px[PE] = 55.0
+    ev = frame(b3, "11:00", q3)
+    assert ev["event"] == "close" and ev["reason"] == "day_loss_stop"  # the day stop still guards it
 
 
 def test_hour_book_extra_trades_only_while_positive(tmp_path: Path) -> None:

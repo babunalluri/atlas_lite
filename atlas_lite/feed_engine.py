@@ -406,8 +406,8 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
         "per-leg stop at +50% · else close 15:14",
     ),
     "llm_buyer": (
-        "09:16–10:10 · every minute an LLM decides: buy 1 lot ATM CE or PE · 2 entries, up to 4 while the day is positive",
-        "LLM exits · −₹2,000 day stop · extra trades keep half the day's best profit · flat 10:15 · live when ticked",
+        "09:16–14:30 · every minute an LLM decides: buy 1 lot ATM CE or PE · 2 entries, up to 4 while the day is positive",
+        "an open trade is managed every minute until the LLM exits · −₹2,000 day stop · profit lock · last exit 15:05",
     ),
     "sensex_expiry_eve_strangle": (
         "SENSEX (Thu expiry) · 09:16, 1 session before expiry · buy 5% wings, sell CE/PE nearest F ± 0.5% · "
@@ -796,15 +796,15 @@ class FeedEngine:
         if paper_llm_buyer_enabled():
             from atlas_lite.day_live_flag import DayLiveFlag
 
-            # 09:15-10:15, one decision a minute: live only on a day the operator ticks "Live LLM buyer" and the
-            # host allows it; paper otherwise.
+            # All day, one decision a minute: live only on a day the operator ticks "Live LLM buyer" and the host
+            # allows it; paper otherwise.
             self._llm_buyer_live = DayLiveFlag(self.data_dir / LLM_BUYER_LIVE_FLAG, LLM_BUYER_LIVE_ENV)
             self._llm_buyer = LlmBuyer(
                 path=self.data_dir / LLM_BUYER_LEDGER, lot_size=self._nifty_option_lot(),
                 order_client=KiteOrderClient(self.credentials_path), live_flag=self._llm_buyer_live,
                 decider=LlmDecider(read_llm_credentials()),
             )
-            self._log.info("llm_buyer book: 09:15-10:15, 1 min (live when ticked, allowed=%s)",
+            self._log.info("llm_buyer book: all day, 1 min (live when ticked, allowed=%s)",
                            self._llm_buyer_live.allowed())
         if paper_long_straddle_tp20_enabled():
             self._paper_long_str_tp20 = PaperLongStraddle(

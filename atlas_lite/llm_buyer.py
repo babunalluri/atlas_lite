@@ -1,7 +1,7 @@
 """LLM option buyer: one lot of the ATM NIFTY call OR put, side and timing chosen by an LLM. Paper by default.
 
-Every minute from 09:16 to 10:14 (new trades until 10:10, everything sold at 10:15; hours to be extended only on
-success) the LLM sees what a discretionary trader would see at that minute (NIFTY
+Every minute from 09:16 the LLM sees what a discretionary trader would see at that minute (new trades until
+14:30; a trade still open is managed every minute until it closes, at the latest 15:05) (NIFTY
 path and range, % change, VIX and its change, ATM IV against today's high/low, IV percentile, PCR, futures OI
 vs day high, ATM call/put prices and the straddle path, days to expiry, its own position and P&L) and answers
 BUY_CE / BUY_PE / WAIT / DONE_FOR_DAY when flat, HOLD / EXIT when holding. It also sees the previous session's
@@ -56,10 +56,11 @@ LEDGER_NAME = "paper_llm_buyer.jsonl"
 LIVE_FLAG_NAME = "llm_buyer_live.json"
 LIVE_ENV = "ATLAS_LITE_LLM_BUYER_LIVE_ALLOWED"
 DEFAULT_LOT_SIZE = 65
-# The opening hour only, one decision a minute (operator's choice, 8 Nov 2026); hours are extended on success.
-FIRST_DECISION, LAST_ENTRY, LAST_DECISION = "09:16", "10:10", "10:14"
-EXIT_AT = "10:15"
-LIVE_ORDERS_UNTIL = "11:00"  # sells after EXIT_AT may retry until then (Zerodha's own MIS square-off is 15:14)
+# All day, one decision a minute (operator's choice, 8 Nov 2026): new trades 09:16-14:30 (a later buy has no time to
+# work); an open trade is managed every minute until it closes, at the latest at EXIT_AT, before Zerodha's own MIS
+# square-off at 15:14. The operator stops it any time by unticking the live box (sells and stops for the day).
+FIRST_DECISION, LAST_ENTRY, LAST_DECISION = "09:16", "14:30", "15:00"
+EXIT_AT, LIVE_ORDERS_UNTIL = "15:05", "15:10"  # Zerodha squares F&O MIS off at 15:14
 DECIDE_EVERY_MIN = 1
 MAX_ENTRIES = 2
 MAX_ENTRIES_IF_POSITIVE = 4  # more entries while today's closed P&L is positive (profit lock applies)
@@ -86,16 +87,17 @@ positions you may take: buy one lot (65) of the at-the-money CALL (if you expect
 PUT (if you expect it to fall). You decide when to buy and which side, whether to skip the day, and when to exit.
 Time decay and falling IV work against an option buyer, so the move must come soon and be big enough.
 Round-trip costs are about Rs 60-80 per option plus roughly 1 point of slippage. You may enter at most twice a day
-(up to four times while today's realised P&L is positive) and everything is closed at {close}. Judge like a careful professional: you are not obliged to trade. You see only
+(up to four times while today's realised P&L is positive). New trades only until {last_entry}; an open trade may
+be held until {close} at the latest. Judge like a careful professional: you are not obliged to trade. You see only
 information available at the current minute.
 Reply with JSON only: {"action": "...", "reason": "<one short sentence>"}
 When flat the action is one of BUY_CE, BUY_PE, WAIT, DONE_FOR_DAY. When holding: HOLD, EXIT."""
 SYSTEM_PROMPT_TEMPLATE = SYSTEM_PROMPT
-SYSTEM_PROMPT = SYSTEM_PROMPT_TEMPLATE.replace("{close}", EXIT_AT)
+SYSTEM_PROMPT = SYSTEM_PROMPT_TEMPLATE.replace("{close}", EXIT_AT).replace("{last_entry}", LAST_ENTRY)
 
 
-def system_prompt(close: str) -> str:
-    return SYSTEM_PROMPT_TEMPLATE.replace("{close}", close)
+def system_prompt(close: str, last_entry: str = LAST_ENTRY) -> str:
+    return SYSTEM_PROMPT_TEMPLATE.replace("{close}", close).replace("{last_entry}", last_entry)
 
 
 def prev_day_ohlc(bars: list[dict[str, Any]], today: str) -> dict[str, float] | None:
@@ -201,7 +203,7 @@ class LlmBuyer:
     path_every_min: int = 5  # NIFTY path sample in the LLM's view
     straddle_every_min: int = 5  # straddle path sample
     tag_prefix: str = TAG_PREFIX
-    name: str = "LLM buyer · 09:15–10:15 (1 min)"
+    name: str = "LLM buyer · every minute"
     max_entries: int = MAX_ENTRIES
     # Entries allowed beyond max_entries while today's closed P&L is positive (the hour book: up to 4 in all). An
     # extra trade is sold, and entries end, once the day's P&L falls to PROFIT_LOCK of its best closed level.
@@ -703,7 +705,8 @@ class LlmBuyer:
             pos["open_pnl"] = round(o) if o is not None else None
         return {
             "ok": True, "mode": "paper", "enabled": True, "book": self.strategy, "name": self.name,
-            "window": f"{self.first_decision}–{self.exit_at} · every {self.decide_every_min} min",
+            "window": f"entries {self.first_decision}–{self.last_entry} · open trade managed to {self.exit_at} "
+                      f"· every {self.decide_every_min} min",
             "live_orders": self.live is not None, "live": self.live_flag.snapshot() if self.live_flag else None,
             "day": self.day, "entries": self.entries, "max_entries": self.max_entries,
             "max_entries_if_positive": self.max_entries_if_positive, "day_realized": round(self.day_realized),
