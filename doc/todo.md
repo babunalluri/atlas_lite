@@ -76,7 +76,7 @@ Checked every trading day. Tick items as done (`[x]`), add new ones with a date.
 - [x] **ai_agent decision:** retired 2 Nov (shadow −₹2,450 over 42 trades, all from morning shorts; side choice never beat random). `ATLAS_LITE_PAPER_AI_AGENT=0`; ledger and model kept.
 
 ### Wed 11 Nov 2026 (first live day for Sonnet 5.5)
-- [ ] **LLM buyer live on Sonnet 5.5 + prompt v2** (decided 9 Nov; needs the commit + deploy on your go first). Replay of 9 Nov: one trade, BUY_PE 24900 09:41 → 09:42, **+₹326** (GPT-4.1 live that day −₹747); skipped the 11:39 false breakout but sat out all three big swings; 0 errors, ~1.7 s an answer. Morning: token script, OpenRouter credit (~$10), Kite funds, tick live yourself.
+- [ ] **LLM buyer live on Sonnet 5.5 + prompt v2** (decided 9 Nov; **deployed 9 Nov 16:22, 1eb647f**, tests 992). Replay of 9 Nov: one trade, BUY_PE 24900 09:41 → 09:42, **+₹326** (GPT-4.1 live that day −₹747); skipped the 11:39 false breakout but sat out all three big swings; 0 errors, ~1.7 s an answer. Morning: token script, OpenRouter credit (~$10), Kite funds, tick live yourself.
 - [ ] After 15:30: review the day's decisions and trades.
 - [ ] **After the Wednesday live day: replay Mon 9 Nov with Opus 5.5** (`anthropic/claude-opus-5.5`, same prompt v2, same inputs). Sonnet 5.5's replay of 9 Nov **took none of the day's three big swings**:
   - 10:45 → 11:38: NIFTY **+200 pts** (a call trade)

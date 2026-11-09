@@ -420,6 +420,7 @@
       display: grid;
       gap: 3px;
     }
+    .watch-group-cards.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .watch-group-cards.cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
     .watch-group-cards.cols-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
     .watch-group-cards.cols-11 { grid-template-columns: repeat(11, minmax(0, 1fr)); }
@@ -1238,6 +1239,21 @@
       border-radius: 6px;
       font-size: 0.75rem;
       margin-bottom: 0;
+    }
+    /* Commodities and the metric cards share one line (they stack on narrow screens). */
+    .sheet-row {
+      display: flex;
+      gap: 6px;
+      align-items: stretch;
+    }
+    .sheet-row > .sheet-groups { flex: 10 1 0; min-width: 0; }
+    .sheet-row-commodities { flex: 3 1 0; min-width: 0; margin-bottom: 0; }
+    .sheet-row-commodities .watch-group { display: flex; flex-direction: column; height: 100%; }
+    .sheet-row-commodities .watch-group-cards { flex: 1; }
+    .sheet-row-commodities .watch-card { display: flex; flex-direction: column; justify-content: center; }
+    @media (max-width: 1100px) {
+      .sheet-row { flex-direction: column; }
+      .sheet-row > .sheet-groups, .sheet-row-commodities { flex: none; }
     }
     .sheet-groups {
       display: grid;
@@ -2332,8 +2348,11 @@
           <div class="sheet-board-body" id="sheetBoardBody">
             <div class="watch-strips" id="indexStrip"></div>
             <div id="warnings"></div>
-            <div class="sheet-groups" id="sheetGroups">
-              <div style="text-align:center;color:var(--muted);padding:12px 8px">Connecting to SSE…</div>
+            <div class="sheet-row">
+              <div class="watch-strips sheet-row-commodities" id="commodityStrip"></div>
+              <div class="sheet-groups" id="sheetGroups">
+                <div style="text-align:center;color:var(--muted);padding:12px 8px">Connecting to SSE…</div>
+              </div>
             </div>
           </div>
         </section>
@@ -8440,6 +8459,8 @@
       const items = indices && indices.length ? indices : [];
       if (!items.length) {
         strip.innerHTML = "";
+        const commodities = document.getElementById("commodityStrip");
+        if (commodities) commodities.innerHTML = "";
         return;
       }
       const byGroup = { index: [], fut: [], commodity: [], stock: [] };
@@ -8449,9 +8470,10 @@
       }
       strip.innerHTML =
         `<div class="watch-top">${watchGroupHtml("Indices", 5, byGroup.index)}${watchGroupHtml("Futures", 4, byGroup.fut)}</div>` +
-        watchGroupHtml("Stocks", 11, byGroup.stock) +
-        // Own row, cards sized like the stock cards (the top row has no room for three more).
-        watchGroupHtml("Commodities · MCX", 11, byGroup.commodity);
+        watchGroupHtml("Stocks", 11, byGroup.stock);
+      // Commodities sit on the metric cards' line (left of ADX), cards sized like the stock cards.
+      const commodities = document.getElementById("commodityStrip");
+      if (commodities) commodities.innerHTML = watchGroupHtml("Commodities · MCX", 3, byGroup.commodity);
     }
 
     function metricHead(row) {
