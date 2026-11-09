@@ -46,6 +46,9 @@ def test_watchlist_order_and_missing_names() -> None:
         "M&M",
         "BAJAJ FINANCE",
         "SUNPHARMA",
+        "CRUDE OIL",
+        "GOLD",
+        "SILVER",
     ]
     assert HEADER_WATCHLIST[3]["symbol"] == "BSE:BANKEX"
     assert HEADER_WATCHLIST[9]["symbol"] == "NSE:RELIANCE"
@@ -113,7 +116,8 @@ def test_build_indices_includes_unresolved_fut_card() -> None:
         "ohlc": {"close": 1390.0},
     }
     cards = eng._build_indices()
-    assert len(cards) == 20
+    assert len(cards) == 23
+    assert next(c for c in cards if c["id"] == "gold")["group"] == "commodity"  # card shown even before a price
     nifty = next(c for c in cards if c["id"] == "nifty")
     assert nifty["group"] == "index"
     assert nifty["ltp"] == 23650.25
@@ -137,3 +141,24 @@ def test_vix_change_baseline_never_uses_a_zero_open() -> None:
     real = {"last_price": 14.6, "ohlc": {"open": 14.1}}
     assert session_open_baseline(base, real, 14.6) == 14.1  # Kite's open wins once known
     assert session_open_baseline(14.1, {"last_price": 14.7, "ohlc": {}}, 14.7) == 14.1
+
+
+def test_commodities_resolve_from_mcx_only() -> None:
+    from datetime import date
+
+    from atlas_lite.instruments import resolve_header_watch
+    from atlas_lite.specs import HEADER_WATCHLIST
+
+    mcx = ("instrument_token,exchange_token,tradingsymbol,name,last_price,expiry,strike,tick_size,lot_size,instrument_type,segment,exchange\n"
+           "1,1,CRUDEOIL26NOVFUT,CRUDEOIL,0,2026-11-19,0,1,100,FUT,MCX-FUT,MCX\n"
+           "2,2,CRUDEOIL26DECFUT,CRUDEOIL,0,2026-12-17,0,1,100,FUT,MCX-FUT,MCX\n"
+           "3,3,GOLD26DECFUT,GOLD,0,2026-12-04,0,1,1,FUT,MCX-FUT,MCX\n"
+           "4,4,GOLDM26NOVFUT,GOLDM,0,2026-11-05,0,1,1,FUT,MCX-FUT,MCX\n"
+           "5,5,SILVER26DECFUT,SILVER,0,2026-12-04,0,1,1,FUT,MCX-FUT,MCX\n")
+    rows = {r["id"]: r for r in resolve_header_watch(HEADER_WATCHLIST, [mcx], today=date(2026, 11, 9))}
+    assert rows["crudeoil"]["symbol"] == "MCX:CRUDEOIL26NOVFUT"  # nearest month
+    assert rows["gold"]["symbol"] == "MCX:GOLD26DECFUT"  # GOLD, not GOLDM
+    assert rows["silver"]["symbol"] == "MCX:SILVER26DECFUT"
+    assert {rows[k]["group"] for k in ("crudeoil", "gold", "silver")} == {"commodity"}
+    no_mcx = {r["id"]: r for r in resolve_header_watch(HEADER_WATCHLIST, [], today=date(2026, 11, 9))}
+    assert "symbol" not in no_mcx["gold"]  # without MCX the card just shows no price

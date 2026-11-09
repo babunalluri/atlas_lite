@@ -59,7 +59,7 @@ DEFAULT_LOT_SIZE = 65
 # All day, one decision a minute (operator's choice, 8 Nov 2026): new trades 09:16-14:30 (a later buy has no time to
 # work); an open trade is managed every minute until it closes, at the latest at EXIT_AT, before Zerodha's own MIS
 # square-off at 15:14. The operator stops it any time by unticking the live box (sells and stops for the day).
-FIRST_DECISION, LAST_ENTRY, LAST_DECISION = "09:16", "14:30", "15:00"
+FIRST_DECISION, LAST_ENTRY, LAST_DECISION = "09:16", "14:30", "15:04"  # an open trade is asked until the 15:05 exit
 EXIT_AT, LIVE_ORDERS_UNTIL = "15:05", "15:10"  # Zerodha squares F&O MIS off at 15:14
 DECIDE_EVERY_MIN = 1
 MAX_ENTRIES = 2
@@ -72,11 +72,12 @@ EST_CHARGES = 80.0  # a buy and a sell of one ATM lot, for the running day-loss 
 SLIP_PTS = 1.0
 FUNDS_HEADROOM = 1.10
 TAG_PREFIX = "llm"
-# The trader: GPT-4.1, the model of the replays (operator's choice for live, 8 Nov 2026). The OpenAI fallback is
-# the same model, so a failover never changes the trader. (Claude Sonnet 5.5 was tried the same day: at default
-# reasoning effort it could return no answer; never replayed.)
-MODEL_OPENROUTER = "openai/gpt-4.1"
-MODEL_OPENAI: str | None = "gpt-4.1"
+# The trader: Claude Sonnet 5.5 via OpenRouter, reasoning effort low (operator's choice for live from 11 Nov 2026,
+# after GPT-4.1's first live day: -Rs 747, one false-breakout trade, passive through the day's swings). No OpenAI
+# fallback: OpenAI can't serve this model and a different model is a different trader; if OpenRouter fails the book
+# waits / holds (and sells after MAX_ERRORS_HOLDING failures while holding).
+MODEL_OPENROUTER = "anthropic/claude-sonnet-5.5"
+MODEL_OPENAI: str | None = None
 LLM_TIMEOUT_S = 25.0
 LLM_MAX_TOKENS = 600
 LIVE_EVENTS = frozenset({"order_intent", "order_sent", "order_send_error", "order_cancel_sent", "order_final",
@@ -86,10 +87,18 @@ SYSTEM_PROMPT = """You are an experienced discretionary NIFTY options trader who
 positions you may take: buy one lot (65) of the at-the-money CALL (if you expect NIFTY to rise) or the at-the-money
 PUT (if you expect it to fall). You decide when to buy and which side, whether to skip the day, and when to exit.
 Time decay and falling IV work against an option buyer, so the move must come soon and be big enough.
-Round-trip costs are about Rs 60-80 per option plus roughly 1 point of slippage. You may enter at most twice a day
-(up to four times while today's realised P&L is positive). New trades only until {last_entry}; an open trade may
-be held until {close} at the latest. Judge like a careful professional: you are not obliged to trade. You see only
+Round-trip costs are about Rs 60-80 per option plus roughly 1 point of slippage. entries_left_today shows how many
+new trades you may still take. New trades only until {last_entry}; an open trade may be held until {close} at the
+latest. Judge each setup on its own merits, like a careful professional: you are not obliged to trade. You see only
 information available at the current minute.
+How to read the data: nifty_last_15_1m_bars are the latest one-minute candles ("HH:MM open/high/low/close").
+opening_range is the 09:15-09:29 high and low. atm_straddle_now (ATM call + put) is roughly the move the market
+prices until expiry; on expiry day that is the move expected for the rest of the day. move_5m_pts and move_15m_pts
+are NIFTY's change over the last 5 and 15 minutes.
+Before buying, check that the move is happening now (recent candles), that price is still at or beyond the level it
+is breaking rather than already reversing, and that the move still to come can beat time decay. Common traps:
+buying a breakout after it has already reversed, chasing a spike after a big move, and expiry-day chop with falling
+IV. When holding, exit once the reason for the trade is gone.
 Reply with JSON only: {"action": "...", "reason": "<one short sentence>"}
 When flat the action is one of BUY_CE, BUY_PE, WAIT, DONE_FOR_DAY. When holding: HOLD, EXIT."""
 SYSTEM_PROMPT_TEMPLATE = SYSTEM_PROMPT
@@ -130,7 +139,7 @@ def _f(x: Any) -> float | None:
 
 
 class LlmDecider:
-    """One chat call: OpenRouter first, then the OpenAI key (same model) if MODEL_OPENAI is set. Never raises."""
+    """One chat call: OpenRouter, then the OpenAI key only if MODEL_OPENAI is set (None now). Never raises."""
 
     def __init__(self, credentials: Any, *, post: Callable[..., Any] | None = None, prompt: str = "") -> None:
         self.credentials = credentials
@@ -378,6 +387,56 @@ class LlmBuyer:
             return self.live is None or self.live.phase == "holding"
         return not self.stopped and self._can_enter() and hm <= self.last_entry and self._feed_fresh(now)
 
+    def _entries_left(self) -> int:
+        cap = self.max_entries_if_positive if self.day_realized > 0 else self.max_entries
+        return max(0, cap - self.entries) if not self.stopped else 0
+
+    @staticmethod
+    def _today_bars(f: dict[str, Any]) -> list[dict[str, Any]]:
+        return [b for b in (f.get("bars_today") or []) if isinstance(b, dict) and b.get("c") is not None]
+
+    @staticmethod
+    def _day_range(bars: list[dict[str, Any]], spots: list[float]) -> tuple[float, float]:
+        """The day's high and low from the candles' highs/lows and the per-minute spots, so every field agrees."""
+        return (max([float(b["h"]) for b in bars if b.get("h") is not None] + spots),
+                min([float(b["l"]) for b in bars if b.get("l") is not None] + spots))
+
+    @staticmethod
+    def _price_action(f: dict[str, Any], spots: list[float], now: datetime) -> dict[str, Any]:
+        """Chart-reader inputs from today's 1-minute bars (feed "bars_today": [{"t", o/h/l/c[, v]}]): the last 15
+        candles, the opening range, VWAP when volume exists, recent moves, distance to the day's extremes, the ATM
+        straddle and minutes to the close. Fields that can't be computed are left out."""
+        out: dict[str, Any] = {}
+        bars = LlmBuyer._today_bars(f)
+        if bars:
+            out["nifty_last_15_1m_bars"] = [
+                f"{str(b['t'])[11:16]} {float(b['o']):.0f}/{float(b['h']):.0f}/{float(b['l']):.0f}/{float(b['c']):.0f}"
+                for b in bars[-15:]]
+            orb = [b for b in bars if "09:15" <= str(b["t"])[11:16] <= "09:29"]
+            if orb:
+                out["opening_range"] = {"high": round(max(float(b["h"]) for b in orb), 1),
+                                        "low": round(min(float(b["l"]) for b in orb), 1)}
+            vol = sum(float(b.get("v") or 0) for b in bars)
+            if vol > 0:
+                vwap = sum((float(b["h"]) + float(b["l"]) + float(b["c"])) / 3 * float(b.get("v") or 0) for b in bars) / vol
+                out["vwap"] = round(vwap, 1)
+                if spots:
+                    out["nifty_vs_vwap_pts"] = round(spots[-1] - vwap, 1)
+            closes = [float(b["c"]) for b in bars]
+            if len(closes) > 5:
+                out["move_5m_pts"] = round(closes[-1] - closes[-6], 1)
+            if len(closes) > 15:
+                out["move_15m_pts"] = round(closes[-1] - closes[-16], 1)
+        if spots:
+            hi, lo = LlmBuyer._day_range(bars, spots)
+            out["pts_below_day_high"] = round(hi - spots[-1], 1)
+            out["pts_above_day_low"] = round(spots[-1] - lo, 1)
+        ce, pe = _f(f.get("ce")), _f(f.get("pe"))
+        if ce and pe:
+            out["atm_straddle_now"] = round(ce + pe, 1)
+        out["minutes_to_close"] = max(0, 15 * 60 + 30 - (now.hour * 60 + now.minute))
+        return out
+
     def _can_enter(self) -> bool:
         if self.entries < self.max_entries:
             return True
@@ -401,6 +460,7 @@ class LlmBuyer:
         f, hm = self.last_feed, now.strftime("%H:%M")
         mins = sorted(m for m in self.history if m <= hm)
         spots = [self.history[m]["spot"] for m in mins]
+        day_hi, day_lo = self._day_range(self._today_bars(f), spots) if spots else (None, None)
         exp = str(f.get("expiry") or "")[:10]
         try:
             dte = (date.fromisoformat(exp) - now.date()).days if exp else None
@@ -412,8 +472,8 @@ class LlmBuyer:
             "nifty_change_vs_prev_close_pct": f.get("index_nifty_chg"),
             **({f"prev_day_{k}": round(v, 1) for k, v in pd.items() if k != "date"}
                if isinstance(pd := f.get("prev_day"), dict) else {}),
-            "day_open": round(spots[0], 1) if spots else None, "day_high": round(max(spots), 1) if spots else None,
-            "day_low": round(min(spots), 1) if spots else None,
+            "day_open": round(spots[0], 1) if spots else None,
+            "day_high": round(day_hi, 1) if spots else None, "day_low": round(day_lo, 1) if spots else None,
             "nifty_path": [f"{m} {self.history[m]['spot']:.0f}" for m in mins if int(m[3:]) % self.path_every_min == 0 or m == mins[-1]][-14:],
             "vix": f.get("vix"), "vix_change_since_open_pts": f.get("vix_chg"),
             "atm_iv": f.get("iv"), "atm_iv_day_high": f.get("iv_day_high"), "atm_iv_day_low": f.get("iv_day_low"),
@@ -421,7 +481,8 @@ class LlmBuyer:
             "atm_strike": f.get("atm"), "atm_ce": f.get("ce"), "atm_pe": f.get("pe"),
             "atm_straddle_path_since_open": [f"{m} {self.history[m]['straddle']:.1f}" for m in mins
                                              if "straddle" in self.history[m] and (int(m[3:]) % self.straddle_every_min == 0 or m == mins[-1])][-14:],
-            "entries_used_today": self.entries, "realised_pnl_today_rs": round(self.day_realized),
+            "entries_left_today": self._entries_left(),
+            **self._price_action(f, spots, now),
         }
         if self.position is not None or self.live is not None:
             if self.live is not None:

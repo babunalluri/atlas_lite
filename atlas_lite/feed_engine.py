@@ -258,6 +258,7 @@ NFO_INSTRUMENTS_FILE = "nfo_instruments.csv"
 NSE_INSTRUMENTS_FILE = "nse_instruments.csv"
 BSE_INSTRUMENTS_FILE = "bse_instruments.csv"
 BFO_INSTRUMENTS_FILE = "bfo_instruments.csv"
+MCX_INSTRUMENTS_FILE = "mcx_instruments.csv"  # display-only commodity futures in the header strip
 NFO_INSTRUMENTS_META = "instruments.meta.json"
 MIN_BARS_FOR_ADX = 29
 # Overwrite tick-built OHLC with Kite REST for ~1 session+ of 1m bars.
@@ -1093,6 +1094,7 @@ class FeedEngine:
         nse_csv = await load_one("NSE", NSE_INSTRUMENTS_FILE)
         bse_csv = await load_one("BSE", BSE_INSTRUMENTS_FILE)
         bfo_csv = await load_one("BFO", BFO_INSTRUMENTS_FILE, required=False)
+        mcx_csv = await load_one("MCX", MCX_INSTRUMENTS_FILE, required=False)
         if dirty:
             meta["day"] = today
             meta["files"] = files_meta
@@ -1102,9 +1104,11 @@ class FeedEngine:
         self._instrument_csvs = [nfo_csv, nse_csv, bse_csv]
         if bfo_csv:
             self._instrument_csvs.append(bfo_csv)
-        self._token_index = build_symbol_token_index(self._instrument_csvs)
+        # MCX is kept out of the option/IV code paths: only the header strip's futures resolve and stream from it.
+        watch_csvs = self._instrument_csvs + ([mcx_csv] if mcx_csv else [])
+        self._token_index = build_symbol_token_index(watch_csvs)
         self._instruments_day = today
-        self._header_watch = resolve_header_watch(HEADER_WATCHLIST, self._instrument_csvs)
+        self._header_watch = resolve_header_watch(HEADER_WATCHLIST, watch_csvs)
         
         # Initialize NIFTY notebook
         nifty_cfg = get_notebook("nifty")
@@ -3157,7 +3161,7 @@ class FeedEngine:
                 await asyncio.sleep(1.0)
 
     async def _llm_buyer_loop(self, book: LlmBuyer) -> None:
-        """One LLM buyer book: its frame every second (stops, live orders); an LLM decision every few minutes,
+        """One LLM buyer book: its frame every second (stops, live orders); an LLM decision every minute,
         asked in the background so a slow reply never delays the day-loss stop."""
         interval = max(1.0, STREAM_INTERVAL_MS / 1000.0)
         pending: asyncio.Task | None = None
@@ -3182,6 +3186,10 @@ class FeedEngine:
                         now.strftime("%Y-%m-%d"), hm, lambda: list(nb.bar_builder.bars) if nb and nb.bar_builder else [])
                     if prev_day:
                         feed = {**feed, "prev_day": prev_day}
+                    day_prefix = now.strftime("%Y-%m-%d")
+                    if nb and nb.bar_builder:  # today's 1-minute bars: candles, opening range, VWAP for the LLM
+                        feed = {**feed, "bars_today": [b for b in nb.bar_builder.bars[-400:]
+                                                       if str(b.get("t") or "").startswith(day_prefix)]}
                 # In a worker thread: a live order call must not block the engine.
                 await asyncio.to_thread(book.on_frame, now=now, feed=feed, book=self.book)
                 if pending is not None and pending.done():
@@ -3193,7 +3201,7 @@ class FeedEngine:
                 if pending is None and book.decider is not None and book.decision_due(now):
                     pending_hm, pending_at = hm, time.monotonic()
                     pending_state = book.state(now, self.book)
-                    book.decided.add(hm)  # one question per 5-minute slot, however long the reply takes
+                    book.decided.add(hm)  # one question per minute slot, however long the reply takes (a hung one: next free minute)
                     pending = asyncio.create_task(asyncio.to_thread(book.decider.decide, pending_state))
                 if book.live_flag is not None and self._llm_buyer_live is not None and hm >= "15:30":
                     if self._llm_buyer_live.turn_off_if_on(source="day_end"):

@@ -288,7 +288,7 @@ def resolve_header_watch(
         row = dict(item)
         if not row.get("symbol") and row.get("fut_name"):
             for csv_text in csv_texts:
-                found = nearest_fut_symbol(csv_text, row["fut_name"], today=today)
+                found = nearest_fut_symbol(csv_text, row["fut_name"], today=today, exchange=row.get("fut_exchange"))
                 if found:
                     row["symbol"] = found
                     break

@@ -77,9 +77,14 @@ def test_decider_parses_and_fails_over_to_openai() -> None:
             return Resp(402, "")
         return Resp(200, 'Sure: {"action": "buy_pe", "reason": "new lows", "factors": ["new day low", "PCR 0.82"]}')
 
-    out = LlmDecider(Creds(), post=post).decide({"time": "10:40"})  # OpenRouter 402 -> OpenAI, same model
-    assert out["action"] == "BUY_PE" and out["provider"] == "openai" and out["model"] == "gpt-4.1"
-    assert [m for _, m in calls] == ["openai/gpt-4.1", "gpt-4.1"] and out["inputs"] == {"time": "10:40"}
+    out = LlmDecider(Creds(), post=post).decide({"time": "10:40"})  # OpenRouter 402, no OpenAI fallback
+    assert out["action"] == "" and out["error"].startswith("openrouter:") and out["inputs"] == {"time": "10:40"}
+    assert [m for _, m in calls] == ["anthropic/claude-sonnet-5.5"]
+    bodies = []
+    ok = LlmDecider(Creds(), post=lambda url, **kw: (bodies.append(kw["json"]),
+                    Resp(200, '{"action": "buy_pe", "reason": "new lows"}'))[1]).decide({"time": "10:40"})
+    assert ok["action"] == "BUY_PE" and ok["provider"] == "openrouter" and ok["model"] == "anthropic/claude-sonnet-5.5"
+    assert bodies[0]["reasoning"] == {"effort": "low"} and bodies[0]["max_tokens"] == 600  # answers, never empty
     assert LlmDecider(None).decide({})["error"] == "no_llm_credentials"
 
 
@@ -531,8 +536,10 @@ def test_hour_book_schedule_prompt_and_tags(tmp_path: Path) -> None:
     assert b.decision_due(t("14:30"))
     frame(b, "14:31", q)
     assert not b.decision_due(t("14:31"))  # flat: no new trades after 14:30
+    frame(b, "15:03", q)
+    assert not b.decision_due(t("15:03"))  # flat after 14:30: never asked, even before 15:05
     assert "New trades only until 14:30" in M.SYSTEM_PROMPT and "held until 15:05" in M.SYSTEM_PROMPT
-    assert "up to four times while today's realised P&L is positive" in M.SYSTEM_PROMPT
+    assert "entries_left_today" in M.SYSTEM_PROMPT and "realised" not in M.SYSTEM_PROMPT
     kite = FakeKite()
     b2 = hour_book(tmp_path / "live", order_client=kite, live_flag=Flag())
     frame(b2, "09:20", q)
@@ -554,8 +561,10 @@ def test_an_open_trade_is_managed_after_the_entry_hour(tmp_path: Path) -> None:
     b2, q2 = hour_book(tmp_path / "late"), Book()
     frame(b2, "10:05", q2)
     b2.apply(t("10:05"), {"hm": "10:05", "action": "BUY_CE"}, q2)
-    for hm in ("12:00", "14:59"):
+    for hm in ("12:00", "14:59", "15:04"):
         assert frame(b2, hm, q2) is None and b2.position is not None
+    assert b2.decision_due(t("15:04"))  # holding: asked up to the minute before the 15:05 exit
+    b2.decided.add("15:04")
     ev = frame(b2, "15:05", q2)
     assert ev["event"] == "close" and ev["reason"] == "square_off"  # the last-resort exit before Zerodha's
     b3, q3 = hour_book(tmp_path / "stop"), Book()
@@ -655,3 +664,27 @@ def test_no_buy_without_its_decision_line_but_exit_still_goes(tmp_path: Path) ->
     b._append = lambda e: None if e.get("event") == "decision" else real(e)
     ev = b.apply(t("10:10"), {"hm": "10:10", "action": "EXIT"}, q)
     assert ev["event"] == "close" and b.position is None  # getting out is never blocked
+
+
+def test_prompt_v2_view_has_chart_inputs_and_no_day_pnl(tmp_path: Path) -> None:
+    b, q = hour_book(tmp_path), Book()
+    bars = [{"t": f"2026-11-11 09:{m:02d}", "o": 24000 + m, "h": 24005 + m, "l": 23995 + m, "c": 24002 + m, "v": 1000}
+            for m in range(15, 45)]
+    b.on_frame(now=t("09:44"), feed={**feed(spot=24046.0), "bars_today": bars}, book=q)
+    st = b.state(t("09:44"), q)
+    assert "realised_pnl_today_rs" not in st and st["entries_left_today"] == 2
+    assert len(st["nifty_last_15_1m_bars"]) == 15 and st["nifty_last_15_1m_bars"][-1] == "09:44 24044/24049/24039/24046"
+    assert st["opening_range"] == {"high": 24034.0, "low": 24010.0}  # 09:15-09:29
+    assert st["move_5m_pts"] == 5.0 and st["move_15m_pts"] == 15.0
+    assert "vwap" in st and "nifty_vs_vwap_pts" in st
+    assert st["atm_straddle_now"] == 190.0 and st["minutes_to_close"] == 346
+    assert st["pts_below_day_high"] == 3.0 and st["pts_above_day_low"] == 36.0  # candle highs/lows count, not only spots
+    assert st["day_high"] == 24049.0 and st["day_low"] == 24010.0  # the same range in every field
+    b.day_realized = -747.0
+    assert "realised_pnl_today_rs" not in b.state(t("09:44"), q)  # a loss never reaches the LLM's view
+    b.day_realized, b.entries = 500.0, 2
+    assert b.state(t("09:44"), q)["entries_left_today"] == 2  # winning day: up to 4 in all
+    b2 = hour_book(tmp_path / "nobars")
+    b2.on_frame(now=t("09:44"), feed=feed(), book=q)
+    st2 = b2.state(t("09:44"), q)
+    assert "nifty_last_15_1m_bars" not in st2 and "opening_range" not in st2  # left out when bars are missing

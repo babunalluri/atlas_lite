@@ -7778,7 +7778,8 @@
     let chainPollTimer = null;
     let chainScrollPending = false;
     let chainExtrasOn = false;
-    let chainSelectedStrike = null;
+    // Strikes highlighted in the chain: click a row to add it, click it again to remove it (several at once).
+    const chainSelectedStrikes = new Set();
 
     function chainColCount() {
       return 7;
@@ -8135,10 +8136,8 @@
     }
 
     function applyChainRowSelection() {
-      const strike = chainSelectedStrike;
       document.querySelectorAll("#chainRows tr[data-strike], #chainExtrasRows tr[data-strike]").forEach((tr) => {
-        const rowStrike = Number(tr.getAttribute("data-strike"));
-        tr.classList.toggle("chain-sel", strike != null && rowStrike === strike);
+        tr.classList.toggle("chain-sel", chainSelectedStrikes.has(Number(tr.getAttribute("data-strike"))));
       });
     }
 
@@ -8150,7 +8149,8 @@
         if (!row || row.classList.contains("chain-total-row")) return;
         const px = Number(row.getAttribute("data-strike"));
         if (!Number.isFinite(px)) return;
-        chainSelectedStrike = chainSelectedStrike === px ? null : px;
+        if (chainSelectedStrikes.has(px)) chainSelectedStrikes.delete(px);
+        else chainSelectedStrikes.add(px);
         applyChainRowSelection();
         const cell = event.target.closest("td.strike-col");
         if (!cell) return;
@@ -8442,14 +8442,16 @@
         strip.innerHTML = "";
         return;
       }
-      const byGroup = { index: [], fut: [], stock: [] };
+      const byGroup = { index: [], fut: [], commodity: [], stock: [] };
       for (const item of items) {
         const g = item.group && byGroup[item.group] ? item.group : "index";
         byGroup[g].push(item);
       }
       strip.innerHTML =
         `<div class="watch-top">${watchGroupHtml("Indices", 5, byGroup.index)}${watchGroupHtml("Futures", 4, byGroup.fut)}</div>` +
-        watchGroupHtml("Stocks", 11, byGroup.stock);
+        watchGroupHtml("Stocks", 11, byGroup.stock) +
+        // Own row, cards sized like the stock cards (the top row has no room for three more).
+        watchGroupHtml("Commodities · MCX", 11, byGroup.commodity);
     }
 
     function metricHead(row) {
@@ -8820,7 +8822,8 @@
         if (/MANUAL CHECK|manual_needed/i.test(text)) return ["alert", "Check"];
         if (/\boff \(|locked off|retired/i.test(text)) return ["off", "Off"];
         if (/\bLIVE\b/.test(text)) return ["live", "Live"];
-        if (/day loss stop|stopped|done for today/i.test(text)) return ["stopped", "Stopped"];
+        // A whole book stopped for the day (not one leg's "(stopped)" inside an open position).
+        if (/day loss stop|stopped: |done for today|profit lock/i.test(text)) return ["stopped", "Stopped"];
         if (/\bFLAT\b/.test(text)) return ["flat", "Flat"];
         if (/pending/i.test(text)) return ["open", "Pending"];
         if (/open PnL|\bOPEN\b|\bqty\b|\sx\d+\s/.test(text)) return ["open", "Open"];

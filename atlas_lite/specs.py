@@ -192,6 +192,10 @@ HEADER_WATCHLIST: tuple[dict[str, str], ...] = (
     {"id": "mm", "label": "M&M", "symbol": "NSE:M&M", "group": "stock"},
     {"id": "bajfinance", "label": "BAJAJ FINANCE", "symbol": "NSE:BAJFINANCE", "group": "stock"},
     {"id": "sunpharma", "label": "SUNPHARMA", "symbol": "NSE:SUNPHARMA", "group": "stock"},
+    # MCX near-month futures (display only): crude ₹/bbl, gold ₹/10 g, silver ₹/kg.
+    {"id": "crudeoil", "label": "CRUDE OIL", "fut_name": "CRUDEOIL", "fut_exchange": "MCX", "group": "commodity"},
+    {"id": "gold", "label": "GOLD", "fut_name": "GOLD", "fut_exchange": "MCX", "group": "commodity"},
+    {"id": "silver", "label": "SILVER", "fut_name": "SILVER", "fut_exchange": "MCX", "group": "commodity"},
 )
 
 HEADER_INDICES: tuple[dict[str, str], ...] = tuple(
