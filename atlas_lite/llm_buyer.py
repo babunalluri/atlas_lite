@@ -34,6 +34,7 @@ Ledger: paper_llm_buyer.jsonl (every decision with its reason, opens, closes, st
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import os
 from dataclasses import dataclass, field
@@ -72,13 +73,14 @@ EST_CHARGES = 80.0  # a buy and a sell of one ATM lot, for the running day-loss 
 SLIP_PTS = 1.0
 FUNDS_HEADROOM = 1.10
 TAG_PREFIX = "llm"
-# The trader: Claude Sonnet 5.5 via OpenRouter, reasoning effort low (operator's choice for live from 11 Nov 2026,
-# after GPT-4.1's first live day: -Rs 747, one false-breakout trade, passive through the day's swings). No OpenAI
-# fallback: OpenAI can't serve this model and a different model is a different trader; if OpenRouter fails the book
-# waits / holds (and sells after MAX_ERRORS_HOLDING failures while holding).
+# The trader: Claude Sonnet 5.5 via OpenRouter, reasoning effort low (operator's choice for live from 11 Nov 2026). The
+# 9 Nov replays (Opus +Rs 1,853, Sonnet +Rs 326) had a one-minute look-ahead in their fills; at the real ask/bid both
+# lost (Opus -Rs 2,835, Sonnet -Rs 769; GPT-4.1 live -Rs 747). No OpenAI fallback: OpenAI can't serve this model and a
+# different model is a different trader; if OpenRouter fails the book waits / holds (and sells after
+# MAX_ERRORS_HOLDING failures while holding).
 MODEL_OPENROUTER = "anthropic/claude-sonnet-5.5"
 MODEL_OPENAI: str | None = None
-LLM_TIMEOUT_S = 25.0
+LLM_TIMEOUT_S = 25.0  # a whole call, start to answer (OpenRouter's keep-alive padding defeats httpx's per-read timeout)
 LLM_MAX_TOKENS = 600
 LIVE_EVENTS = frozenset({"order_intent", "order_sent", "order_send_error", "order_cancel_sent", "order_final",
                          "live_phase", "manual_needed", "live_mark"})
@@ -155,6 +157,18 @@ class LlmDecider:
             out.append(("openai", c.openai_api_key, c.openai_base_url or "https://api.openai.com/v1", MODEL_OPENAI))
         return out
 
+    def _post_within(self, url: str, **kw: Any) -> Any:
+        """The POST with a hard deadline on the whole call: a slow provider trickling keep-alive bytes never trips
+        httpx's per-read timeout (one 9 Nov replay call took 686 s). On the deadline the call is left to finish in
+        its thread and a TimeoutError is raised (the book waits / holds and counts an error)."""
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            return pool.submit(self._post, url, **kw).result(timeout=LLM_TIMEOUT_S)
+        except concurrent.futures.TimeoutError as exc:
+            raise TimeoutError(f"no answer within {LLM_TIMEOUT_S:.0f}s") from exc
+        finally:
+            pool.shutdown(wait=False)
+
     def decide(self, state: dict[str, Any]) -> dict[str, Any]:
         errors = []
         for name, key, base, model in self.targets():
@@ -165,10 +179,12 @@ class LlmDecider:
                 # Claude models always reason on OpenRouter; at default effort the thinking could use the whole
                 # token budget and return no answer. Low effort answers directly.
                 body["reasoning"] = {"effort": "low"}
+            if name == "openrouter":
+                body["provider"] = {"sort": "latency"}  # fastest host of the same model; OpenRouter still falls back
             try:
-                r = self._post(f"{base.rstrip('/')}/chat/completions", json=body, timeout=LLM_TIMEOUT_S,
-                               headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
-                                        "HTTP-Referer": "https://atlas-lite.local", "X-Title": "Atlas Lite LLM buyer"})
+                r = self._post_within(f"{base.rstrip('/')}/chat/completions", json=body, timeout=LLM_TIMEOUT_S,
+                                      headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
+                                               "HTTP-Referer": "https://atlas-lite.local", "X-Title": "Atlas Lite LLM buyer"})
                 r.raise_for_status()
                 txt = str(r.json()["choices"][0]["message"]["content"] or "")
                 out = json.loads(txt[txt.find("{"): txt.rfind("}") + 1])

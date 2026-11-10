@@ -85,6 +85,7 @@ def test_decider_parses_and_fails_over_to_openai() -> None:
                     Resp(200, '{"action": "buy_pe", "reason": "new lows"}'))[1]).decide({"time": "10:40"})
     assert ok["action"] == "BUY_PE" and ok["provider"] == "openrouter" and ok["model"] == "anthropic/claude-sonnet-5.5"
     assert bodies[0]["reasoning"] == {"effort": "low"} and bodies[0]["max_tokens"] == 600  # answers, never empty
+    assert bodies[0]["provider"] == {"sort": "latency"}  # the fastest host of the same model
     assert LlmDecider(None).decide({})["error"] == "no_llm_credentials"
 
 
@@ -688,3 +689,24 @@ def test_prompt_v2_view_has_chart_inputs_and_no_day_pnl(tmp_path: Path) -> None:
     b2.on_frame(now=t("09:44"), feed=feed(), book=q)
     st2 = b2.state(t("09:44"), q)
     assert "nifty_last_15_1m_bars" not in st2 and "opening_range" not in st2  # left out when bars are missing
+
+
+def test_a_call_that_never_finishes_is_cut_at_the_deadline(monkeypatch) -> None:
+    import threading
+    import time
+
+    class Creds:
+        api_key, base_url = "k1", "https://openrouter.ai/api/v1"
+        openai_api_key, openai_base_url = "", ""
+
+    release = threading.Event()
+
+    def slow_post(url, **kw):  # a provider trickling keep-alive bytes: httpx's per-read timeout never fires
+        release.wait(5)
+        raise RuntimeError("late")
+
+    monkeypatch.setattr(M, "LLM_TIMEOUT_S", 0.2)
+    t0 = time.monotonic()
+    out = LlmDecider(Creds(), post=slow_post).decide({"time": "10:40"})
+    release.set()
+    assert time.monotonic() - t0 < 2 and out["action"] == "" and "TimeoutError" in out["error"]
