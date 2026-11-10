@@ -53,7 +53,7 @@ def ledger(b: LlmBuyer) -> list[dict]:
     return [json.loads(x) for x in b.path.read_text().splitlines() if x.strip()]
 
 
-def test_decider_parses_and_fails_over_to_openai() -> None:
+def test_decider_parses_and_has_no_openai_fallback() -> None:
     class Creds:
         api_key, base_url = "k1", "https://openrouter.ai/api/v1"
         openai_api_key, openai_base_url = "k2", "https://api.openai.com/v1"
@@ -691,22 +691,67 @@ def test_prompt_v2_view_has_chart_inputs_and_no_day_pnl(tmp_path: Path) -> None:
     assert "nifty_last_15_1m_bars" not in st2 and "opening_range" not in st2  # left out when bars are missing
 
 
-def test_a_call_that_never_finishes_is_cut_at_the_deadline(monkeypatch) -> None:
+def test_a_call_that_never_finishes_is_cut_at_the_deadline() -> None:
+    import time
+
+    import httpx
+
+    class Padding(httpx.SyncByteStream):  # a provider keeping the call alive with padding: no read ever times out
+        closed = False
+
+        def __iter__(self):
+            while not self.closed:
+                time.sleep(0.02)
+                yield b" "
+
+        def close(self):
+            Padding.closed = True
+
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, stream=Padding()))
+    t0 = time.monotonic()
+    try:
+        M.post_with_deadline("https://openrouter.ai/api/v1/chat/completions", json={}, timeout=0.3, headers={},
+                             transport=transport)
+        raise AssertionError("no timeout")
+    except TimeoutError:
+        pass
+    assert time.monotonic() - t0 < 2 and Padding.closed  # cut at the deadline and the connection closed
+    ok = httpx.MockTransport(lambda request: httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]}))
+    r = M.post_with_deadline("https://x/chat", json={}, timeout=5, headers={}, transport=ok)
+    assert r.status_code == 200 and r.json()["choices"][0]["message"]["content"] == "{}"
+
+
+def test_sparse_padding_is_cut_within_the_total_budget() -> None:
+    """A real socket: headers, then one padding byte every 0.5 s. With a 1 s budget the 0.4 s silence limit ends it,
+    so the call never runs past the budget (only checking the clock after each byte would allow ~budget + gap)."""
+    import socket
     import threading
     import time
 
-    class Creds:
-        api_key, base_url = "k1", "https://openrouter.ai/api/v1"
-        openai_api_key, openai_base_url = "", ""
+    import httpx
 
-    release = threading.Event()
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
 
-    def slow_post(url, **kw):  # a provider trickling keep-alive bytes: httpx's per-read timeout never fires
-        release.wait(5)
-        raise RuntimeError("late")
+    def serve():
+        conn, _ = srv.accept()
+        conn.recv(65536)
+        conn.sendall(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+        try:
+            for _ in range(20):
+                conn.sendall(b"1\r\n \r\n")
+                time.sleep(0.5)
+        except OSError:
+            pass
+        conn.close()
 
-    monkeypatch.setattr(M, "LLM_TIMEOUT_S", 0.2)
+    threading.Thread(target=serve, daemon=True).start()
     t0 = time.monotonic()
-    out = LlmDecider(Creds(), post=slow_post).decide({"time": "10:40"})
-    release.set()
-    assert time.monotonic() - t0 < 2 and out["action"] == "" and "TimeoutError" in out["error"]
+    try:
+        M.post_with_deadline(f"http://127.0.0.1:{srv.getsockname()[1]}/x", json={}, timeout=1.0, headers={})
+        raise AssertionError("no timeout")
+    except (TimeoutError, httpx.TimeoutException):
+        pass
+    assert time.monotonic() - t0 < 1.2  # within the budget (+ scheduling slack), not budget + gap
+    srv.close()

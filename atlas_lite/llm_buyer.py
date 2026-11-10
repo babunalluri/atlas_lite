@@ -34,9 +34,9 @@ Ledger: paper_llm_buyer.jsonl (every decision with its reason, opens, closes, st
 
 from __future__ import annotations
 
-import concurrent.futures
 import json
 import os
+import time
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -140,12 +140,31 @@ def _f(x: Any) -> float | None:
         return None
 
 
+def post_with_deadline(url: str, *, json: dict[str, Any], timeout: float, headers: dict[str, str],
+                       transport: httpx.BaseTransport | None = None) -> httpx.Response:
+    """POST that never takes longer than `timeout` in total. httpx's timeout is per read, and OpenRouter keeps a slow
+    call alive with padding bytes, so a call could run for minutes (686 s in a 9 Nov replay). The budget is split: any
+    silence longer than `gap` (40%) ends the call, and once `timeout - gap` has passed the next chunk ends it. So the
+    worst case is (timeout - gap) + gap = timeout, and the connection is closed: nothing is left running. OpenRouter
+    sends its headers in 1-3 s (measured 10 Nov), so the first wait is short too."""
+    gap = timeout * 0.4
+    deadline = time.monotonic() + timeout - gap
+    with httpx.Client(timeout=httpx.Timeout(gap), transport=transport) as client:
+        with client.stream("POST", url, json=json, headers=headers) as r:
+            body = bytearray()
+            for chunk in r.iter_bytes():
+                body += chunk
+                if time.monotonic() > deadline:
+                    raise TimeoutError(f"no answer within {timeout:.0f}s")
+            return httpx.Response(r.status_code, content=bytes(body), request=r.request)
+
+
 class LlmDecider:
     """One chat call: OpenRouter, then the OpenAI key only if MODEL_OPENAI is set (None now). Never raises."""
 
     def __init__(self, credentials: Any, *, post: Callable[..., Any] | None = None, prompt: str = "") -> None:
         self.credentials = credentials
-        self._post = post or httpx.post
+        self._post = post or post_with_deadline
         self.prompt = prompt or SYSTEM_PROMPT
 
     def targets(self) -> list[tuple[str, str, str, str]]:
@@ -156,18 +175,6 @@ class LlmDecider:
         if MODEL_OPENAI and c is not None and getattr(c, "openai_api_key", ""):
             out.append(("openai", c.openai_api_key, c.openai_base_url or "https://api.openai.com/v1", MODEL_OPENAI))
         return out
-
-    def _post_within(self, url: str, **kw: Any) -> Any:
-        """The POST with a hard deadline on the whole call: a slow provider trickling keep-alive bytes never trips
-        httpx's per-read timeout (one 9 Nov replay call took 686 s). On the deadline the call is left to finish in
-        its thread and a TimeoutError is raised (the book waits / holds and counts an error)."""
-        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        try:
-            return pool.submit(self._post, url, **kw).result(timeout=LLM_TIMEOUT_S)
-        except concurrent.futures.TimeoutError as exc:
-            raise TimeoutError(f"no answer within {LLM_TIMEOUT_S:.0f}s") from exc
-        finally:
-            pool.shutdown(wait=False)
 
     def decide(self, state: dict[str, Any]) -> dict[str, Any]:
         errors = []
@@ -182,9 +189,9 @@ class LlmDecider:
             if name == "openrouter":
                 body["provider"] = {"sort": "latency"}  # fastest host of the same model; OpenRouter still falls back
             try:
-                r = self._post_within(f"{base.rstrip('/')}/chat/completions", json=body, timeout=LLM_TIMEOUT_S,
-                                      headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
-                                               "HTTP-Referer": "https://atlas-lite.local", "X-Title": "Atlas Lite LLM buyer"})
+                r = self._post(f"{base.rstrip('/')}/chat/completions", json=body, timeout=LLM_TIMEOUT_S,
+                               headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
+                                        "HTTP-Referer": "https://atlas-lite.local", "X-Title": "Atlas Lite LLM buyer"})
                 r.raise_for_status()
                 txt = str(r.json()["choices"][0]["message"]["content"] or "")
                 out = json.loads(txt[txt.find("{"): txt.rfind("}") + 1])

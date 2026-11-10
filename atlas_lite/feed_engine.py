@@ -33,7 +33,8 @@ from atlas_lite.llm_buyer import (
     paper_llm_buyer_enabled,
 )
 
-LLM_BUYER_HUNG_S = 90.0  # an LLM question older than this is abandoned (provider timeouts are 25 s each)
+LLM_BUYER_HUNG_S = 90.0  # last resort: the call itself ends by its 25 s deadline (llm_buyer.post_with_deadline);
+# past this the answer is ignored and the next minute asks again (a worker thread can't be cancelled, only ignored)
 from atlas_lite.paper_agent import (
     STRATEGY as AGENT_STRATEGY,
     DEFAULT_LOT_SIZE as AGENT_LOT,
