@@ -25,6 +25,7 @@ from atlas_lite.agent_policy import ADX_RANGE, ADX_TREND, apply_book_policy
 from atlas_lite.agent_advisor import AgentAdvisor, agent_enabled
 from atlas_lite.kite_orders import KiteOrderClient
 from atlas_lite.llm_buyer import (
+    DAY_LOSS_LIMIT as LLM_BUYER_DAY_LOSS,
     LEDGER_NAME as LLM_BUYER_LEDGER,
     LIVE_ENV as LLM_BUYER_LIVE_ENV,
     LIVE_FLAG_NAME as LLM_BUYER_LIVE_FLAG,
@@ -409,7 +410,8 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
     ),
     "llm_buyer": (
         "09:16–14:30 · every minute an LLM decides: buy 1 lot ATM CE or PE · 2 entries, up to 4 while the day is positive",
-        "an open trade is managed every minute until the LLM exits · −₹2,000 day stop · profit lock · last exit 15:05",
+        f"an open trade is managed every minute until the LLM exits · −₹{LLM_BUYER_DAY_LOSS:,.0f} day stop · profit lock · "
+        "last exit 15:05",
     ),
     "sensex_expiry_eve_strangle": (
         "SENSEX (Thu expiry) · 09:16, 1 session before expiry · buy 5% wings, sell CE/PE nearest F ± 0.5% · "

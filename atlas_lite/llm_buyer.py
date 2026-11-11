@@ -66,7 +66,7 @@ DECIDE_EVERY_MIN = 1
 MAX_ENTRIES = 2
 MAX_ENTRIES_IF_POSITIVE = 4  # more entries while today's closed P&L is positive (profit lock applies)
 MAX_ERRORS_HOLDING = 5  # LLM errors in a row while holding -> sell (~5 minutes without a working LLM at 1/min)
-DAY_LOSS_LIMIT = 2_000.0
+DAY_LOSS_LIMIT = 1_500.0  # was 2,000 until 11 Nov 2026 (operator's call with prompt v3)
 PROFIT_LOCK = 0.5  # extra trades on a winning day: keep at least half of the day's best closed P&L
 MONTH_LOSS_LIMIT = 10_000.0
 EST_CHARGES = 80.0  # a buy and a sell of one ATM lot, for the running day-loss check
@@ -85,7 +85,7 @@ LLM_MAX_TOKENS = 600
 LIVE_EVENTS = frozenset({"order_intent", "order_sent", "order_send_error", "order_cancel_sent", "order_final",
                          "live_phase", "manual_needed", "live_mark"})
 
-SYSTEM_PROMPT = """You are an experienced discretionary NIFTY options trader who BUYS options to trade direction. The only
+SYSTEM_PROMPT_V2 = """You are an experienced discretionary NIFTY options trader who BUYS options to trade direction. The only
 positions you may take: buy one lot (65) of the at-the-money CALL (if you expect NIFTY to rise) or the at-the-money
 PUT (if you expect it to fall). You decide when to buy and which side, whether to skip the day, and when to exit.
 Time decay and falling IV work against an option buyer, so the move must come soon and be big enough.
@@ -103,8 +103,41 @@ buying a breakout after it has already reversed, chasing a spike after a big mov
 IV. When holding, exit once the reason for the trade is gone.
 Reply with JSON only: {"action": "...", "reason": "<one short sentence>"}
 When flat the action is one of BUY_CE, BUY_PE, WAIT, DONE_FOR_DAY. When holding: HOLD, EXIT."""
-SYSTEM_PROMPT_TEMPLATE = SYSTEM_PROMPT
-SYSTEM_PROMPT = SYSTEM_PROMPT_TEMPLATE.replace("{close}", EXIT_AT).replace("{last_entry}", LAST_ENTRY)
+# v3 (written 11 Nov 2026): v2 waited for "a clean break" before a level broke and called it "chasing" after,
+# so it never had an entry window (11 Nov: watched a 230-pt fall from 11:40 to 13:53), and it exited at the first flat
+# minute. v3 defines the entry window and exits on structure. Generic rules only, one round threshold fixed before any
+# result; not re-tuned on 9 and 11 Nov (where the problem was found). Live from 12 Nov at the operator's call.
+SYSTEM_PROMPT_V3 = """You are an experienced discretionary NIFTY options trader who BUYS options to trade direction. The only
+positions you may take: buy one lot (65) of the at-the-money CALL (if you expect NIFTY to rise) or the at-the-money
+PUT (if you expect it to fall). You decide when to buy and which side, whether to skip the day, and when to exit.
+Round-trip costs are about Rs 60-80 per option plus roughly 1 point of slippage. entries_left_today shows how many
+new trades you may still take. New trades only until {last_entry}; an open trade may be held until {close} at the
+latest. You see only information available at the current minute.
+How to read the data: nifty_last_15_1m_bars are the latest one-minute candles ("HH:MM open/high/low/close").
+opening_range is the 09:15-09:29 high and low. move_5m_pts and move_15m_pts are NIFTY's change over the last 5 and
+15 minutes. atm_straddle_now and IV describe how expensive options are; they are context, not a reason on their own
+to stay out (they are always high enough days before expiry).
+Entries: a setup is a one-minute candle closing beyond a key level (the opening-range high or low, the day's high or
+low, or VWAP) with move_5m_pts pointing the same way: buy the CALL on an upside break, the PUT on a downside break.
+The first pullback after such a break that holds the broken level is also a setup. A break is "chasing" only when
+price is already more than 0.25% of NIFTY beyond the broken level; then wait for a pullback instead of skipping the
+move. Most breaks fail and cost a little, while the ones that run pay several times that, so take clean breaks and
+cut failed ones; do not skip a break because an earlier one failed. Inside a range with no break, WAIT.
+Exits: hold while price stays on the breakout side of the level; a flat or slightly red minute is not a reason to
+exit. EXIT when a one-minute candle closes back through the broken level, or when the move has clearly reversed.
+After a failed break you may trade the next clean break in either direction.
+Reply with JSON only: {"action": "...", "reason": "<one short sentence>"}
+When flat the action is one of BUY_CE, BUY_PE, WAIT, DONE_FOR_DAY. When holding: HOLD, EXIT."""
+PROMPTS = {"v2": SYSTEM_PROMPT_V2, "v3": SYSTEM_PROMPT_V3}
+PROMPT_VERSION = "v3"  # live from 12 Nov 2026 at the operator's call, without a replay test (v2 kept for comparison)
+
+
+def render_prompt(version: str) -> str:
+    return PROMPTS[version].replace("{close}", EXIT_AT).replace("{last_entry}", LAST_ENTRY)
+
+
+SYSTEM_PROMPT_TEMPLATE = PROMPTS[PROMPT_VERSION]
+SYSTEM_PROMPT = render_prompt(PROMPT_VERSION)
 
 
 def system_prompt(close: str, last_entry: str = LAST_ENTRY) -> str:
@@ -112,17 +145,22 @@ def system_prompt(close: str, last_entry: str = LAST_ENTRY) -> str:
 
 
 def prev_day_ohlc(bars: list[dict[str, Any]], today: str) -> dict[str, float] | None:
-    """The last session before ``today`` from 1-minute bars ({"t": "YYYY-MM-DD HH:MM", o/h/l/c}): its open, high,
-    low and close. None if the bars hold no earlier session."""
-    days = sorted({str(b.get("t") or "")[:10] for b in bars if str(b.get("t") or "")[:10] < today})
-    if not days:
-        return None
-    day = [b for b in bars if str(b.get("t") or "")[:10] == days[-1]]
-    try:
-        return {"date": days[-1], "open": float(day[0]["o"]), "high": max(float(b["h"]) for b in day),
-                "low": min(float(b["l"]) for b in day), "close": float(day[-1]["c"])}
-    except (KeyError, TypeError, ValueError):
-        return None
+    """The last trading session before ``today`` from 1-minute bars ({"t": "YYYY-MM-DD HH:MM", o/h/l/c}): its open,
+    high, low and close. Holidays and weekends are skipped, and so is a flat session (high == low): the engine keeps
+    building bars from the last price on a holiday (10 Nov 2026 gave open = high = low = close). None if no session."""
+    days = sorted({str(b.get("t") or "")[:10] for b in bars if str(b.get("t") or "")[:10] < today}, reverse=True)
+    for d in days:
+        try:
+            if not _is_nse_trading_day(date.fromisoformat(d)):
+                continue
+            day = [b for b in bars if str(b.get("t") or "")[:10] == d]
+            hi, lo = max(float(b["h"]) for b in day), min(float(b["l"]) for b in day)
+            if hi <= lo:
+                continue
+            return {"date": d, "open": float(day[0]["o"]), "high": hi, "low": lo, "close": float(day[-1]["c"])}
+        except (KeyError, TypeError, ValueError):
+            continue
+    return None
 
 
 def paper_llm_buyer_enabled() -> bool:

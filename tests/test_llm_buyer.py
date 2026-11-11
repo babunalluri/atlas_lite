@@ -109,7 +109,8 @@ def test_day_loss_stop_is_code_enforced_and_ends_entries(tmp_path: Path) -> None
     b, q = book_at(tmp_path), Book()
     frame(b, "10:00", q)
     b.apply(t("10:00"), {"hm": "10:00", "action": "BUY_PE", "reason": "down"}, q)
-    q.px[PE] = 70.0  # bid 69.5 vs fill 90.5: -21 x 65 = -1,365 -> above the stop
+    assert M.DAY_LOSS_LIMIT == 1_500.0
+    q.px[PE] = 70.0  # bid 69.5 vs fill 90.5: -21 x 65 = -1,365, less charges ~-1,445 -> above the -1,500 stop
     assert frame(b, "10:01", q) is None and b.position is not None
     q.px[PE] = 60.0  # -31 x 65 = -2,015 less charges -> stop
     ev = frame(b, "10:02", q)
@@ -228,7 +229,7 @@ def test_live_day_loss_stop_sells_through_the_live_layer(tmp_path: Path, monkeyp
     b.apply(t("10:00"), {"hm": "10:00", "action": "BUY_CE"}, q)
     kite.fill_all(100.0)
     frame(b, "10:01", q)
-    q.px[CE] = 68.0  # bid 67.5: -32.5 x 65 = -2,113 -> beyond the -2,000 budget
+    q.px[CE] = 68.0  # bid 67.5: -32.5 x 65 = -2,113 -> beyond the -1,500 budget
     frame(b, "10:02", q)
     frame(b, "10:03", q)
     assert [o["transaction_type"] for o in kite.orders] == ["BUY", "SELL"]
@@ -294,7 +295,7 @@ def test_box_never_ticked_today_does_not_stop_paper(tmp_path: Path) -> None:
 def test_no_second_entry_without_day_loss_budget_and_live_stop_never_zero(tmp_path: Path, monkeypatch) -> None:
     b, q = book_at(tmp_path), Book()
     frame(b, "10:00", q)
-    b.day_realized = -1_950.0  # a first trade the LLM closed near the limit
+    b.day_realized = -1_450.0  # a first trade the LLM closed near the -1,500 limit
     assert b.apply(t("10:05"), {"hm": "10:05", "action": "BUY_CE"}, q) is None and b.stopped == "day_loss"
     monkeypatch.setattr("atlas_lite.live_straddle.STOP_CONFIRM_S", 0.0)
     kite = FakeKite()
@@ -755,3 +756,22 @@ def test_sparse_padding_is_cut_within_the_total_budget() -> None:
         pass
     assert time.monotonic() - t0 < 1.2  # within the budget (+ scheduling slack), not budget + gap
     srv.close()
+
+
+def test_live_prompt_is_v3_and_keeps_the_book_contract() -> None:
+    assert M.PROMPT_VERSION == "v3" and M.SYSTEM_PROMPT == M.render_prompt("v3")
+    assert M.LlmDecider(None).prompt == M.SYSTEM_PROMPT  # the live decider sends v3
+    v3 = M.render_prompt("v3")
+    assert "New trades only until 14:30" in v3 and "held until 15:05" in v3 and "{" not in v3.split("Reply with")[0]
+    assert "entries_left_today" in v3 and "realised" not in v3
+    assert "BUY_CE, BUY_PE, WAIT, DONE_FOR_DAY" in v3 and "HOLD, EXIT" in v3
+
+
+def test_previous_session_skips_a_holiday_with_flat_bars() -> None:
+    bars = [{"t": "2026-11-09 09:15", "o": 25000, "h": 25100, "l": 24900, "c": 25050},
+            {"t": "2026-11-09 15:29", "o": 25050, "h": 25060, "l": 25040, "c": 25044.65}]
+    bars += [{"t": f"2026-11-10 {h:02d}:00", "o": 25044.65, "h": 25044.65, "l": 25044.65, "c": 25044.65} for h in (9, 12, 15)]
+    got = M.prev_day_ohlc(bars, "2026-11-11")  # 10 Nov 2026 was a holiday: its flat bars are not "yesterday"
+    assert got == {"date": "2026-11-09", "open": 25000.0, "high": 25100.0, "low": 24900.0, "close": 25044.65}
+    flat = [{"t": "2026-11-12 10:00", "o": 1, "h": 1, "l": 1, "c": 1}]  # a flat trading day is skipped as well
+    assert M.prev_day_ohlc(bars + flat, "2026-11-13")["date"] == "2026-11-09"

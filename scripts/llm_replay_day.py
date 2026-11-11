@@ -4,7 +4,7 @@ decision a minute, 09:16-15:04, with the timing and fills a live day would have.
 What the model sees at decision minute D (as live does at D:00):
   - the dashboard feed from the end of minute D-1 (the last snapshot before D:00);
   - today's CLOSED 1-minute NIFTY candles (< D), built from the recorded spot (no volume, so no VWAP, same as live);
-  - the previous session's open/high/low/close (previous recorded day with >= 300 minutes).
+  - the previous session's open/high/low/close (previous trading day recorded with >= 300 minutes, not flat).
 How its orders fill:
   - at D:00 + the LLM's own answer time + ORDER_LATENCY_S, buys at the recorded best ASK, sells at the best BID
     (depth tape: ATM +-1 strike, several quotes a second);
@@ -34,13 +34,14 @@ import sys
 import tempfile
 import time
 from collections import Counter
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from atlas_lite import llm_buyer  # noqa: E402
+from atlas_lite.agent_gates import _is_nse_trading_day  # noqa: E402
 from atlas_lite.config import read_llm_credentials  # noqa: E402
 from atlas_lite.llm_buyer import LlmBuyer, LlmDecider  # noqa: E402
 
@@ -113,7 +114,7 @@ def build_day(day: str) -> dict:
     for d in (d for d in days if d < day):
         spots = [float(v["spot"]) for m, v in sorted(_feed_minutes(d).items())
                  if v.get("spot") and "09:15" <= m <= "15:29"]
-        if len(spots) >= MIN_FULL_DAY:
+        if len(spots) >= MIN_FULL_DAY and max(spots) > min(spots) and _is_nse_trading_day(date.fromisoformat(d)):
             prev_day = {"date": d, "open": spots[0], "high": max(spots), "low": min(spots), "close": spots[-1]}
             break
     return {"feed": feed, "bars": [bars[m] for m in sorted(bars)], "px": px, "prev_day": prev_day}
@@ -186,6 +187,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("day", help="YYYY-MM-DD")
     ap.add_argument("--model", help="OpenRouter model for this replay only (default: the live model in llm_buyer.py)")
+    ap.add_argument("--prompt", choices=sorted(llm_buyer.PROMPTS), help="prompt version for this replay only (default: live)")
     ap.add_argument("--reprice", help="decision log (jsonl) to refill without LLM calls")
     ap.add_argument("--rebuild", action="store_true", help="rebuild the cached day files from the recordings")
     args = ap.parse_args()
@@ -214,9 +216,10 @@ def main() -> None:
             o = json.loads(line)
             old[_minute(o["hm"], 1)] = o
     q = ReplayQuotes(D["px"], feed, depth)
-    tag = "reprice" if old else llm_buyer.MODEL_OPENROUTER.replace("/", "_")
+    tag = "reprice" if old else llm_buyer.MODEL_OPENROUTER.replace("/", "_") + f"_{args.prompt or llm_buyer.PROMPT_VERSION}"
     log = OUT / f"replay_{args.day}_{tag}_{datetime.now():%H%M%S}.jsonl"
-    b = LlmBuyer(path=Path(tempfile.mkdtemp()) / "r.jsonl", decider=LlmDecider(read_llm_credentials()))
+    prompt = llm_buyer.render_prompt(args.prompt) if args.prompt else ""
+    b = LlmBuyer(path=Path(tempfile.mkdtemp()) / "r.jsonl", decider=LlmDecider(read_llm_credentials(), prompt=prompt))
     acts, events, errs, lat = Counter(), [], 0, []
     with log.open("w") as out_fh:
         for hm in [f"{h:02d}:{m:02d}" for h in range(9, 16) for m in range(60)]:
