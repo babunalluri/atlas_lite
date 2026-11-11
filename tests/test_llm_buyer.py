@@ -534,13 +534,14 @@ def test_hour_book_schedule_prompt_and_tags(tmp_path: Path) -> None:
     assert not b.decision_due(t("09:15")) and b.decision_due(t("09:16"))
     frame(b, "09:16", q)
     assert b.decision_due(t("09:17"))  # every minute
-    frame(b, "14:30", q)
-    assert b.decision_due(t("14:30"))
-    frame(b, "14:31", q)
-    assert not b.decision_due(t("14:31"))  # flat: no new trades after 14:30
+    frame(b, "15:00", q)
+    assert b.decision_due(t("15:00"))
+    frame(b, "15:01", q)
+    assert not b.decision_due(t("15:01"))  # flat: no new trades after 15:00
     frame(b, "15:03", q)
-    assert not b.decision_due(t("15:03"))  # flat after 14:30: never asked, even before 15:05
-    assert "New trades only until 14:30" in M.SYSTEM_PROMPT and "held until 15:05" in M.SYSTEM_PROMPT
+    assert not b.decision_due(t("15:03"))  # flat after 15:00: never asked, even before 15:08
+    assert "New trades only until 15:00" in M.SYSTEM_PROMPT and "held until 15:08" in M.SYSTEM_PROMPT
+    assert (M.LAST_ENTRY, M.LAST_DECISION, M.EXIT_AT, M.LIVE_ORDERS_UNTIL) == ("15:00", "15:07", "15:08", "15:12")
     assert "entries_left_today" in M.SYSTEM_PROMPT and "realised" not in M.SYSTEM_PROMPT
     kite = FakeKite()
     b2 = hour_book(tmp_path / "live", order_client=kite, live_flag=Flag())
@@ -559,15 +560,15 @@ def test_an_open_trade_is_managed_after_the_entry_hour(tmp_path: Path) -> None:
     ev = b.apply(t("11:30"), {"hm": "11:30", "action": "EXIT", "reason": "target"}, q)
     assert ev["event"] == "close" and ev["reason"] == "llm_exit"
     frame(b, "11:31", q)
-    assert b.decision_due(t("11:31"))  # flat with entries left before 14:30: asked again
+    assert b.decision_due(t("11:31"))  # flat with entries left before 15:00: asked again
     b2, q2 = hour_book(tmp_path / "late"), Book()
     frame(b2, "10:05", q2)
     b2.apply(t("10:05"), {"hm": "10:05", "action": "BUY_CE"}, q2)
-    for hm in ("12:00", "14:59", "15:04"):
+    for hm in ("12:00", "14:59", "15:07"):
         assert frame(b2, hm, q2) is None and b2.position is not None
-    assert b2.decision_due(t("15:04"))  # holding: asked up to the minute before the 15:05 exit
-    b2.decided.add("15:04")
-    ev = frame(b2, "15:05", q2)
+    assert b2.decision_due(t("15:07"))  # holding: asked up to the minute before the 15:08 exit
+    b2.decided.add("15:07")
+    ev = frame(b2, "15:08", q2)
     assert ev["event"] == "close" and ev["reason"] == "square_off"  # the last-resort exit before Zerodha's
     b3, q3 = hour_book(tmp_path / "stop"), Book()
     frame(b3, "10:05", q3)
@@ -679,7 +680,8 @@ def test_prompt_v2_view_has_chart_inputs_and_no_day_pnl(tmp_path: Path) -> None:
     assert st["opening_range"] == {"high": 24034.0, "low": 24010.0}  # 09:15-09:29
     assert st["move_5m_pts"] == 5.0 and st["move_15m_pts"] == 15.0
     assert "vwap" in st and "nifty_vs_vwap_pts" in st
-    assert st["atm_straddle_now"] == 190.0 and st["minutes_to_close"] == 346
+    assert st["atm_straddle_now"] == 190.0 and st["minutes_to_forced_exit"] == 15 * 60 + 8 - (9 * 60 + 44)
+    assert st["high_before_last_candle"] == 24048.0 and st["low_before_last_candle"] == 24010.0  # the 09:44 candle excluded
     assert st["pts_below_day_high"] == 3.0 and st["pts_above_day_low"] == 36.0  # candle highs/lows count, not only spots
     assert st["day_high"] == 24049.0 and st["day_low"] == 24010.0  # the same range in every field
     b.day_realized = -747.0
@@ -762,7 +764,7 @@ def test_live_prompt_is_v3_and_keeps_the_book_contract() -> None:
     assert M.PROMPT_VERSION == "v3" and M.SYSTEM_PROMPT == M.render_prompt("v3")
     assert M.LlmDecider(None).prompt == M.SYSTEM_PROMPT  # the live decider sends v3
     v3 = M.render_prompt("v3")
-    assert "New trades only until 14:30" in v3 and "held until 15:05" in v3 and "{" not in v3.split("Reply with")[0]
+    assert "New trades only until 15:00" in v3 and "held until 15:08" in v3 and "{" not in v3.split("Reply with")[0]
     assert "entries_left_today" in v3 and "realised" not in v3
     assert "BUY_CE, BUY_PE, WAIT, DONE_FOR_DAY" in v3 and "HOLD, EXIT" in v3
 
@@ -775,3 +777,12 @@ def test_previous_session_skips_a_holiday_with_flat_bars() -> None:
     assert got == {"date": "2026-11-09", "open": 25000.0, "high": 25100.0, "low": 24900.0, "close": 25044.65}
     flat = [{"t": "2026-11-12 10:00", "o": 1, "h": 1, "l": 1, "c": 1}]  # a flat trading day is skipped as well
     assert M.prev_day_ohlc(bars + flat, "2026-11-13")["date"] == "2026-11-09"
+
+
+def test_holding_view_names_the_level_the_trade_broke(tmp_path: Path) -> None:
+    b, q = book_at(tmp_path), Book()
+    frame(b, "10:40", q)
+    b.apply(t("10:40"), {"hm": "10:40", "action": "BUY_CE", "reason": "closed above the opening-range high 24030"}, q)
+    pos = b.state(t("10:45"), q)["position"]
+    assert pos["entry_reason"] == "closed above the opening-range high 24030"  # what the exit rule refers to
+    assert "position.entry_reason" in M.render_prompt("v3") and "minutes_to_forced_exit" in M.render_prompt("v3")

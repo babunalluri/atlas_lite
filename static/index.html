@@ -7218,7 +7218,7 @@
       const stale = !!(live && live.stale);
       label.textContent = !allowed
         ? "Live LLM buyer · locked on this host (ATLAS_LITE_LLM_BUYER_LIVE_ALLOWED=0)"
-        : on ? "ON for today: real orders · new trades 09:16–14:30 · 1 lot · −₹1,500 day stop"
+        : on ? "ON for today: real orders · new trades 09:16–15:00 · 1 lot · −₹1,500 day stop"
           : stale ? `Live LLM buyer · was ticked on ${live.day || "an earlier day"} — not active today, tick again to trade live`
             : "Live LLM buyer (today only)";
     }
@@ -7234,9 +7234,9 @@
       const box = ev.target;
       const want = !!box.checked;
       if (want && !window.confirm(
-        "Turn ON live orders for today's LLM buyer?\n\nFrom 09:16 to 14:30 an LLM decides every minute whether to buy 1 lot " +
+        "Turn ON live orders for today's LLM buyer?\n\nFrom 09:16 to 15:00 an LLM decides every minute whether to buy 1 lot " +
         "of the ATM NIFTY call or put with real money (MIS). An open trade is then managed every minute until the LLM exits it " +
-        "(15:05 at the latest). 2 trades, up to 4 while the day is positive (extra trades keep half the day's best profit). " +
+        "(15:08 at the latest). 2 trades, up to 4 while the day is positive (extra trades keep half the day's best profit). " +
         "The code sells and stops at −₹1,500. Good for today only." +
         "\n\nUntick it any time to sell an open live position at once and stop the book for today.",
       )) {
@@ -7245,7 +7245,7 @@
       }
       if (!want && !window.confirm(
         "Turn OFF the LLM buyer for today?\n\nAny open live position is sold at market now, and the book takes no more trades today. " +
-        "After 15:10 no order can be sent: Zerodha squares MIS positions off itself at 15:14.",
+        "After 15:12 no order can be sent: Zerodha squares MIS positions off itself at 15:14.",
       )) {
         box.checked = true;
         return;

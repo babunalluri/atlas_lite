@@ -1,7 +1,7 @@
 """LLM option buyer: one lot of the ATM NIFTY call OR put, side and timing chosen by an LLM. Paper by default.
 
 Every minute from 09:16 the LLM sees what a discretionary trader would see at that minute (new trades until
-14:30; a trade still open is managed every minute until it closes, at the latest 15:05) (NIFTY
+15:00; a trade still open is managed every minute until it closes, at the latest 15:08) (NIFTY
 path and range, % change, VIX and its change, ATM IV against today's high/low, IV percentile, PCR, futures OI
 vs day high, ATM call/put prices and the straddle path, days to expiry, its own position and P&L) and answers
 BUY_CE / BUY_PE / WAIT / DONE_FOR_DAY when flat, HOLD / EXIT when holding. It also sees the previous session's
@@ -57,11 +57,12 @@ LEDGER_NAME = "paper_llm_buyer.jsonl"
 LIVE_FLAG_NAME = "llm_buyer_live.json"
 LIVE_ENV = "ATLAS_LITE_LLM_BUYER_LIVE_ALLOWED"
 DEFAULT_LOT_SIZE = 65
-# All day, one decision a minute (operator's choice, 8 Nov 2026): new trades 09:16-14:30 (a later buy has no time to
-# work); an open trade is managed every minute until it closes, at the latest at EXIT_AT, before Zerodha's own MIS
+# All day, one decision a minute (operator's choice, 8 Nov 2026): new trades 09:16-15:00 (14:30 until 11 Nov 2026;
+# moved at the operator's call after 11 Nov's 14:44-15:08 fall came after the cutoff); an open trade is managed every
+# minute until it closes, at the latest at EXIT_AT, with sell retries until LIVE_ORDERS_UNTIL, before Zerodha's own MIS
 # square-off at 15:14. The operator stops it any time by unticking the live box (sells and stops for the day).
-FIRST_DECISION, LAST_ENTRY, LAST_DECISION = "09:16", "14:30", "15:04"  # an open trade is asked until the 15:05 exit
-EXIT_AT, LIVE_ORDERS_UNTIL = "15:05", "15:10"  # Zerodha squares F&O MIS off at 15:14
+FIRST_DECISION, LAST_ENTRY, LAST_DECISION = "09:16", "15:00", "15:07"  # an open trade is asked until the 15:08 exit
+EXIT_AT, LIVE_ORDERS_UNTIL = "15:08", "15:12"  # Zerodha squares F&O MIS off at 15:14
 DECIDE_EVERY_MIN = 1
 MAX_ENTRIES = 2
 MAX_ENTRIES_IF_POSITIVE = 4  # more entries while today's closed P&L is positive (profit lock applies)
@@ -117,14 +118,16 @@ How to read the data: nifty_last_15_1m_bars are the latest one-minute candles ("
 opening_range is the 09:15-09:29 high and low. move_5m_pts and move_15m_pts are NIFTY's change over the last 5 and
 15 minutes. atm_straddle_now and IV describe how expensive options are; they are context, not a reason on their own
 to stay out (they are always high enough days before expiry).
-Entries: a setup is a one-minute candle closing beyond a key level (the opening-range high or low, the day's high or
-low, or VWAP) with move_5m_pts pointing the same way: buy the CALL on an upside break, the PUT on a downside break.
+minutes_to_forced_exit is how long a new trade could still run before the code sells it.
+Entries: a setup is a one-minute candle closing beyond a key level (the opening-range high or low, VWAP, or the day's
+high or low before that candle: high_before_last_candle / low_before_last_candle) with move_5m_pts pointing the same way: buy the CALL on an upside break, the PUT on a downside break.
 The first pullback after such a break that holds the broken level is also a setup. A break is "chasing" only when
 price is already more than 0.25% of NIFTY beyond the broken level; then wait for a pullback instead of skipping the
 move. Most breaks fail and cost a little, while the ones that run pay several times that, so take clean breaks and
 cut failed ones; do not skip a break because an earlier one failed. Inside a range with no break, WAIT.
-Exits: hold while price stays on the breakout side of the level; a flat or slightly red minute is not a reason to
-exit. EXIT when a one-minute candle closes back through the broken level, or when the move has clearly reversed.
+Exits: the level you traded is named in position.entry_reason. Hold while price stays on the breakout side of it; a
+flat or slightly red minute is not a reason to exit. EXIT when a one-minute candle closes back through that level, or
+when the move has clearly reversed.
 After a failed break you may trade the next clean break in either direction.
 Reply with JSON only: {"action": "...", "reason": "<one short sentence>"}
 When flat the action is one of BUY_CE, BUY_PE, WAIT, DONE_FOR_DAY. When holding: HOLD, EXIT."""
@@ -488,6 +491,9 @@ class LlmBuyer:
                 out["move_5m_pts"] = round(closes[-1] - closes[-6], 1)
             if len(closes) > 15:
                 out["move_15m_pts"] = round(closes[-1] - closes[-16], 1)
+            if len(bars) > 1:  # the levels the last candle may have broken (day_high/low already include it)
+                out["high_before_last_candle"] = round(max(float(b["h"]) for b in bars[:-1]), 1)
+                out["low_before_last_candle"] = round(min(float(b["l"]) for b in bars[:-1]), 1)
         if spots:
             hi, lo = LlmBuyer._day_range(bars, spots)
             out["pts_below_day_high"] = round(hi - spots[-1], 1)
@@ -495,7 +501,8 @@ class LlmBuyer:
         ce, pe = _f(f.get("ce")), _f(f.get("pe"))
         if ce and pe:
             out["atm_straddle_now"] = round(ce + pe, 1)
-        out["minutes_to_close"] = max(0, 15 * 60 + 30 - (now.hour * 60 + now.minute))
+        exit_m = int(EXIT_AT[:2]) * 60 + int(EXIT_AT[3:])
+        out["minutes_to_forced_exit"] = max(0, exit_m - (now.hour * 60 + now.minute))  # how long a trade can still run
         return out
 
     def _can_enter(self) -> bool:
@@ -554,9 +561,11 @@ class LlmBuyer:
                 leg, sym, fill, opened = self.position.leg, self.position.symbol, self.position.fill, self.position.opened_at[11:16]
             now_px = quote_bid(book.get(sym)) or quote_ltp(book.get(sym))
             o = self._open_pnl(book)
+            why = self.live_meta.get("reason") if self.live else self.position.reason
             s["position"] = {"option": leg.upper(), "strike": self.live_meta.get("strike") if self.live else self.position.strike,
                              "entered_at": opened, "bought_at": round(fill, 2), "now": now_px,
-                             "open_pnl_rs": round(o) if o is not None else None}
+                             "open_pnl_rs": round(o) if o is not None else None,
+                             "entry_reason": str(why or "")[:300]}  # names the level the trade broke (for the exit)
         return s
 
     def apply(self, now: datetime, out: dict[str, Any], book: QuoteSource, *, allow_entry: bool = True) -> dict[str, Any] | None:

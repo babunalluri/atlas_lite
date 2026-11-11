@@ -48,3 +48,30 @@ down before running, results by regime, logged as an experiment. One change at a
 - The day's three swings (10:45→11:38 +170 pts, 11:40→13:30 −145, 13:30→14:30 +107) were worth ₹5k–11k each to an
   ATM buyer even entering 5–15 min late; every model exited at the first pause.
 - 7.5-year research: option buying has no edge on available data; expiry-week selling is the one that held.
+
+## External "V4" prompt reviewed (11 Nov 2026)
+
+An external "NIFTY intraday options trading system – V4" prompt. Its core (sections 3–8: close beyond a level, first
+pullback, 0.25% no-chase, hold through flat candles, exit on a close back through the level, IV/straddle as context)
+is the same as our prompt v3 (live from 12 Nov). **Decision: do not switch to V4.** v3 first needs live days; then at
+most a small v3.1, one change at a time.
+
+**Worth taking into a later v3.1**
+- Previous-day high/low as breakout levels (already in the inputs; v3 does not name them as levels).
+- "Room to the next level" as a soft check (don't buy a call a few points under the day high / previous-day high) —
+  soft only, never a hard condition.
+- Sharper pullback wording: a retest of the broken level plus a 1-minute candle rejecting it.
+- State plainly that the no-chase filter is "wait for a pullback", not a permanent rejection.
+
+**Already covered by code** (no prompt text needed): one position at a time, 1 lot, no averaging down, no size
+increase after a loss, no duplicate entries, day stop, forced exit.
+
+**Do not take**
+- Many conditions that must all hold for an entry (level close + 5-min trend + "genuine momentum" + premium confirms
+  + room to next level + delta/theta/IV-contraction/liquidity checks). Each AND-condition removes entries; this is
+  what made v2 never trade.
+- References to data we don't send (Greeks, per-strike option volume/OI, a support/resistance list, swing points):
+  with "never invent missing values" the model either waits for lack of data or guesses.
+- "Be decisive" next to a long checklist: contradictory instructions make behaviour unpredictable.
+- Risk-limit rules addressed to the LLM (stop-loss, max daily loss): code owns these; telling the model only adds
+  reasons to hesitate. Liquidity / bid-ask spread belongs in a code check before every buy (item 2 above).

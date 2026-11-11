@@ -1,5 +1,5 @@
 """Replay one recorded day through the CURRENT atlas_lite/llm_buyer.py (prompt, rules, risk as in the code), one
-decision a minute, 09:16-15:04, with the timing and fills a live day would have.
+decision a minute, 09:16 to the book's last decision (15:07), with the timing and fills a live day would have.
 
 What the model sees at decision minute D (as live does at D:00):
   - the dashboard feed from the end of minute D-1 (the last snapshot before D:00);
@@ -224,7 +224,7 @@ def main() -> None:
     with log.open("w") as out_fh:
         for hm in [f"{h:02d}:{m:02d}" for h in range(9, 16) for m in range(60)]:
             prev = _minute(hm, -1)
-            if not ("09:15" <= hm <= "15:10") or prev not in feed:
+            if not ("09:15" <= hm <= llm_buyer.LIVE_ORDERS_UNTIL) or prev not in feed:
                 continue
             f = {**feed[prev], "bars_today": [x for x in bars if x["t"][11:16] < hm]}  # live: closed candles only
             if D["prev_day"]:
