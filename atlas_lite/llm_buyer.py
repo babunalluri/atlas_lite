@@ -23,9 +23,9 @@ Live (intraday MIS, 1 lot): decided at each entry, on a day the dashboard checkb
 and the host allows it (ATLAS_LITE_LLM_BUYER_LIVE_ALLOWED=1). Before buying, the option's ask x qty plus 10%
 must fit the funds Kite shows available, and live stops for the month at MONTH_LOSS_LIMIT. Orders are run by
 atlas_lite/live_straddle.py with a single leg (tagged orders, holdings from this book's own fills).
-Kill switch: unticking the box (after it was on today) sells an open live position at once (reason "ui_off")
-and stops the book for the rest of the day, paper entries included. The 15:30 auto-off (source "day_end") is
-not a kill. No order is sent after LIVE_ORDERS_UNTIL (Zerodha squares MIS off itself at 15:14). A live trade still open from a ticked
+Unticking the box (after it was on today) sells an open live position at once (reason "ui_off") and the book
+carries on in paper for the rest of the day (operator's choice, 12 Nov 2026; until then it stopped the book). The
+15:30 auto-off (source "day_end") does nothing. No order is sent after LIVE_ORDERS_UNTIL (Zerodha squares MIS off itself at 15:14). A live trade still open from a ticked
 day is also sold if the box is found off after a restart.
 
 Paper fills: buy at ask, sell at bid when quotes have them, else last price +/- SLIP_PTS. Kite charges.
@@ -55,6 +55,7 @@ IST = ZoneInfo("Asia/Kolkata")
 STRATEGY = "llm_buyer"
 LEDGER_NAME = "paper_llm_buyer.jsonl"
 LIVE_FLAG_NAME = "llm_buyer_live.json"
+PAPER_FLAG_NAME = "llm_buyer_paper.json"  # the "Paper" box: off = no LLM calls, no trades
 LIVE_ENV = "ATLAS_LITE_LLM_BUYER_LIVE_ALLOWED"
 DEFAULT_LOT_SIZE = 65
 # All day, one decision a minute (operator's choice, 8 Nov 2026): new trades 09:16-15:00 (14:30 until 11 Nov 2026;
@@ -266,6 +267,7 @@ class LlmBuyer:
     lot_size: int = DEFAULT_LOT_SIZE
     order_client: Any = None
     live_flag: Any = None
+    paper_flag: Any = None  # OnOffFlag; None = always on
     decider: Any = None
     strategy: str = STRATEGY
     # Timing (defaults: all day, one decision a minute); fields so a window can be set per book.
@@ -298,7 +300,8 @@ class LlmBuyer:
     last_feed: dict[str, Any] = field(default_factory=dict)
     last_decision: dict[str, Any] | None = None
     last_reject: str | None = None
-    live_on_day: str = ""  # last day the live box was seen ticked (the kill switch arms on it)
+    live_on_day: str = ""  # last day the live box was seen ticked (the untick sell arms on it)
+    live_off_day: str = ""  # last day an untick was handled (logged once)
     last_feed_at: str = ""  # minute of the last feed recorded today
     prev_day: dict[str, float] | None = None  # yesterday's open/high/low/close (see ensure_prev_day)
     prev_day_for: str = ""
@@ -313,6 +316,14 @@ class LlmBuyer:
     @property
     def qty(self) -> int:
         return int(self.lot_size)
+
+    def paper_enabled(self) -> bool:
+        if self.paper_flag is None:
+            return True
+        try:
+            return bool(self.paper_flag.is_enabled())
+        except Exception:  # noqa: BLE001 - an unreadable switch keeps the book as it was (on)
+            return True
 
     def live_enabled(self) -> bool:
         return bool(self.order_client is not None and self.live_flag is not None and self.live_flag.is_enabled())
@@ -389,6 +400,10 @@ class LlmBuyer:
                 self.day_peak = max(self.day_peak, self.day_realized)
                 if not ev.get("live"):
                     self.position = None
+            elif kind == "live_off" and d == today:
+                self.live_off_day = d  # already handled today: a restart does not log it again
+            elif kind == "stop_entries" and ev.get("why") == "ui_off":
+                pass  # an untick before 12 Nov 2026 stopped the book; now it only ends live trading (paper goes on)
             elif kind == "stop_entries":
                 self.stopped = str(ev.get("why") or "stopped")
         if live_start is not None:  # a live trade without its close line: finish it on the broker
@@ -445,6 +460,8 @@ class LlmBuyer:
     # ---- the LLM's view ----
     def decision_due(self, now: datetime) -> bool:
         hm = now.strftime("%H:%M")
+        if not self.paper_enabled():
+            return False
         if not _is_nse_trading_day(now.date()) or not (self.first_decision <= hm <= self.last_decision_at):
             return False
         if now.minute % self.decide_every_min or hm in self.decided or self.day != now.strftime("%Y-%m-%d"):
@@ -605,6 +622,9 @@ class LlmBuyer:
             self.last_reject = "ledger_write_failed"  # no trade without its audit line (exits still go ahead)
             return None
         if not holding and act in ("BUY_CE", "BUY_PE"):
+            if not self.paper_enabled():
+                self.last_reject = "paper_off"
+                return None
             if not allow_entry:
                 self.last_reject = "gate_blocked"
                 return None
@@ -761,6 +781,11 @@ class LlmBuyer:
         self._kill_switch(now, today)
         if feed and not feed.get("error") and "09:15" <= hm <= "15:30":
             self._record(hm, feed)
+        if not self.paper_enabled():  # "Paper" box off: close whatever is open, then stay idle (no LLM calls)
+            if self.live is not None and self.live.phase in ("entering", "holding"):
+                self.live.request_exit("paper_off")
+            elif self.live is None and self.position is not None and self.pending_close is None:
+                return self._exit(now, book, "paper_off")
         if self.pending_close is not None:
             return self._write_pending_close()
         if self.live is not None:
@@ -786,7 +811,8 @@ class LlmBuyer:
         return None
 
     def _kill_switch(self, now: datetime, today: str) -> None:
-        """Box unticked after being on today (or found off with a live trade of today open): sell, stop for the day."""
+        """Box unticked after being on today (or found off with a live trade of today open): sell the live position;
+        the book carries on in paper (new entries are paper because live_enabled() is now false)."""
         if self.live_flag is None:
             return
         try:
@@ -797,15 +823,15 @@ class LlmBuyer:
         if on:
             self.live_on_day = today
             return
-        if source == "day_end":  # the engine's 15:30 auto-off is not an operator stop
+        if source in ("day_end", "paper_off"):  # 15:30 auto-off; the Paper box's own exit (on_frame) handles paper_off
             return
         armed = self.live_on_day == today or (self.live is not None and self.live.day == today)
         if not armed:
             return
-        if self.stopped != "ui_off":
-            self.stopped = "ui_off"
-            self._append({"event": "stop_entries", "ts": now.isoformat(), "day": self.day, "why": "ui_off"})
-            self._log.warning("llm_buyer: live box unticked -> selling any live position, no more trades today")
+        if self.live_off_day != today:
+            self.live_off_day = today
+            self._append({"event": "live_off", "ts": now.isoformat(), "day": self.day, "why": "ui_off"})
+            self._log.warning("llm_buyer: live box unticked -> selling any live position, paper from now on today")
         if self.live is not None and self.live.phase in ("entering", "holding"):
             self.live.request_exit("ui_off")
 

@@ -2551,7 +2551,12 @@
           <span class="switch-track" aria-hidden="true"></span>
           <span class="live-switch-text"><strong>Long straddle</strong><span id="straddleLiveLabel">Live straddle (today only)</span></span>
         </label>
-        <label class="live-switch" for="llmBuyerLiveToggle" title="Real Kite orders for today's LLM option buyer (1 lot ATM CE or PE, −₹1,500 day stop) — requires sign-in; good for today only">
+        <label class="live-switch" for="llmBuyerPaperToggle" title="LLM option buyer on/off: on = an LLM decides every minute and paper trades are recorded (uses LLM credit); off = no LLM calls, no trades. Stays as set across days.">
+          <input type="checkbox" class="switch-input" id="llmBuyerPaperToggle" />
+          <span class="switch-track" aria-hidden="true"></span>
+          <span class="live-switch-text"><strong>LLM buyer</strong><span id="llmBuyerPaperLabel">Paper (LLM calls)</span></span>
+        </label>
+        <label class="live-switch" for="llmBuyerLiveToggle" title="Real Kite orders for today's LLM option buyer (1 lot ATM CE or PE, −₹1,500 day stop) — requires sign-in and Paper on; good for today only">
           <input type="checkbox" class="switch-input" id="llmBuyerLiveToggle" />
           <span class="switch-track" aria-hidden="true"></span>
           <span class="live-switch-text"><strong>LLM buyer</strong><span id="llmBuyerLiveLabel">Live LLM buyer (today only)</span></span>
@@ -7171,7 +7176,7 @@
       const head = pos
         ? `${pos.live ? "LIVE" : "paper"} ${pos.option} ${pos.symbol} x${pos.qty} @ ${pos.entry} · open PnL ${pos.open_pnl ?? "—"}`
           + (pos.manual_needed ? " · MANUAL CHECK NEEDED" : "")
-        : `FLAT${lb.stopped ? ` (${{ day_loss: "day loss stop hit", ui_off: "stopped: live box unticked", done_for_day: "done for today", profit_lock: "profit lock: kept half the day's best" }[lb.stopped] || lb.stopped})` : ""}`;
+        : `FLAT${lb.stopped ? ` (${{ day_loss: "day loss stop hit", done_for_day: "done for today", profit_lock: "profit lock: kept half the day's best" }[lb.stopped] || lb.stopped})` : ""}`;
       const cap = lb.max_entries_if_positive > lb.max_entries ? ` (up to ${lb.max_entries_if_positive} while positive)` : "";
       line.textContent = `${lb.name || "LLM option buyer"} · ${head} · entries ${lb.entries ?? 0}/${lb.max_entries ?? 2}${cap} · `
         + `day PnL ${lb.day_realized ?? 0} (stop −${lb.day_loss_limit ?? 1500})${said}`
@@ -7214,14 +7219,63 @@
       const allowed = !!(live && live.allowed);
       const on = !!(live && live.enabled);
       if (toggle !== document.activeElement) toggle.checked = on;
-      toggle.disabled = !allowed && !on;
+      toggle.disabled = (!allowed || !llmBuyerPaperOn) && !on;
       const stale = !!(live && live.stale);
-      label.textContent = !allowed
+      label.textContent = !llmBuyerPaperOn && !on ? "Live LLM buyer · tick Paper first"
+        : !allowed
         ? "Live LLM buyer · locked on this host (ATLAS_LITE_LLM_BUYER_LIVE_ALLOWED=0)"
         : on ? "ON for today: real orders · new trades 09:16–15:00 · 1 lot · −₹1,500 day stop"
           : stale ? `Live LLM buyer · was ticked on ${live.day || "an earlier day"} — not active today, tick again to trade live`
             : "Live LLM buyer (today only)";
     }
+
+    let llmBuyerPaperOn = true;
+
+    function renderLlmBuyerPaper(paper) {
+      const toggle = document.getElementById("llmBuyerPaperToggle");
+      const label = document.getElementById("llmBuyerPaperLabel");
+      if (!toggle || !label) return;
+      llmBuyerPaperOn = !(paper && paper.enabled === false);
+      if (toggle !== document.activeElement) toggle.checked = llmBuyerPaperOn;
+      label.textContent = llmBuyerPaperOn
+        ? "Paper ON: LLM decides every minute, paper trades recorded"
+        : "Paper OFF: no LLM calls, no trades";
+      const live = document.getElementById("llmBuyerLiveToggle");
+      if (live && !llmBuyerPaperOn && !live.checked) live.disabled = true;
+    }
+
+    function loadLlmBuyerPaper() {
+      fetch("/api/llm_buyer/paper")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => renderLlmBuyerPaper(d && d.paper))
+        .catch(() => {});
+    }
+
+    document.getElementById("llmBuyerPaperToggle")?.addEventListener("change", async (ev) => {
+      const box = ev.target;
+      const want = !!box.checked;
+      if (!want && !window.confirm(
+        "Turn the LLM buyer OFF?\n\nNo more LLM calls (no credit used) and no trades, paper or live. An open trade is closed " +
+        "now (a live one sold at market) and Live is switched off. It stays off until you tick Paper again.",
+      )) {
+        box.checked = true;
+        return;
+      }
+      try {
+        const resp = await fetch(`/api/llm_buyer/paper?enabled=${want ? "true" : "false"}`, {
+          method: "POST", credentials: "same-origin",
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (resp.status === 401) throw new Error("Not signed in — required to turn the LLM buyer on");
+        if (!resp.ok || data.ok === false) throw new Error(data.detail || `HTTP ${resp.status}`);
+        renderLlmBuyerPaper(data.paper);
+        if (data.live) renderLlmBuyerLive(data.live);
+      } catch (err) {
+        box.checked = !want;
+        const label = document.getElementById("llmBuyerPaperLabel");
+        if (label) label.textContent = `Paper toggle failed: ${err.message || err}`;
+      }
+    });
 
     function loadLlmBuyerLive() {
       fetch("/api/llm_buyer/live")
@@ -7238,13 +7292,13 @@
         "of the ATM NIFTY call or put with real money (MIS). An open trade is then managed every minute until the LLM exits it " +
         "(15:08 at the latest). 2 trades, up to 4 while the day is positive (extra trades keep half the day's best profit). " +
         "The code sells and stops at −₹1,500. Good for today only." +
-        "\n\nUntick it any time to sell an open live position at once and stop the book for today.",
+        "\n\nUntick it any time to sell an open live position at once; the book then carries on in paper.",
       )) {
         box.checked = false;
         return;
       }
       if (!want && !window.confirm(
-        "Turn OFF the LLM buyer for today?\n\nAny open live position is sold at market now, and the book takes no more trades today. " +
+        "Turn OFF live orders for the LLM buyer?\n\nAny open live position is sold at market now; the book carries on in paper (LLM decisions, paper trades). " +
         "After 15:12 no order can be sent: Zerodha squares MIS positions off itself at 15:14.",
       )) {
         box.checked = true;
@@ -7521,6 +7575,7 @@
         renderLongStraddle(paper.long_straddle || {});
         loadStraddleLive();
         renderLlmBuyer(paper.llm_buyer || {});
+        loadLlmBuyerPaper();
         loadLlmBuyerLive();
         renderLongStraddle(paper.long_straddle_tp20 || {}, "longStraddleTpLine", "ATLAS_LITE_PAPER_LONG_STRADDLE_TP20");
         renderLongStraddle(paper.long_straddle_trail || {}, "longStraddleTrailLine", "ATLAS_LITE_PAPER_LONG_STRADDLE_TRAIL");

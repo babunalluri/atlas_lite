@@ -80,3 +80,37 @@ class DayLiveFlag:
         except (OSError, json.JSONDecodeError):
             return {}
         return raw if isinstance(raw, dict) else {}
+
+
+class OnOffFlag:
+    """A persistent on/off switch (not tied to a day), ON when its file is missing. Used for the LLM buyer's
+    "Paper" box: off = the book makes no LLM calls and no trades at all."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = Path(path)
+
+    def snapshot(self) -> dict[str, Any]:
+        raw = self._raw()
+        return {"ok": True, "enabled": bool(raw.get("enabled", True)), "updated_at": raw.get("updated_at"),
+                "source": raw.get("source")}
+
+    def is_enabled(self) -> bool:
+        return bool(self.snapshot()["enabled"])
+
+    def set_enabled(self, enabled: bool, *, source: str = "ui") -> dict[str, Any]:
+        body = {"enabled": bool(enabled), "updated_at": datetime.now(IST).isoformat(timespec="seconds"),
+                "source": str(source or "ui")}
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(body, indent=2) + "\n", encoding="utf-8")
+        tmp.replace(self.path)
+        return self.snapshot()
+
+    def _raw(self) -> dict[str, Any]:
+        if not self.path.is_file():
+            return {}
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return raw if isinstance(raw, dict) else {}

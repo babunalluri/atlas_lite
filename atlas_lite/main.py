@@ -572,6 +572,39 @@ def _llm_buyer_live_flag():
     return DayLiveFlag(DATA_DIR / LIVE_FLAG_NAME, LIVE_ENV)
 
 
+def _llm_buyer_paper_flag():
+    from atlas_lite.day_live_flag import OnOffFlag
+    from atlas_lite.llm_buyer import PAPER_FLAG_NAME
+
+    return OnOffFlag(DATA_DIR / PAPER_FLAG_NAME)
+
+
+@app.get("/api/llm_buyer/paper")
+async def api_llm_buyer_paper_get() -> dict[str, Any]:
+    """LLM option buyer "Paper" box: on = LLM decisions every minute and paper trades; off = no LLM calls."""
+    return {"ok": True, "paper": await asyncio.to_thread(lambda: _llm_buyer_paper_flag().snapshot())}
+
+
+@app.post("/api/llm_buyer/paper")
+async def api_llm_buyer_paper_set(
+    request: Request,
+    enabled: bool = Query(..., description="true = the LLM buyer runs (paper); false = no LLM calls, no trades"),
+) -> dict[str, Any]:
+    """Turn the LLM buyer on (sign-in required: it spends LLM credit) or off (always allowed; also turns live off,
+    and the book closes whatever is open)."""
+    if enabled:
+        _ui_session_required(request)
+
+    def _set() -> dict[str, Any]:
+        paper = _llm_buyer_paper_flag().set_enabled(enabled, source="ui")
+        if not enabled:
+            _llm_buyer_live_flag().set_enabled(False, source="paper_off")
+        return paper
+
+    paper = await asyncio.to_thread(_set)
+    return {"ok": True, "paper": paper, "live": await asyncio.to_thread(lambda: _llm_buyer_live_flag().snapshot())}
+
+
 @app.get("/api/llm_buyer/live")
 async def api_llm_buyer_live_get() -> dict[str, Any]:
     """LLM option buyer live switch: allowed on this host, and enabled for today."""
@@ -583,9 +616,12 @@ async def api_llm_buyer_live_set(
     request: Request,
     enabled: bool = Query(..., description="true = real Kite orders for today's LLM option buyer"),
 ) -> dict[str, Any]:
-    """Toggle LLM-buyer live orders for today. Sign-in required to enable; disable always allowed."""
+    """Toggle LLM-buyer live orders for today. Sign-in required to enable; disable always allowed. Live needs the
+    "Paper" box on (the book runs only while it is on)."""
     if enabled:
         _ui_session_required(request)
+        if not await asyncio.to_thread(lambda: _llm_buyer_paper_flag().is_enabled()):
+            raise HTTPException(status_code=400, detail="paper_off: turn the LLM buyer's Paper box on first")
     try:
         live = await asyncio.to_thread(lambda: _llm_buyer_live_flag().set_enabled(enabled, source="ui"))
     except ValueError as exc:

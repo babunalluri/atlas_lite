@@ -263,7 +263,7 @@ class SwitchFlag:
         return {"enabled": self.on, "allowed": True, "source": self.source}
 
 
-def test_unticking_the_box_sells_the_live_position_and_stops_for_the_day(tmp_path: Path) -> None:
+def test_unticking_the_box_sells_the_live_position_and_goes_on_in_paper(tmp_path: Path) -> None:
     kite, q, flag = FakeKite(), Book(), SwitchFlag()
     b = book_at(tmp_path, order_client=kite, live_flag=flag)
     frame(b, "10:40", q)
@@ -274,13 +274,16 @@ def test_unticking_the_box_sells_the_live_position_and_stops_for_the_day(tmp_pat
     flag.on = False  # operator unticks "Live LLM buyer"
     frame(b, "10:42", q)
     sells = [o for o in kite.orders if o["transaction_type"] == "SELL"]
-    assert len(sells) == 1 and sells[0]["quantity"] == 65 and b.stopped == "ui_off"
+    assert len(sells) == 1 and sells[0]["quantity"] == 65 and not b.stopped
     kite.fill_all(101.0)
     ev = frame(b, "10:43", q)
     assert ev["event"] == "close" and ev["live"] and ev["reason"] == "ui_off"
-    assert not b.decision_due(t("10:45"))  # no more trades today, paper included
-    assert b.apply(t("10:45"), {"hm": "10:45", "action": "BUY_PE"}, q) is None and not b.position
-    assert any(e["event"] == "stop_entries" and e["why"] == "ui_off" for e in ledger(b))
+    frame(b, "10:44", q)
+    assert b.decision_due(t("10:45"))  # still deciding, now in paper
+    ev = b.apply(t("10:45"), {"hm": "10:45", "action": "BUY_PE"}, q)
+    assert ev["event"] == "open" and not ev.get("live") and b.position is not None  # a paper trade, no order
+    assert len(kite.orders) == 2  # the live buy and its sell only
+    assert [e["why"] for e in ledger(b) if e["event"] == "live_off"] == ["ui_off"]  # logged once
 
 
 def test_box_never_ticked_today_does_not_stop_paper(tmp_path: Path) -> None:
@@ -453,7 +456,7 @@ def test_untick_after_1510_still_stops_the_book(tmp_path: Path) -> None:
     frame(b, "15:11", q)
     flag.on = False  # the operator unticks late (source "ui")
     frame(b, "15:12", q)
-    assert b.stopped == "ui_off"
+    assert not b.stopped and any(e["event"] == "live_off" for e in ledger(b))
 
 
 def test_errors_in_a_row_survive_a_restart(tmp_path: Path) -> None:
@@ -517,7 +520,7 @@ def test_restart_with_open_live_trade_and_box_already_off_sells(tmp_path: Path, 
     monkeypatch.setattr(mod, "datetime", real_now)
     assert b2.live is not None and b2.live.legs == ("pe",)
     frame(b2, "10:05", q)
-    assert b2.stopped == "ui_off" and [o["transaction_type"] for o in kite.orders] == ["BUY", "SELL"]
+    assert not b2.stopped and [o["transaction_type"] for o in kite.orders] == ["BUY", "SELL"]  # sold, paper goes on
     kite.fill_all(91.0)
     ev = frame(b2, "10:06", q)
     assert ev["event"] == "close" and ev["live"] and ev["reason"] == "ui_off"
@@ -833,3 +836,90 @@ def test_entry_level_falls_back_to_nifty_when_no_key_level_is_on_the_right_side(
     b.apply(t("09:20"), {"hm": "09:20", "action": "BUY_PE", "reason": "falling"}, q)
     assert (b.position.entry_level, b.position.entry_level_kind) == (24050.0, "nifty_at_entry")
     assert b.state(t("09:21"), q)["position"]["entry_level"] == 24050.0  # never empty
+
+
+def test_an_old_untick_stop_in_the_ledger_no_longer_stops_paper(tmp_path: Path, monkeypatch) -> None:
+    import atlas_lite.llm_buyer as mod
+    path = tmp_path / "llm.jsonl"
+    path.write_text(json.dumps({"event": "stop_entries", "ts": "2026-11-11T10:12:46+05:30", "day": DAY, "why": "ui_off"}) + "\n")
+    real_now = mod.datetime
+
+    class FakeDT(real_now):
+        @classmethod
+        def now(cls, tz=None):
+            return t("10:30")
+
+    monkeypatch.setattr(mod, "datetime", FakeDT)
+    b = book_at(tmp_path)
+    monkeypatch.setattr(mod, "datetime", real_now)
+    assert not b.stopped  # an untick before the change stopped the day; restored now, paper carries on
+
+
+def test_paper_box_off_means_no_llm_calls_no_trades_and_closes_what_is_open(tmp_path: Path) -> None:
+    from atlas_lite.day_live_flag import OnOffFlag
+
+    paper = OnOffFlag(tmp_path / "paper.json")
+    assert paper.is_enabled()  # on by default (no file)
+    b, q = book_at(tmp_path, paper_flag=paper), Book()
+    frame(b, "10:00", q)
+    b.apply(t("10:00"), {"hm": "10:00", "action": "BUY_CE", "reason": "breakout"}, q)
+    assert b.position is not None
+    paper.set_enabled(False)
+    ev = frame(b, "10:01", q)
+    assert ev["event"] == "close" and ev["reason"] == "paper_off" and b.position is None  # the paper trade is closed
+    frame(b, "10:05", q)
+    assert not b.decision_due(t("10:05"))  # no LLM calls while off
+    assert b.apply(t("10:05"), {"hm": "10:05", "action": "BUY_PE"}, q) is None and b.last_reject == "paper_off"
+    paper.set_enabled(True)
+    frame(b, "10:09", q)
+    assert OnOffFlag(tmp_path / "paper.json").is_enabled() and b.decision_due(t("10:10"))  # back on, persisted
+
+
+def test_paper_box_off_sells_a_live_position(tmp_path: Path, monkeypatch) -> None:
+    from atlas_lite.day_live_flag import OnOffFlag
+
+    monkeypatch.setattr("atlas_lite.live_straddle.STOP_CONFIRM_S", 0.0)
+    paper, kite, q = OnOffFlag(tmp_path / "paper.json"), FakeKite(), Book()
+    b = book_at(tmp_path, order_client=kite, live_flag=Flag(), paper_flag=paper)
+    frame(b, "10:00", q)
+    b.apply(t("10:00"), {"hm": "10:00", "action": "BUY_CE"}, q)
+    kite.fill_all(100.0)
+    frame(b, "10:01", q)
+    paper.set_enabled(False)
+    frame(b, "10:02", q)
+    frame(b, "10:03", q)
+    assert [o["transaction_type"] for o in kite.orders] == ["BUY", "SELL"]  # the live position is sold
+
+
+def test_paper_off_exit_is_logged_once_as_paper_off_and_untick_marker_survives_restart(tmp_path: Path, monkeypatch) -> None:
+    from atlas_lite.day_live_flag import OnOffFlag
+    import atlas_lite.llm_buyer as mod
+
+    monkeypatch.setattr("atlas_lite.live_straddle.STOP_CONFIRM_S", 0.0)
+    paper, kite, q, flag = OnOffFlag(tmp_path / "paper.json"), FakeKite(), Book(), SwitchFlag()
+    b = book_at(tmp_path, order_client=kite, live_flag=flag, paper_flag=paper)
+    frame(b, "10:00", q)
+    b.apply(t("10:00"), {"hm": "10:00", "action": "BUY_CE"}, q)
+    kite.fill_all(100.0)
+    frame(b, "10:01", q)
+    paper.set_enabled(False)  # what the API does: Paper off, and live off with source "paper_off"
+    flag.on, flag.source = False, "paper_off"
+    frame(b, "10:02", q)
+    kite.fill_all(99.0)
+    ev = frame(b, "10:03", q)
+    assert ev["event"] == "close" and ev["reason"] == "paper_off"  # one clear reason
+    assert not any(e["event"] == "live_off" for e in ledger(b))  # not also an untick
+    # an untick logged today is not logged again after a restart
+    b.live_off_day = ""
+    b._append({"event": "live_off", "ts": "x", "day": DAY, "why": "ui_off"})
+    real_now = mod.datetime
+
+    class FakeDT(real_now):
+        @classmethod
+        def now(cls, tz=None):
+            return t("10:30")
+
+    monkeypatch.setattr(mod, "datetime", FakeDT)
+    b2 = book_at(tmp_path, order_client=kite, live_flag=flag, paper_flag=paper)
+    monkeypatch.setattr(mod, "datetime", real_now)
+    assert b2.live_off_day == DAY

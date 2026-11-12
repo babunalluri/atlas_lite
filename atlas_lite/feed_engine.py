@@ -31,6 +31,7 @@ from atlas_lite.llm_buyer import (
     LEDGER_NAME as LLM_BUYER_LEDGER,
     LIVE_ENV as LLM_BUYER_LIVE_ENV,
     LIVE_FLAG_NAME as LLM_BUYER_LIVE_FLAG,
+    PAPER_FLAG_NAME as LLM_BUYER_PAPER_FLAG,
     LlmBuyer,
     LlmDecider,
     paper_llm_buyer_enabled,
@@ -801,7 +802,7 @@ class FeedEngine:
                 self._paper_long_str.qty, self._straddle_live.allowed(),
             )
         if paper_llm_buyer_enabled():
-            from atlas_lite.day_live_flag import DayLiveFlag
+            from atlas_lite.day_live_flag import DayLiveFlag, OnOffFlag
 
             # All day, one decision a minute: live only on a day the operator ticks "Live LLM buyer" and the host
             # allows it; paper otherwise.
@@ -809,7 +810,7 @@ class FeedEngine:
             self._llm_buyer = LlmBuyer(
                 path=self.data_dir / LLM_BUYER_LEDGER, lot_size=self._nifty_option_lot(),
                 order_client=KiteOrderClient(self.credentials_path), live_flag=self._llm_buyer_live,
-                decider=LlmDecider(read_llm_credentials()),
+                paper_flag=OnOffFlag(self.data_dir / LLM_BUYER_PAPER_FLAG), decider=LlmDecider(read_llm_credentials()),
             )
             self._log.info("llm_buyer book: all day, 1 min (live when ticked, allowed=%s)",
                            self._llm_buyer_live.allowed())
