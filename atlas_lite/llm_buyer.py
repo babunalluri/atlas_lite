@@ -115,9 +115,9 @@ Round-trip costs are about Rs 60-80 per option plus roughly 1 point of slippage.
 new trades you may still take. New trades only until {last_entry}; an open trade may be held until {close} at the
 latest. You see only information available at the current minute.
 How to read the data: nifty_last_15_1m_bars are the latest one-minute candles ("HH:MM open/high/low/close").
-opening_range is the 09:15-09:29 high and low. move_5m_pts and move_15m_pts are NIFTY's change over the last 5 and
-15 minutes. atm_straddle_now and IV describe how expensive options are; they are context, not a reason on their own
-to stay out (they are always high enough days before expiry).
+opening_range is the 09:15-09:29 high and low, shown once complete (from 09:30). move_5m_pts and move_15m_pts are
+NIFTY's change over the last 5 and 15 minutes. atm_straddle_now and IV describe how expensive options are; they are
+context, not a reason on their own to stay out (they are always high enough days before expiry).
 minutes_to_forced_exit is how long a new trade could still run before the code sells it.
 Entries: a setup is a one-minute candle closing beyond a key level (the opening-range high or low, VWAP, or the day's
 high or low before that candle: high_before_last_candle / low_before_last_candle) with move_5m_pts pointing the same way: buy the CALL on an upside break, the PUT on a downside break.
@@ -125,9 +125,9 @@ The first pullback after such a break that holds the broken level is also a setu
 price is already more than 0.25% of NIFTY beyond the broken level; then wait for a pullback instead of skipping the
 move. Most breaks fail and cost a little, while the ones that run pay several times that, so take clean breaks and
 cut failed ones; do not skip a break because an earlier one failed. Inside a range with no break, WAIT.
-Exits: the level you traded is named in position.entry_reason. Hold while price stays on the breakout side of it; a
-flat or slightly red minute is not a reason to exit. EXIT when a one-minute candle closes back through that level, or
-when the move has clearly reversed.
+Exits: the level you traded is position.entry_level (fixed when you bought; position.entry_reason has your reason).
+Hold while price stays on the breakout side of it; a flat or slightly red minute is not a reason to exit. EXIT when a
+one-minute candle closes back through that level, or when the move has clearly reversed.
 After a failed break you may trade the next clean break in either direction.
 Reply with JSON only: {"action": "...", "reason": "<one short sentence>"}
 When flat the action is one of BUY_CE, BUY_PE, WAIT, DONE_FOR_DAY. When holding: HOLD, EXIT."""
@@ -256,6 +256,8 @@ class Position:
     fill: float
     opened_at: str
     reason: str = ""
+    entry_level: float | None = None  # the price level the trade broke (code-picked at entry); the exit refers to it
+    entry_level_kind: str = ""
 
 
 @dataclass
@@ -380,7 +382,8 @@ class LlmBuyer:
                     self.entries += 1
                     self.position = Position(day=d, leg=ev["leg"], symbol=ev["symbol"], strike=int(ev.get("strike") or 0),
                                              qty=int(ev["qty"]), fill=float(ev["fill"]), opened_at=str(ev.get("ts")),
-                                             reason=str(ev.get("reason") or ""))
+                                             reason=str(ev.get("reason") or ""), entry_level=_f(ev.get("entry_level")),
+                                             entry_level_kind=str(ev.get("entry_level_kind") or ""))
             elif kind == "close":
                 self.day_realized = round(self.day_realized + float(ev.get("pnl") or 0.0), 2)
                 self.day_peak = max(self.day_peak, self.day_realized)
@@ -477,7 +480,9 @@ class LlmBuyer:
                 f"{str(b['t'])[11:16]} {float(b['o']):.0f}/{float(b['h']):.0f}/{float(b['l']):.0f}/{float(b['c']):.0f}"
                 for b in bars[-15:]]
             orb = [b for b in bars if "09:15" <= str(b["t"])[11:16] <= "09:29"]
-            if orb:
+            # Only once complete (the 09:29 candle closed): a still-forming range moved after a 12 Nov 09:27 entry
+            # (25,313.8 -> 25,342) and the exit then used the moved level.
+            if orb and any(str(b["t"])[11:16] >= "09:29" for b in bars):
                 out["opening_range"] = {"high": round(max(float(b["h"]) for b in orb), 1),
                                         "low": round(min(float(b["l"]) for b in orb), 1)}
             vol = sum(float(b.get("v") or 0) for b in bars)
@@ -553,6 +558,10 @@ class LlmBuyer:
             **self._price_action(f, spots, now),
         }
         if self.position is not None or self.live is not None:
+            # While holding, the levels that keep moving are left out: the exit refers to position.entry_level, fixed at
+            # entry (a moving level is what made 12 Nov's 09:48 exit use the wrong number).
+            s.pop("high_before_last_candle", None)
+            s.pop("low_before_last_candle", None)
             if self.live is not None:
                 leg = self.live.legs[0]
                 sym, fill = self.live.symbol(leg), self.live.cost(leg)[0]
@@ -562,10 +571,14 @@ class LlmBuyer:
             now_px = quote_bid(book.get(sym)) or quote_ltp(book.get(sym))
             o = self._open_pnl(book)
             why = self.live_meta.get("reason") if self.live else self.position.reason
+            lvl = self.live_meta.get("entry_level") if self.live else self.position.entry_level
+            kind = self.live_meta.get("entry_level_kind") if self.live else self.position.entry_level_kind
             s["position"] = {"option": leg.upper(), "strike": self.live_meta.get("strike") if self.live else self.position.strike,
                              "entered_at": opened, "bought_at": round(fill, 2), "now": now_px,
                              "open_pnl_rs": round(o) if o is not None else None,
-                             "entry_reason": str(why or "")[:300]}  # names the level the trade broke (for the exit)
+                             "entry_reason": str(why or "")[:300],
+                             "entry_level": round(float(lvl), 1) if lvl is not None else None,  # fixed at entry
+                             "entry_level_kind": kind or None}
         return s
 
     def apply(self, now: datetime, out: dict[str, Any], book: QuoteSource, *, allow_entry: bool = True) -> dict[str, Any] | None:
@@ -638,21 +651,46 @@ class LlmBuyer:
         if not px:
             self.last_reject = "no_quote"
             return None
+        level, kind = self._traded_level(leg, now)
         if self.live_enabled():
-            return self._open_live(now, leg, str(symbol), strike, px, reason)
+            return self._open_live(now, leg, str(symbol), strike, px, reason, level, kind)
         ev = self._append({"event": "open", "ts": now.isoformat(), "day": self.day, "leg": leg, "symbol": symbol,
                            "strike": strike, "qty": self.qty, "fill": round(px, 2), "entry": round(px, 2),
-                           "side": "long", "reason": reason})
+                           "side": "long", "reason": reason, "entry_level": level, "entry_level_kind": kind})
         if ev is None:  # no ledger line, no position (a restart could not know about it)
             self.last_reject = "ledger_write_failed"
             return None
         self.entries += 1
         self.position = Position(day=self.day, leg=leg, symbol=str(symbol), strike=strike, qty=self.qty, fill=round(px, 2),
-                                 opened_at=now.isoformat(), reason=reason)
+                                 opened_at=now.isoformat(), reason=reason, entry_level=level, entry_level_kind=kind)
         self.last_reject = None
         return ev
 
-    def _open_live(self, now: datetime, leg: str, symbol: str, strike: int, ask: float, reason: str) -> dict[str, Any] | None:
+    def _traded_level(self, leg: str, now: datetime) -> tuple[float | None, str]:
+        """The level a buy breaks, from the view the LLM just saw: for a call the nearest key level at or below NIFTY
+        (opening-range high once complete, the day's high before the last candle, VWAP), for a put the nearest at or
+        above it (opening-range low, day's low before the last candle, VWAP); NIFTY itself when there is none."""
+        mins = sorted(m for m in self.history if m <= now.strftime("%H:%M"))
+        spots = [self.history[m]["spot"] for m in mins]
+        if not spots:
+            return None, ""
+        pa, spot = self._price_action(self.last_feed, spots, now), spots[-1]
+        orr = pa.get("opening_range") or {}
+        if leg == "ce":
+            cands = [("opening_range_high", orr.get("high")), ("day_high_before_last_candle", pa.get("high_before_last_candle")),
+                     ("vwap", pa.get("vwap"))]
+            ok = [(v, k) for k, v in cands if v is not None and v <= spot]
+            best = max(ok) if ok else None
+        else:
+            cands = [("opening_range_low", orr.get("low")), ("day_low_before_last_candle", pa.get("low_before_last_candle")),
+                     ("vwap", pa.get("vwap"))]
+            ok = [(v, k) for k, v in cands if v is not None and v >= spot]
+            best = min(ok) if ok else None
+        # No key level on the right side (e.g. the first minutes, no VWAP yet): NIFTY at entry, so the exit always has one
+        return (best[0], best[1]) if best else (round(float(spot), 1), "nifty_at_entry")
+
+    def _open_live(self, now: datetime, leg: str, symbol: str, strike: int, ask: float, reason: str,
+                   level: float | None = None, kind: str = "") -> dict[str, Any] | None:
         m = self.day[:7]
         if self.month_live_pnl.get(m, 0.0) <= -MONTH_LOSS_LIMIT:
             self.last_reject = "month_loss_limit"
@@ -672,7 +710,7 @@ class LlmBuyer:
         start = {"event": "live_start", "ts": now.isoformat(), "day": self.day, "live": True, "atm": strike,
                  "strike": strike, "legs": [leg], "tag_prefix": self.tag_prefix, "qty": self.qty, "expiry_day": False,
                  "ce_symbol": symbol if leg == "ce" else "", "pe_symbol": symbol if leg == "pe" else "",
-                 "reason": reason}
+                 "reason": reason, "entry_level": level, "entry_level_kind": kind}
         if self._append(dict(start)) is None:  # no durable record: no real orders
             self.last_reject = "ledger_write_failed"
             return None
@@ -793,7 +831,9 @@ class LlmBuyer:
             if q:
                 self._append({"event": "open", "ts": now.isoformat(), "day": ls.day, "leg": leg, "symbol": ls.symbol(leg),
                               "strike": ls.strike, "qty": q, "fill": round(avg, 2), "entry": round(avg, 2),
-                              "side": "long", "live": True, "reason": self.live_meta.get("reason")})
+                              "side": "long", "live": True, "reason": self.live_meta.get("reason"),
+                              "entry_level": self.live_meta.get("entry_level"),
+                              "entry_level_kind": self.live_meta.get("entry_level_kind")})
         if result is None:
             if ls.manual_needed:
                 self.last_reject = "manual_needed"

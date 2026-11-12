@@ -786,3 +786,50 @@ def test_holding_view_names_the_level_the_trade_broke(tmp_path: Path) -> None:
     pos = b.state(t("10:45"), q)["position"]
     assert pos["entry_reason"] == "closed above the opening-range high 24030"  # what the exit rule refers to
     assert "position.entry_reason" in M.render_prompt("v3") and "minutes_to_forced_exit" in M.render_prompt("v3")
+
+
+def _bars(last_m: int) -> list[dict]:
+    return [{"t": f"2026-11-11 09:{m:02d}", "o": 24000 + m, "h": 24005 + m, "l": 23995 + m, "c": 24002 + m, "v": 1000}
+            for m in range(15, last_m + 1)]
+
+
+def test_opening_range_is_shown_only_once_complete(tmp_path: Path) -> None:
+    b, q = hour_book(tmp_path), Book()
+    b.on_frame(now=t("09:27"), feed={**feed(spot=24030.0), "bars_today": _bars(26)}, book=q)
+    assert "opening_range" not in b.state(t("09:27"), q)  # still forming at 09:27: it would move after an entry
+    b.on_frame(now=t("09:31"), feed={**feed(spot=24034.0), "bars_today": _bars(30)}, book=q)
+    assert b.state(t("09:31"), q)["opening_range"] == {"high": 24034.0, "low": 24010.0}
+
+
+def test_the_traded_level_is_fixed_at_entry_and_shown_while_holding(tmp_path: Path) -> None:
+    kite = FakeKite()
+    for live in (False, True):
+        b = hour_book(tmp_path / str(live), **({"order_client": kite, "live_flag": Flag()} if live else {}))
+        q = Book()
+        b.on_frame(now=t("09:41"), feed={**feed(spot=24046.0), "bars_today": _bars(40)}, book=q)
+        b.apply(t("09:41"), {"hm": "09:41", "action": "BUY_CE", "reason": "broke the day high"}, q)
+        # nearest key level at or below NIFTY: the day high before the last candle (09:39 high 24044), not the
+        # opening-range high (24034) or VWAP
+        src = b.live_meta if live else b.position.__dict__
+        assert src["entry_level"] == 24044.0 and src["entry_level_kind"] == "day_high_before_last_candle"
+        if live:
+            kite.fill_all(100.0)
+        b.on_frame(now=t("09:45"), feed={**feed(spot=24060.0), "bars_today": _bars(44)}, book=q)
+        st = b.state(t("09:45"), q)
+        pos = st["position"]
+        assert pos["entry_level"] == 24044.0  # unchanged although the day high has moved on
+        assert "high_before_last_candle" not in st and "low_before_last_candle" not in st  # moving levels hidden
+        assert st["opening_range"] == {"high": 24034.0, "low": 24010.0}  # complete, fixed: kept as context
+    assert "position.entry_level" in M.render_prompt("v3") and "shown once complete" in M.render_prompt("v3")
+    paper_open = [e for e in ledger(LlmBuyer(path=tmp_path / "False" / "h.jsonl", lot_size=65)) if e["event"] == "open"]
+    assert paper_open[0]["entry_level"] == 24044.0  # saved, so a restart restores the position with its level
+    live_start = [e for e in ledger(LlmBuyer(path=tmp_path / "True" / "h.jsonl", lot_size=65)) if e["event"] == "live_start"]
+    assert live_start[0]["entry_level"] == 24044.0
+
+
+def test_entry_level_falls_back_to_nifty_when_no_key_level_is_on_the_right_side(tmp_path: Path) -> None:
+    b, q = hour_book(tmp_path), Book()
+    b.on_frame(now=t("09:20"), feed=feed(spot=24050.0), book=q)  # no candles yet: no VWAP, no day high/low
+    b.apply(t("09:20"), {"hm": "09:20", "action": "BUY_PE", "reason": "falling"}, q)
+    assert (b.position.entry_level, b.position.entry_level_kind) == (24050.0, "nifty_at_entry")
+    assert b.state(t("09:21"), q)["position"]["entry_level"] == 24050.0  # never empty

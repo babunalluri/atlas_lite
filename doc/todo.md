@@ -95,6 +95,20 @@ Checked every trading day. Tick items as done (`[x]`), add new ones with a date.
 - [x] **Fixed 11 Nov (local, deploy on your go): "previous day" OHLC came from 10 Nov, the holiday** (flat bars 25,044.7 for open/high/low/close; real 9 Nov high/low missing). `prev_day_ohlc` should skip non-trading days / flat sessions; the replay's previous-day pick has the same flaw. Fix with your go.
 - [x] **Strike — not a bug (11 Nov):** options are priced off the futures (forward) price, so the futures-based ATM is the true at-the-money strike; a spot-based one would be an in-the-money call / out-of-the-money put. Kept. Note: the dashboard ATM follows futures (~50 pts above spot with 6 days left), so "ATM" calls are slightly OTM. Decide spot- vs futures-based ATM for the buyer.
 
+### Thu 12 Nov 2026 — first v3 live day
+- [x] **Fixed locally 12 Nov ~10:00, NOT deployed (deploy on your go): two input fixes (data bugs, not rule tuning — they would be made even if the trade had won).** Done: `opening_range` only once the 09:29 candle has closed; code records `entry_level` / `entry_level_kind` at entry (nearest key level at/below NIFTY for a call, at/above for a put: OR high/low once complete, day high/low before the last candle, VWAP), saved in the ledger (paper open / live_start), shown in the position, v3's exit refers to it. 1,002 tests.
+  Found on the 09:27 trade: BUY 25350 CE @ ₹212.60 on a break of the opening-range high **25,313.8**; held 21 min
+  through −₹481…+₹588 as v3 intends; EXIT 09:48 @ ₹208.00 (−₹379) saying it "closed back below the opening-range
+  high (25,342) that was traded" — but the traded level was 25,313.8 and NIFTY (25,328) was still above it.
+  1. **Opening range moves after entry:** `opening_range` is built from 09:15–09:29 candles, so before 09:30 it is
+     still forming (it rose 25,313.8 → 25,342 after the entry). Show it only once complete (from 09:30), or flag it
+     `forming`.
+  2. **Traded level only in free text:** the entry reason named several levels (OR high 25,313.8, day high 25,312.4,
+     VWAP). Code records the exact level as a number in the position (`entry_level`, plus which level), and v3's exit
+     refers to it.
+  Rules unchanged: no entry-time limit, no exit tolerance, no threshold changes (those would be overfitting).
+  Tests for both; deploy on your go.
+
 ### Fresh 7.5-year research (6 Nov evening): expiry-week selling wins, buying does not
 - [x] **Data:** NSE option OHLC re-downloaded with a crash-safe strike band (`data/nifty_opt_ohlc_wide.pkl`, 1,860 days); 0 dropped days for straddles/strangles. Rules picked on 2019–23, judged on 2024–26.
 - [x] **Buying: no winner.** 9,520 buy setups (straddles, strangles, single legs by gap/trend/prior-day signals, debit spreads, targets/stops, same-day to expiry). Only 18% positive in 2019–23; top scores ≈ chance. The one survivor (buy ITM in the gap's direction) is a data artifact: the index does not continue the gap, and NSE's recorded *open* for the gap-side option is a median ~8% below the tradable 09:16 price (checked on our recordings). Bought at the NSE close and held to the next close, the straddle loses in every market state. **Never use the NSE open as a buy fill.**
