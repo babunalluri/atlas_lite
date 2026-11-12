@@ -112,9 +112,10 @@ When flat the action is one of BUY_CE, BUY_PE, WAIT, DONE_FOR_DAY. When holding:
 SYSTEM_PROMPT_V3 = """You are an experienced discretionary NIFTY options trader who BUYS options to trade direction. The only
 positions you may take: buy one lot (65) of the at-the-money CALL (if you expect NIFTY to rise) or the at-the-money
 PUT (if you expect it to fall). You decide when to buy and which side, whether to skip the day, and when to exit.
-Round-trip costs are about Rs 60-80 per option plus roughly 1 point of slippage. entries_left_today shows how many
-new trades you may still take. New trades only until {last_entry}; an open trade may be held until {close} at the
-latest. You see only information available at the current minute.
+Round-trip costs are about Rs 60-80 per option plus roughly 1 point of slippage. entries_left_today, when present,
+shows how many new trades you may still take.
+New trades only until {last_entry}; an open trade may be held until {close} at the latest. You see only information
+available at the current minute.
 How to read the data: nifty_last_15_1m_bars are the latest one-minute candles ("HH:MM open/high/low/close").
 opening_range is the 09:15-09:29 high and low, shown once complete (from 09:30). move_5m_pts and move_15m_pts are
 NIFTY's change over the last 5 and 15 minutes. atm_straddle_now and IV describe how expensive options are; they are
@@ -285,11 +286,15 @@ class LlmBuyer:
     # Entries allowed beyond max_entries while today's closed P&L is positive (the hour book: up to 4 in all). An
     # extra trade is sold, and entries end, once the day's P&L falls to PROFIT_LOCK of its best closed level.
     max_entries_if_positive: int = MAX_ENTRIES_IF_POSITIVE
-    day_peak: float = 0.0  # best closed P&L today
+    # The day limits (entries, day stop, profit lock) count LIVE trades only; paper trades have none (operator's
+    # choice, 12 Nov 2026): paper keeps recording all day, and paper results never use up live's budget.
+    day_peak: float = 0.0  # best closed live P&L today
     day: str = ""
-    entries: int = 0
-    day_realized: float = 0.0
-    stopped: str = ""  # why entries are over for today ("day_loss", "done_for_day")
+    entries: int = 0  # live entries today
+    day_realized: float = 0.0  # closed live P&L today
+    paper_entries: int = 0
+    paper_realized: float = 0.0
+    stopped: str = ""  # why entries are over for today ("day_loss", "profit_lock" end live; "done_for_day" ends both)
     decided: set = field(default_factory=set)
     position: Position | None = None
     live: LiveStraddle | None = None
@@ -390,15 +395,17 @@ class LlmBuyer:
                 self.entries -= 1
             elif kind == "open":
                 if not ev.get("live"):
-                    self.entries += 1
+                    self.paper_entries += 1
                     self.position = Position(day=d, leg=ev["leg"], symbol=ev["symbol"], strike=int(ev.get("strike") or 0),
                                              qty=int(ev["qty"]), fill=float(ev["fill"]), opened_at=str(ev.get("ts")),
                                              reason=str(ev.get("reason") or ""), entry_level=_f(ev.get("entry_level")),
                                              entry_level_kind=str(ev.get("entry_level_kind") or ""))
             elif kind == "close":
-                self.day_realized = round(self.day_realized + float(ev.get("pnl") or 0.0), 2)
-                self.day_peak = max(self.day_peak, self.day_realized)
-                if not ev.get("live"):
+                if ev.get("live"):
+                    self.day_realized = round(self.day_realized + float(ev.get("pnl") or 0.0), 2)
+                    self.day_peak = max(self.day_peak, self.day_realized)
+                else:
+                    self.paper_realized = round(self.paper_realized + float(ev.get("pnl") or 0.0), 2)
                     self.position = None
             elif kind == "live_off" and d == today:
                 self.live_off_day = d  # already handled today: a restart does not log it again
@@ -414,6 +421,7 @@ class LlmBuyer:
     def _new_day(self, today: str) -> None:
         if self.day != today:
             self.day, self.entries, self.day_realized, self.stopped, self.day_peak = today, 0, 0.0, "", 0.0
+            self.paper_entries, self.paper_realized = 0, 0.0
             self.decided, self.history, self.last_decision = set(), {}, None
             self.last_feed, self.last_feed_at = {}, ""  # never trade on yesterday's ATM symbols
 
@@ -469,9 +477,20 @@ class LlmBuyer:
         holding = self.position is not None or self.live is not None
         if holding:
             return self.live is None or self.live.phase == "holding"
-        return not self.stopped and self._can_enter() and hm <= self.last_entry and self._feed_fresh(now)
+        return self._entry_open() and hm <= self.last_entry and self._feed_fresh(now)
 
-    def _entries_left(self) -> int:
+    def _entry_open(self) -> bool:
+        """May a new trade start? Paper: always (until the LLM says DONE_FOR_DAY). Live: the day limits on live trades."""
+        if self.stopped == "done_for_day":
+            return False
+        if not self.live_enabled():
+            return True
+        return not self.stopped and self._can_enter() and self.day_realized - EST_CHARGES > -DAY_LOSS_LIMIT
+
+    def _entries_left(self) -> int | None:
+        """Live: entries still allowed today. Paper: None (no limit; left out of the LLM's view)."""
+        if not self.live_enabled():
+            return None
         cap = self.max_entries_if_positive if self.day_realized > 0 else self.max_entries
         return max(0, cap - self.entries) if not self.stopped else 0
 
@@ -533,7 +552,7 @@ class LlmBuyer:
         return self.entries < self.max_entries_if_positive and self.day_realized > 0
 
     def _in_extra_trade(self) -> bool:
-        return self.entries > self.max_entries and (self.position is not None or self.live is not None)
+        return self.entries > self.max_entries and self.live is not None
 
     def _profit_floor(self) -> float | None:
         """Day P&L an extra trade may not fall below: PROFIT_LOCK of today's best closed P&L."""
@@ -571,7 +590,7 @@ class LlmBuyer:
             "atm_strike": f.get("atm"), "atm_ce": f.get("ce"), "atm_pe": f.get("pe"),
             "atm_straddle_path_since_open": [f"{m} {self.history[m]['straddle']:.1f}" for m in mins
                                              if "straddle" in self.history[m] and (int(m[3:]) % self.straddle_every_min == 0 or m == mins[-1])][-14:],
-            "entries_left_today": self._entries_left(),
+            **({"entries_left_today": left} if (left := self._entries_left()) is not None else {}),
             **self._price_action(f, spots, now),
         }
         if self.position is not None or self.live is not None:
@@ -628,10 +647,10 @@ class LlmBuyer:
             if not allow_entry:
                 self.last_reject = "gate_blocked"
                 return None
-            if self.stopped or not self._can_enter() or now.strftime("%H:%M") > self.last_entry:
-                return None
-            if self.day_realized - EST_CHARGES <= -DAY_LOSS_LIMIT:  # no day-loss budget left for another trade
+            if self.live_enabled() and self.day_realized - EST_CHARGES <= -DAY_LOSS_LIMIT:  # no live budget left
                 self._stop_entries(now, "day_loss")
+                return None
+            if not self._entry_open() or now.strftime("%H:%M") > self.last_entry:
                 return None
             return self._open(now, "ce" if act == "BUY_CE" else "pe", book, str(out.get("reason") or ""))
         if not holding and act == "DONE_FOR_DAY":
@@ -680,7 +699,7 @@ class LlmBuyer:
         if ev is None:  # no ledger line, no position (a restart could not know about it)
             self.last_reject = "ledger_write_failed"
             return None
-        self.entries += 1
+        self.paper_entries += 1
         self.position = Position(day=self.day, leg=leg, symbol=str(symbol), strike=strike, qty=self.qty, fill=round(px, 2),
                                  opened_at=now.isoformat(), reason=reason, entry_level=level, entry_level_kind=kind)
         self.last_reject = None
@@ -770,8 +789,7 @@ class LlmBuyer:
         if ev is None:
             return None
         self.position = None
-        self.day_realized = round(self.day_realized + ev["pnl"], 2)
-        self.day_peak = max(self.day_peak, self.day_realized)
+        self.paper_realized = round(self.paper_realized + ev["pnl"], 2)
         return ev
 
     # ---- every frame ----
@@ -800,15 +818,7 @@ class LlmBuyer:
             return ev
         if hm >= self.exit_at:
             return self._exit(now, book, "square_off")
-        pnl = self.day_pnl(book)
-        if pnl is not None and pnl <= -DAY_LOSS_LIMIT:
-            self._stop_entries(now, "day_loss")
-            return self._exit(now, book, "day_loss_stop")
-        floor = self._profit_floor()
-        if pnl is not None and floor is not None and pnl <= floor:
-            self._stop_entries(now, "profit_lock")
-            return self._exit(now, book, "profit_lock")
-        return None
+        return None  # a paper trade has no day stop or profit lock: the LLM's exit or the forced exit closes it
 
     def _kill_switch(self, now: datetime, today: str) -> None:
         """Box unticked after being on today (or found off with a live trade of today open): sell the live position;
@@ -907,6 +917,7 @@ class LlmBuyer:
             "live_orders": self.live is not None, "live": self.live_flag.snapshot() if self.live_flag else None,
             "day": self.day, "entries": self.entries, "max_entries": self.max_entries,
             "max_entries_if_positive": self.max_entries_if_positive, "day_realized": round(self.day_realized),
+            "paper_entries": self.paper_entries, "paper_realized": round(self.paper_realized),
             "day_loss_limit": DAY_LOSS_LIMIT, "stopped": self.stopped or None, "position": pos,
             "last_decision": self.last_decision, "last_reject": self.last_reject,
             "month_live_pnl": self.month_live_pnl.get(datetime.now(IST).strftime("%Y-%m"), 0.0),
