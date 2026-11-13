@@ -357,3 +357,47 @@ def test_shadow_risk_check_is_asked_but_live_goes_ahead(tmp_path) -> None:
     b = PaperLongStraddle(path=tmp_path / LEDGER_NAME, order_client=object(), live_flag=_Flag(), risk=risk)
     b._open_live = lambda *a, **k: {"event": "live_start"}  # type: ignore[method-assign]
     assert frame(b, t("09:16"), quotes(120, 120)) == {"event": "live_start"} and len(risk.asked) == 1
+
+
+def test_retired_book_sells_its_open_straddle_at_the_bids_and_never_opens_again(tmp_path) -> None:
+    b = mk(tmp_path)
+    assert frame(b, t("09:16"), quotes(120, 120))["event"] == "open"  # bought before it was retired
+    b.retired = True
+    ev = frame(b, t("10:05"), quotes(110, 125))
+    assert ev["event"] == "close" and ev["reason"] == "retired" and ev["pnl_known"] is True
+    assert ev["exit"] == 109.5 + 124.5 and b.position is None  # sold at the bids, a priced close
+    assert frame(b, t("10:06"), quotes(110, 125)) is None
+    fresh = PaperLongStraddle(path=tmp_path / "x" / LEDGER_NAME, retired=True)
+    assert frame(fresh, t("09:16", "2026-10-30"), quotes(120, 120)) is None and fresh.position is None  # no new trade
+    import atlas_lite.feed_engine as F
+    assert F.LONG_STRADDLE_RETIRED is True
+
+
+def test_retired_book_never_starts_a_live_straddle_even_with_live_ticked(tmp_path) -> None:
+    class Kite:
+        orders: list = []
+
+        def equity_available(self):
+            return 1e6
+
+        def place_market(self, **kw):
+            Kite.orders.append(kw)
+            return "o1"
+
+    class On:
+        def is_enabled(self):
+            return True
+
+        def snapshot(self):
+            return {"enabled": True, "allowed": True}
+
+    b = PaperLongStraddle(path=tmp_path / LEDGER_NAME, order_client=Kite(), live_flag=On(), retired=True)
+    assert frame(b, t("09:16"), quotes(120, 120)) is None
+    assert b.live is None and b.position is None and Kite.orders == []  # no order, no live start
+
+
+def test_retired_long_straddles_are_listed_as_retired_books() -> None:
+    import atlas_lite.feed_engine as F
+
+    for name in ("long_straddle", "long_straddle_tp20", "long_straddle_trail", "long_straddle_leg50"):
+        assert name in F.RETIRED_PAPER_STRATEGIES and F.PAPER_BOOK_GATES[name][0].startswith("RETIRED 13 Nov 2026")

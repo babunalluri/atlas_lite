@@ -2444,13 +2444,14 @@
             <tr>
               <th>Day</th>
               <th>Book</th>
+              <th>Trades</th>
               <th>Closed</th>
-              <th>Open</th>
+              <th>Still open</th>
               <th>PnL</th>
             </tr>
           </thead>
           <tbody id="tradesBookDayRows">
-            <tr><td colspan="5" class="hist-muted">Book×day PnL loads with Trades</td></tr>
+            <tr><td colspan="6" class="hist-muted">Book×day PnL loads with Trades</td></tr>
           </tbody>
         </table>
       </div>
@@ -2546,11 +2547,6 @@
           <span class="switch-track" aria-hidden="true"></span>
           <span class="live-switch-text"><strong>Agent</strong><span id="agentLiveLine">Live: off (paper only)</span></span>
         </label>
-        <label class="live-switch" for="straddleLiveToggle" title="Real Kite orders for today's 09:16 long straddle (1 lot) — requires sign-in; good for today only">
-          <input type="checkbox" class="switch-input" id="straddleLiveToggle" />
-          <span class="switch-track" aria-hidden="true"></span>
-          <span class="live-switch-text"><strong>Long straddle</strong><span id="straddleLiveLabel">Live straddle (today only)</span></span>
-        </label>
         <label class="live-switch" for="llmBuyerPaperToggle" title="LLM option buyer on/off: on = an LLM decides every minute and paper trades are recorded (uses LLM credit); off = no LLM calls, no trades. Stays as set across days.">
           <input type="checkbox" class="switch-input" id="llmBuyerPaperToggle" />
           <span class="switch-track" aria-hidden="true"></span>
@@ -2622,23 +2618,6 @@
           </article>
           <article class="book-card" data-src="scalperV3WingsLine" data-title="Scalper v3 · 1,000 wings">
             <div class="history-detail book-src" id="scalperV3WingsLine">Scalper v3 · 1,000 wings: —</div>
-          </article>
-        </div>
-      </section>
-      <section class="book-group" aria-label="Long straddle">
-        <h4 class="book-group-title">Long straddle</h4>
-        <div class="book-grid">
-          <article class="book-card" data-src="longStraddleLine" data-title="Long straddle · 13:00">
-            <div class="history-detail book-src" id="longStraddleLine">Long straddle · 13:00: —</div>
-          </article>
-          <article class="book-card" data-src="longStraddleTpLine" data-title="Long straddle · +20% TP">
-            <div class="history-detail book-src" id="longStraddleTpLine">Long straddle · +20% TP: —</div>
-          </article>
-          <article class="book-card" data-src="longStraddleTrailLine" data-title="Long straddle · trail">
-            <div class="history-detail book-src" id="longStraddleTrailLine">Long straddle · trail: —</div>
-          </article>
-          <article class="book-card" data-src="longStraddleLeg50Line" data-title="Long straddle · leg −50%">
-            <div class="history-detail book-src" id="longStraddleLeg50Line">Long straddle · leg −50%: —</div>
           </article>
         </div>
       </section>
@@ -6946,7 +6925,7 @@
       if (!tbody) return;
       const list = rows || [];
       if (!list.length) {
-        tbody.innerHTML = `<tr><td colspan="5" class="hist-muted">No book×day totals</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="6" class="hist-muted">No book×day totals</td></tr>`;
         return;
       }
       const body = list.map((row) => {
@@ -6959,16 +6938,18 @@
         return `<tr>
           <td>${escapeTradeHtml(row.day || "—")}</td>
           <td>${escapeTradeHtml(row.strategy || "—")}</td>
-          <td>${escapeTradeHtml(String(row.closed ?? 0))}</td>
           <td>${escapeTradeHtml(String(row.open ?? 0))}</td>
+          <td>${escapeTradeHtml(String(row.closed ?? 0))}</td>
+          <td>${escapeTradeHtml(String(row.still_open ?? Math.max(0, (row.open ?? 0) - (row.closed ?? 0))))}</td>
           <td>${pnl}${est}</td>
         </tr>`;
       }).join("");
       const totalCell = pnlTotal == null ? "—" : formatTradePnl(pnlTotal);
       tbody.innerHTML = `${body}<tr>
         <td colspan="2"><strong>Total</strong></td>
-        <td>${escapeTradeHtml(String(list.reduce((n, r) => n + (Number(r.closed) || 0), 0)))}</td>
         <td>${escapeTradeHtml(String(list.reduce((n, r) => n + (Number(r.open) || 0), 0)))}</td>
+        <td>${escapeTradeHtml(String(list.reduce((n, r) => n + (Number(r.closed) || 0), 0)))}</td>
+        <td>${escapeTradeHtml(String(list.reduce((n, r) => n + (Number(r.still_open) || 0), 0)))}</td>
         <td><strong>${totalCell}</strong></td>
       </tr>`;
     }
@@ -7030,8 +7011,8 @@
         const filterBits = [day, book].filter(Boolean);
         if (meta) {
           meta.textContent = filterBits.length
-            ? `${filterBits.join(" · ")} · closed ${closed} · open ${openN} · PnL ${pnlTxt}`
-            : `closed ${closed} · open ${openN} · PnL ${pnlTxt} · latest first`;
+            ? `${filterBits.join(" · ")} · trades ${openN} · closed ${closed} · PnL ${pnlTxt}`
+            : `trades ${openN} · closed ${closed} · PnL ${pnlTxt} · latest first`;
         }
         if (detail) detail.textContent = TRADES_DETAIL_DEFAULT;
       } catch (err) {
@@ -7041,7 +7022,7 @@
         }
         const sum = document.getElementById("tradesBookDayRows");
         if (sum) {
-          sum.innerHTML = `<tr><td colspan="5" class="hist-muted">Failed to load book×day PnL</td></tr>`;
+          sum.innerHTML = `<tr><td colspan="6" class="hist-muted">Failed to load book×day PnL</td></tr>`;
         }
         if (meta) meta.textContent = "Load failed";
         if (detail) detail.textContent = String(err?.message || err);
@@ -7112,55 +7093,6 @@
         </tr>`;
       }).join("");
     }
-
-    // Long straddle live switch: follows /api/straddle/live (host allows it, and ticked for today).
-    function renderStraddleLive(live) {
-      const toggle = document.getElementById("straddleLiveToggle");
-      const label = document.getElementById("straddleLiveLabel");
-      if (!toggle || !label) return;
-      const allowed = !!(live && live.allowed);
-      const on = !!(live && live.enabled);
-      if (toggle !== document.activeElement) toggle.checked = on;
-      toggle.disabled = !allowed && !on;
-      const stale = !!(live && live.stale);
-      label.textContent = !allowed
-        ? "Live straddle · locked on this host (ATLAS_LITE_STRADDLE_LIVE_ALLOWED=0)"
-        : on ? "Live straddle · ON for today (real orders, 1 lot)"
-          : stale ? `Live straddle · was ticked on ${live.day || "an earlier day"} — not active today, tick again to trade live`
-            : "Live straddle (today only)";
-    }
-
-    function loadStraddleLive() {
-      fetch("/api/straddle/live")
-        .then((r) => (r.ok ? r.json() : null))
-        .then((d) => renderStraddleLive(d && d.live))
-        .catch(() => {});
-    }
-
-    document.getElementById("straddleLiveToggle")?.addEventListener("change", async (ev) => {
-      const box = ev.target;
-      const want = !!box.checked;
-      if (want && !window.confirm(
-        "Turn ON live orders for today's long straddle?\n\nAt 09:16 it buys 1 lot of the balanced NIFTY straddle with real money (MIS), " +
-        "sells at 13:00, or earlier if the bids fall 30% below cost. Good for today only.",
-      )) {
-        box.checked = false;
-        return;
-      }
-      try {
-        const resp = await fetch(`/api/straddle/live?enabled=${want ? "true" : "false"}`, {
-          method: "POST", credentials: "same-origin",
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (resp.status === 401) throw new Error("Not signed in — required for Live straddle");
-        if (!resp.ok || data.ok === false) throw new Error(data.detail || `HTTP ${resp.status}`);
-        renderStraddleLive(data.live);
-      } catch (err) {
-        box.checked = !want;
-        const label = document.getElementById("straddleLiveLabel");
-        if (label) label.textContent = `Live straddle toggle failed: ${err.message || err}`;
-      }
-    });
 
     // LLM option buyer: status line + its own live switch (/api/llm_buyer/live).
     function renderLlmBuyer(lb, lineId = "llmBuyerLine", prefix = "llmBuyer") {
@@ -7319,35 +7251,6 @@
         if (label) label.textContent = `Live LLM buyer toggle failed: ${err.message || err}`;
       }
     });
-
-    function renderLongStraddle(ls, elId = "longStraddleLine", flag = "ATLAS_LITE_PAPER_LONG_STRADDLE") {
-      const line = document.getElementById(elId);
-      if (!line) return;
-      const name = ls.name || "Long straddle";
-      if (!ls.enabled) {
-        line.textContent = `${name} · off (${flag}=0)`;
-        return;
-      }
-      const pos = ls.position;
-      const tp = pos && pos.target != null ? ` · take-profit ${pos.target}` : "";
-      const rule = ls.take_profit
-        ? `buys the ATM straddle at 09:16, sells at +${Math.round(ls.take_profit * 100)}% or at 13:00`
-        : ls.trail_start
-        ? `buys the ATM straddle at 09:16, trails from +${Math.round(ls.trail_start * 100)}% (exit ${Math.round(ls.trail_gap * 100)}% off the peak) or sells at 13:00`
-        : ls.leg_stop
-        ? `buys the ATM straddle at 09:16, sells a leg at −${Math.round(ls.leg_stop * 100)}%, the rest at 13:00`
-        : ls.run_trail
-        ? `buys the ATM straddle at 09:16; a winner at 13:00 runs to 15:00 (exit ${Math.round(ls.run_trail * 100)}% off the peak), else sells at 13:00`
-        : "buys the ATM straddle at 09:16, sells at 13:00";
-      const sold = pos && pos.sold_leg ? ` · ${pos.sold_leg.toUpperCase()} sold` : "";
-      const peak = (pos && pos.peak != null ? ` · peak ${pos.peak}` : "") + (pos && pos.running ? " · running past 13:00" : "");
-      const stop = pos && pos.stop != null ? ` · stop ${pos.stop}` : "";
-      const mode = pos && pos.live ? " · LIVE" : "";
-      const manual = pos && pos.manual_needed ? " · EXIT FAILED — close manually in Kite" : "";
-      line.textContent = pos
-        ? `${name}${mode} · long ${pos.atm} straddle${pos.expiry_day ? " (expiry day)" : ""} · paid ${pos.debit} · worth now ${pos.value_now ?? "—"}${tp}${stop}${sold}${peak} · open PnL ${pos.open_pnl ?? "—"}${manual}`
-        : `${name} · FLAT · ${rule}` + (ls.last_reject ? ` · ${ls.last_reject}` : "");
-    }
 
     function renderScalperV3(v3, elId = "scalperV3Line", flag = "ATLAS_LITE_PAPER_SCALPER_V3") {
       const line = document.getElementById(elId);
@@ -7573,14 +7476,9 @@
             posEl.textContent = `Agent book FLAT · entries today ${ag.entries_today ?? 0} · day PnL ${ag.day_pnl ?? 0}`;
           }
         }
-        renderLongStraddle(paper.long_straddle || {});
-        loadStraddleLive();
         renderLlmBuyer(paper.llm_buyer || {});
         loadLlmBuyerPaper();
         loadLlmBuyerLive();
-        renderLongStraddle(paper.long_straddle_tp20 || {}, "longStraddleTpLine", "ATLAS_LITE_PAPER_LONG_STRADDLE_TP20");
-        renderLongStraddle(paper.long_straddle_trail || {}, "longStraddleTrailLine", "ATLAS_LITE_PAPER_LONG_STRADDLE_TRAIL");
-        renderLongStraddle(paper.long_straddle_leg50 || {}, "longStraddleLeg50Line", "ATLAS_LITE_PAPER_LONG_STRADDLE_LEG50");
         renderScalperV3(paper.scalper_v3 || {});
         renderScalperV3(paper.scalper_v3_1415 || {}, "scalperV31415Line", "ATLAS_LITE_PAPER_SCALPER_V3_1415");
         renderScalperV3(paper.scalper_v3_wings || {}, "scalperV3WingsLine", "ATLAS_LITE_PAPER_SCALPER_V3_WINGS");

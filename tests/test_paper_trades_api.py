@@ -100,6 +100,8 @@ def test_list_paper_trades_latest_first_with_entry_exit_info(tmp_path: Path) -> 
     by = {(r["day"], r["strategy"]): r for r in out["by_book_day"]}
     assert by[("2026-09-29", "atm_impulse_fade")]["pnl_total"] == 300.0
     assert by[("2026-09-29", "combo_confluence")]["open"] == 1
+    assert by[("2026-09-29", "combo_confluence")]["still_open"] == 1  # opened, not closed yet
+    assert by[("2026-09-29", "atm_impulse_fade")]["still_open"] == 0  # opened and closed: nothing open
 
 
 def test_list_paper_trades_day_filter(tmp_path: Path) -> None:

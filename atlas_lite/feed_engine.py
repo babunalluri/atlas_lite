@@ -264,6 +264,9 @@ NSE_INSTRUMENTS_FILE = "nse_instruments.csv"
 BSE_INSTRUMENTS_FILE = "bse_instruments.csv"
 BFO_INSTRUMENTS_FILE = "bfo_instruments.csv"
 MCX_INSTRUMENTS_FILE = "mcx_instruments.csv"  # display-only commodity futures in the header strip
+# Long straddle books retired (operator's call, 13 Nov 2026): open paper straddles are sold at the bids on the next
+# frame and the books never open again; their cards and the Live straddle switch are off the dashboard.
+LONG_STRADDLE_RETIRED = True
 NFO_INSTRUMENTS_META = "instruments.meta.json"
 MIN_BARS_FOR_ADX = 29
 # Overwrite tick-built OHLC with Kite REST for ~1 session+ of 1m bars.
@@ -292,6 +295,11 @@ RETIRED_PAPER_STRATEGIES = frozenset(
         "ai_agent",
         "short_iron_condor",
         "short_iron_fly",
+        # retired 13 Nov 2026 (LONG_STRADDLE_RETIRED)
+        "long_straddle",
+        "long_straddle_tp20",
+        "long_straddle_trail",
+        "long_straddle_leg50",
     }
 )
 
@@ -315,22 +323,22 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
         "½ credit target / ½ defined-loss stop on premium PnL · flat 15:14",
     ),
     "long_straddle_tp20": (
-        "09:16 · buy the balanced strike (ATM±50 where CE≈PE) at ask · 1 lot · max 1/day · "
+        "RETIRED 13 Nov 2026 · was: 09:16 · buy the balanced strike (ATM±50 where CE≈PE) at ask · 1 lot · max 1/day · "
         "no entries after −₹15k in the month · paper only",
         "resting take-profit at +20% of the price paid (fills when the bids reach it) · "
         "stop when bids fall 30% below cost · else sell 13:00 at bid",
     ),
     "long_straddle_trail": (
-        "09:16 · buy the balanced strike (ATM±50 where CE≈PE) at ask · 1 lot · max 1/day · paper only",
+        "RETIRED 13 Nov 2026 · was: 09:16 · buy the balanced strike (ATM±50 where CE≈PE) at ask · 1 lot · max 1/day · paper only",
         "once bids are +10% over cost, sell when they fall 15% below their peak · "
         "stop when bids fall 30% below cost · else sell 13:00 at bid",
     ),
     "long_straddle_leg50": (
-        "09:16 · buy the balanced strike (ATM±50 where CE≈PE) at ask · 1 lot · max 1/day · paper only",
+        "RETIRED 13 Nov 2026 · was: 09:16 · buy the balanced strike (ATM±50 where CE≈PE) at ask · 1 lot · max 1/day · paper only",
         "sell a leg once its bid is 50% below its own cost (first leg only) · other leg sells 13:00 at bid",
     ),
     "long_straddle": (
-        "09:16 · buy the balanced strike (ATM±50 where CE≈PE) at ask · 1 lot · max 1/day · "
+        "RETIRED 13 Nov 2026 · was: 09:16 · buy the balanced strike (ATM±50 where CE≈PE) at ask · 1 lot · max 1/day · "
         "no entries after −₹15k in the month · live only on a day 'Live straddle' is ticked",
         "sell both at 13:00 at bid · stop when bids fall 30% below cost · no take-profit",
     ),
@@ -790,7 +798,7 @@ class FeedEngine:
             self._paper_long_str = PaperLongStraddle(
                 path=self.data_dir / LONG_STRADDLE_LEDGER, lot_size=self._nifty_option_lot(),
                 order_client=KiteOrderClient(self.credentials_path), live_flag=self._straddle_live,
-                risk=RiskManager(self.data_dir),
+                risk=RiskManager(self.data_dir), retired=LONG_STRADDLE_RETIRED,
             )
             # A live close whose ledger line is not written yet still counts in the account totals.
             book = self._paper_long_str
@@ -818,7 +826,7 @@ class FeedEngine:
             self._paper_long_str_tp20 = PaperLongStraddle(
                 path=self.data_dir / LONG_STRADDLE_TP20_LEDGER, lot_size=self._nifty_option_lot(),
                 strategy=LONG_STRADDLE_TP20_STRATEGY, name="Long straddle +20% TP",
-                take_profit=LONG_STRADDLE_TP20_TP,
+                take_profit=LONG_STRADDLE_TP20_TP, retired=LONG_STRADDLE_RETIRED,
             )
             self._log.info(
                 "long_straddle_tp20 paper book qty %d (09:16 straddle, resting +20%% take-profit, else 13:00)",
@@ -828,7 +836,7 @@ class FeedEngine:
             if paper_long_straddle_variant_enabled(name):
                 self._paper_long_str_variants[name] = PaperLongStraddle(
                     path=self.data_dir / cfg["ledger"], lot_size=self._nifty_option_lot(),
-                    strategy=name, name=cfg["name"], **cfg["kwargs"],
+                    strategy=name, name=cfg["name"], retired=LONG_STRADDLE_RETIRED, **cfg["kwargs"],
                 )
         if self._paper_long_str_variants:
             self._log.info("long straddle exit variants (paper): %s", ", ".join(self._paper_long_str_variants))
@@ -4407,6 +4415,8 @@ class FeedEngine:
                         pass
         out = list(buckets.values())
         for bucket in out:
+            # "open" counts entries made that day (kept for older readers); still_open is what has not closed yet.
+            bucket["still_open"] = max(0, int(bucket["open"]) - int(bucket["closed"]))
             if not bucket["pnl_known"]:
                 bucket["pnl_total"] = None
             else:

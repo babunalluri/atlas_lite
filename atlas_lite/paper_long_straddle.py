@@ -222,6 +222,9 @@ class PaperLongStraddle:
     traded_day: str = ""  # one entry per day
     last_reject: str | None = None
     month_pnl: dict[str, float] = field(default_factory=dict)
+    # Retired (operator's call, 13 Nov 2026): an open paper straddle is sold at the bids on the next frame (reason
+    # "retired"), and the book never opens again. A live trade still running is left to finish by its own rules.
+    retired: bool = False
     _log: Any = field(default_factory=lambda: get_logger("atlas_lite.paper_long_straddle"), repr=False)
 
     def __post_init__(self) -> None:
@@ -478,7 +481,7 @@ class PaperLongStraddle:
         pos = self.position
         if pos is None:
             return None
-        known = reason in ("time", "time_late", "target", "stop", "trail")
+        known = reason in ("time", "time_late", "target", "stop", "trail", "retired")
         prices = []
         for i, (leg, sym, mark) in enumerate((("ce", pos.ce_symbol, pos.ce_mark), ("pe", pos.pe_symbol, pos.pe_mark))):
             if pos.sold_leg == leg and pos.sold_px is not None:  # sold earlier by the leg exit
@@ -530,6 +533,12 @@ class PaperLongStraddle:
         if self.live is not None:  # a live trade runs to its end, checkbox or not
             return self._live_step(now, book)
         pos = self.position
+        if self.retired:
+            if pos is None:
+                return None
+            if pos.day != today:  # never sold (engine down): exit unknown
+                return self._close(now, book, "session_gap")
+            return self._close(now, book, "retired")
         if pos is not None:
             if pos.day != today:  # never sold (engine down): exit unknown
                 return self._close(now, book, "session_gap")
