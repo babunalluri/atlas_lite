@@ -28,6 +28,9 @@ from atlas_lite.llm_buyer import (
     DAY_LOSS_LIMIT as LLM_BUYER_DAY_LOSS,
     EXIT_AT as LLM_BUYER_EXIT_AT,
     LAST_ENTRY as LLM_BUYER_LAST_ENTRY,
+    FREE_LEDGER_NAME as LLM_BUYER_FREE_LEDGER,
+    FREE_PROMPT_VERSION as LLM_BUYER_FREE_PROMPT,
+    FREE_STRATEGY as LLM_BUYER_FREE_STRATEGY,
     LEDGER_NAME as LLM_BUYER_LEDGER,
     LIVE_ENV as LLM_BUYER_LIVE_ENV,
     LIVE_FLAG_NAME as LLM_BUYER_LIVE_FLAG,
@@ -35,6 +38,7 @@ from atlas_lite.llm_buyer import (
     LlmBuyer,
     LlmDecider,
     paper_llm_buyer_enabled,
+    render_prompt,
 )
 
 LLM_BUYER_HUNG_S = 90.0  # last resort: the call itself ends by its 25 s deadline (llm_buyer.post_with_deadline);
@@ -417,6 +421,10 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
         f"an open trade is managed every minute until the LLM exits · −₹{LLM_BUYER_DAY_LOSS:,.0f} day stop · profit lock · "
         f"last exit {LLM_BUYER_EXIT_AT}",
     ),
+    "llm_buyer_free": (
+        f"09:16–{LLM_BUYER_LAST_ENTRY} · every minute the LLM decides freely (prompt v4, no trading rules): 1 lot ATM CE or PE",
+        f"paper only, no limits · exits are its own call · last exit {LLM_BUYER_EXIT_AT}",
+    ),
     "sensex_expiry_eve_strangle": (
         "SENSEX (Thu expiry) · 09:16, 1 session before expiry · buy 5% wings, sell CE/PE nearest F ± 0.5% · "
         "1 lot",
@@ -498,6 +506,7 @@ class FeedEngine:
     _paper_long_str_variants: dict[str, PaperLongStraddle] = field(default_factory=dict, repr=False)
     _straddle_live: Any = field(default=None, repr=False)
     _llm_buyer: LlmBuyer | None = field(default=None, repr=False)
+    _llm_buyer_free: LlmBuyer | None = field(default=None, repr=False)  # freehand prompt (v4), paper only
     _llm_buyer_live: Any = field(default=None, repr=False)
     # Previous day's NIFTY open interest, for the dealer-gamma reading Scalper v3 logs.
     _gamma_oi: GammaOi | None = field(default=None, repr=False)
@@ -814,6 +823,14 @@ class FeedEngine:
             )
             self._log.info("llm_buyer book: all day, 1 min (live when ticked, allowed=%s)",
                            self._llm_buyer_live.allowed())
+            # The same LLM and live data with the freehand prompt (v4): paper only (no Kite client), no limits, and the
+            # same Paper box (off = no LLM calls for either book).
+            self._llm_buyer_free = LlmBuyer(
+                path=self.data_dir / LLM_BUYER_FREE_LEDGER, lot_size=self._nifty_option_lot(),
+                strategy=LLM_BUYER_FREE_STRATEGY, name="LLM buyer · freehand (v4)",
+                paper_flag=OnOffFlag(self.data_dir / LLM_BUYER_PAPER_FLAG),
+                decider=LlmDecider(read_llm_credentials(), prompt=render_prompt(LLM_BUYER_FREE_PROMPT)),
+            )
         if paper_long_straddle_tp20_enabled():
             self._paper_long_str_tp20 = PaperLongStraddle(
                 path=self.data_dir / LONG_STRADDLE_TP20_LEDGER, lot_size=self._nifty_option_lot(),
@@ -914,6 +931,8 @@ class FeedEngine:
             self._tasks.append(asyncio.create_task(self._paper_long_straddle_loop()))
         if self._llm_buyer is not None:
             self._tasks.append(asyncio.create_task(self._llm_buyer_loop(self._llm_buyer)))
+        if self._llm_buyer_free is not None:
+            self._tasks.append(asyncio.create_task(self._llm_buyer_loop(self._llm_buyer_free)))
         if self._agent is not None:
             self._tasks.append(asyncio.create_task(self._agent_loop()))
 
@@ -3947,6 +3966,12 @@ class FeedEngine:
             if self._llm_buyer is not None
             else {"ok": True, "mode": "paper", "enabled": False, "live_orders": False, "book": "llm_buyer",
                   "name": "LLM buyer"}
+        )
+        body["llm_buyer_free"] = (
+            self._llm_buyer_free.snapshot(self.book)
+            if self._llm_buyer_free is not None
+            else {"ok": True, "mode": "paper", "enabled": False, "live_orders": False, "book": "llm_buyer_free",
+                  "name": "LLM buyer · freehand (v4)"}
         )
         if self._paper_factor is None:
             body["factor_paper"] = {

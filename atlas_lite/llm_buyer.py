@@ -133,7 +133,19 @@ one-minute candle closes back through that level, or when the move has clearly r
 After a failed break you may trade the next clean break in either direction.
 Reply with JSON only: {"action": "...", "reason": "<one short sentence>"}
 When flat the action is one of BUY_CE, BUY_PE, WAIT, DONE_FOR_DAY. When holding: HOLD, EXIT."""
-PROMPTS = {"v2": SYSTEM_PROMPT_V2, "v3": SYSTEM_PROMPT_V3}
+# v4 "freehand" (13 Nov 2026, operator's call): no trading rules and no caution bias, only the data, the goal and the
+# costs. Runs as a second paper book (llm_buyer_free) beside v3 on the same live data, to see which approach earns more.
+SYSTEM_PROMPT_V4 = """You are a NIFTY options trader. Each minute you may buy one lot (65) of the at-the-money CALL or
+PUT, wait, or exit what you hold. You see what a trader sees at this minute: NIFTY's candles and levels, VWAP, the
+option prices, IV, VIX, PCR and your own position. New trades only until {last_entry}; an open trade may be held until
+{close} at the latest, when it is sold for you. Round-trip costs are about Rs 60-80 per option plus roughly 1 point of
+slippage. You are judged only on net profit at real bid/ask after costs over many days. Small losses on ideas that do
+not work are normal; profits come from the moves you catch and hold. Decide entirely on your own judgement: whether
+to trade, when, which side, how long to hold and when to get out.
+Reply with JSON only: {"action": "...", "reason": "<one short sentence>"}
+When flat the action is one of BUY_CE, BUY_PE, WAIT, DONE_FOR_DAY. When holding: HOLD, EXIT."""
+PROMPTS = {"v2": SYSTEM_PROMPT_V2, "v3": SYSTEM_PROMPT_V3, "v4": SYSTEM_PROMPT_V4}
+FREE_STRATEGY, FREE_LEDGER_NAME, FREE_PROMPT_VERSION = "llm_buyer_free", "paper_llm_buyer_free.jsonl", "v4"
 PROMPT_VERSION = "v3"  # live from 12 Nov 2026 at the operator's call, without a replay test (v2 kept for comparison)
 
 
