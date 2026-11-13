@@ -942,7 +942,9 @@ def test_paper_off_exit_is_logged_once_as_paper_off_and_untick_marker_survives_r
 
 def test_freehand_prompt_v4_has_no_trading_rules_and_keeps_the_book_contract() -> None:
     v4 = M.render_prompt("v4")
-    assert "New trades only until 15:00" in v4 and "held until\n15:08" in v4 or "held until 15:08" in v4
+    flat = " ".join(v4.split())
+    assert "New trades only until 15:00" in flat and "held until 15:08" in flat
+    assert "entries_left_today" in v4  # mentioned (only present when live), not a rule
     assert "BUY_CE, BUY_PE, WAIT, DONE_FOR_DAY" in v4 and "HOLD, EXIT" in v4 and "{" not in v4.split("Reply with")[0]
     for rule_word in ("chasing", "0.25%", "opening-range", "entry_level", "careful", "not obliged"):
         assert rule_word not in v4  # freehand: no rules, no caution bias
