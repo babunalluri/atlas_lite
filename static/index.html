@@ -2578,14 +2578,6 @@
               <dl class="book-inputs-list" id="llmBuyerInputsList"></dl>
             </details>
           </article>
-          <article class="book-card" data-src="llmBuyerFreeLine" data-title="LLM buyer · freehand (v4)">
-            <div class="history-detail book-src" id="llmBuyerFreeLine">LLM buyer · freehand: —</div>
-            <details class="book-inputs" id="llmBuyerFreeInputs" hidden>
-              <summary id="llmBuyerFreeInputsTitle">What it saw</summary>
-              <div class="book-chips" id="llmBuyerFreeFactors"></div>
-              <dl class="book-inputs-list" id="llmBuyerFreeInputsList"></dl>
-            </details>
-          </article>
         </div>
       </section>
       <section class="book-group" aria-label="Expiry-week selling">
@@ -7584,7 +7576,6 @@
         renderLongStraddle(paper.long_straddle || {});
         loadStraddleLive();
         renderLlmBuyer(paper.llm_buyer || {});
-        renderLlmBuyer(paper.llm_buyer_free || {}, "llmBuyerFreeLine", "llmBuyerFree");
         loadLlmBuyerPaper();
         loadLlmBuyerLive();
         renderLongStraddle(paper.long_straddle_tp20 || {}, "longStraddleTpLine", "ATLAS_LITE_PAPER_LONG_STRADDLE_TP20");

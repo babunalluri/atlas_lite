@@ -547,9 +547,10 @@ def test_hour_book_schedule_prompt_and_tags(tmp_path: Path) -> None:
     assert not b.decision_due(t("15:01"))  # flat: no new trades after 15:00
     frame(b, "15:03", q)
     assert not b.decision_due(t("15:03"))  # flat after 15:00: never asked, even before 15:08
-    assert "New trades only until 15:00" in M.SYSTEM_PROMPT and "held until 15:08" in M.SYSTEM_PROMPT
+    live_prompt = " ".join(M.SYSTEM_PROMPT.split())
+    assert "New trades only until 15:00" in live_prompt and "held until 15:08" in live_prompt
     assert (M.LAST_ENTRY, M.LAST_DECISION, M.EXIT_AT, M.LIVE_ORDERS_UNTIL) == ("15:00", "15:07", "15:08", "15:12")
-    assert "entries_left_today" in M.SYSTEM_PROMPT and "realised" not in M.SYSTEM_PROMPT
+    assert "entries_left_today" in M.render_prompt("v3") and "realised" not in M.SYSTEM_PROMPT
     kite = FakeKite()
     b2 = hour_book(tmp_path / "live", order_client=kite, live_flag=Flag())
     frame(b2, "09:20", q)
@@ -777,9 +778,9 @@ def test_sparse_padding_is_cut_within_the_total_budget() -> None:
     srv.close()
 
 
-def test_live_prompt_is_v3_and_keeps_the_book_contract() -> None:
-    assert M.PROMPT_VERSION == "v3" and M.SYSTEM_PROMPT == M.render_prompt("v3")
-    assert M.LlmDecider(None).prompt == M.SYSTEM_PROMPT  # the live decider sends v3
+def test_live_prompt_is_v4_and_v3_keeps_the_book_contract() -> None:
+    assert M.PROMPT_VERSION == "v4" and M.SYSTEM_PROMPT == M.render_prompt("v4")
+    assert M.LlmDecider(None).prompt == M.SYSTEM_PROMPT  # the book's decider sends v4 (freehand)
     v3 = M.render_prompt("v3")
     assert "New trades only until 15:00" in v3 and "held until 15:08" in v3 and "{" not in v3.split("Reply with")[0]
     assert "entries_left_today" in v3 and "realised" not in v3
@@ -945,40 +946,4 @@ def test_freehand_prompt_v4_has_no_trading_rules_and_keeps_the_book_contract() -
     assert "BUY_CE, BUY_PE, WAIT, DONE_FOR_DAY" in v4 and "HOLD, EXIT" in v4 and "{" not in v4.split("Reply with")[0]
     for rule_word in ("chasing", "0.25%", "opening-range", "entry_level", "careful", "not obliged"):
         assert rule_word not in v4  # freehand: no rules, no caution bias
-    assert M.PROMPT_VERSION == "v3" and M.FREE_PROMPT_VERSION == "v4" and M.FREE_STRATEGY == "llm_buyer_free"
-
-
-def test_freehand_book_is_paper_only_with_its_own_ledger_and_prompt(tmp_path: Path) -> None:
-    from atlas_lite.day_live_flag import OnOffFlag
-
-    paper = OnOffFlag(tmp_path / "paper.json")
-    sent = []
-
-    class Resp:
-        status_code = 200
-
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            return {"choices": [{"message": {"content": '{"action": "BUY_PE", "reason": "my call"}'}}]}
-
-    def post(url, **kw):
-        sent.append(kw["json"]["messages"][0]["content"])
-        return Resp()
-
-    class Creds:
-        api_key, base_url = "k", "https://openrouter.ai/api/v1"
-        openai_api_key, openai_base_url = "", ""
-
-    b = LlmBuyer(path=tmp_path / M.FREE_LEDGER_NAME, lot_size=65, strategy=M.FREE_STRATEGY, paper_flag=paper,
-                 decider=LlmDecider(Creds(), post=post, prompt=M.render_prompt("v4")))
-    q = Book()
-    frame(b, "10:00", q)
-    out = b.decider.decide(b.state(t("10:00"), q))
-    ev = b.apply(t("10:00"), {**out, "hm": "10:00"}, q)
-    assert sent[0] == M.render_prompt("v4") and ev["event"] == "open" and not ev.get("live")
-    assert not b.live_enabled() and "entries_left_today" not in b.state(t("10:01"), q)  # paper, no limits
-    assert all(e["strategy"] == "llm_buyer_free" for e in ledger(b))  # its own ledger lines
-    paper.set_enabled(False)
-    assert frame(b, "10:02", q)["reason"] == "paper_off" and not b.decision_due(t("10:03"))  # same Paper box
+    assert M.PROMPT_VERSION == "v4"  # the book runs freehand from 13 Nov
