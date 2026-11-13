@@ -945,6 +945,7 @@ def test_freehand_prompt_v4_has_no_trading_rules_and_keeps_the_book_contract() -
     flat = " ".join(v4.split())
     assert "New trades only until 15:00" in flat and "held until 15:08" in flat
     assert "entries_left_today" in v4  # mentioned (only present when live), not a rule
+    assert "not reasons on their own" in v4 and "Waiting has a cost too" in v4  # caution bias removed in plain words
     assert "BUY_CE, BUY_PE, WAIT, DONE_FOR_DAY" in v4 and "HOLD, EXIT" in v4 and "{" not in v4.split("Reply with")[0]
     for rule_word in ("chasing", "0.25%", "opening-range", "entry_level", "careful", "not obliged"):
         assert rule_word not in v4  # freehand: no rules, no caution bias
