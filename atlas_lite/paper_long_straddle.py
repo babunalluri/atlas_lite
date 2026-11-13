@@ -538,6 +538,12 @@ class PaperLongStraddle:
                 return None
             if pos.day != today:  # never sold (engine down): exit unknown
                 return self._close(now, book, "session_gap")
+            # Only at real bids: right after a restart the quotes are not back yet, and a close then has no price
+            # (13 Nov 2026 10:12 closed four books with no exit that way).
+            legs = [(leg, sym) for leg, sym in (("ce", pos.ce_symbol), ("pe", pos.pe_symbol)) if pos.sold_leg != leg]
+            if any(self._fill(book.get(sym), buying=False) is None for _, sym in legs):
+                self.last_reject = "retired_waiting_for_quotes"
+                return None
             return self._close(now, book, "retired")
         if pos is not None:
             if pos.day != today:  # never sold (engine down): exit unknown

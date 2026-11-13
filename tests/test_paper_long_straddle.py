@@ -363,6 +363,8 @@ def test_retired_book_sells_its_open_straddle_at_the_bids_and_never_opens_again(
     b = mk(tmp_path)
     assert frame(b, t("09:16"), quotes(120, 120))["event"] == "open"  # bought before it was retired
     b.retired = True
+    assert frame(b, t("10:04"), {}) is None and b.position is not None  # no quotes yet (just restarted): wait
+    assert b.last_reject == "retired_waiting_for_quotes"
     ev = frame(b, t("10:05"), quotes(110, 125))
     assert ev["event"] == "close" and ev["reason"] == "retired" and ev["pnl_known"] is True
     assert ev["exit"] == 109.5 + 124.5 and b.position is None  # sold at the bids, a priced close
