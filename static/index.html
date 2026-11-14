@@ -2090,6 +2090,7 @@
 
     /* ---- Trading books dialog (Agent) ---- */
     .agent-dialog { width: min(1240px, 100%); max-height: 92vh; padding: 16px 18px 18px; }
+    .books-tabs { display: flex; gap: 6px; margin: 4px 0 10px; }
     .agent-head { align-items: flex-start; margin-bottom: 10px; }
     .agent-title { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
     .agent-title h2 { font-size: 1.05rem; letter-spacing: 0.01em; }
@@ -2275,12 +2276,9 @@
         <div class="header-meta-end">
           <div class="header-actions">
             <button type="button" class="theme-toggle" id="themeToggle" title="Switch theme" aria-label="Switch theme">☀</button>
-            <button type="button" class="header-btn history-toggle" id="tradesToggle" title="View paper trades">
+            <button type="button" class="header-btn history-toggle" id="agentToggle" title="Trading books and paper trades">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18v2H3V5zm0 6h12v2H3v-2zm0 6h18v2H3v-2z"/><path d="M17 11h4v2h-4z" opacity=".55"/></svg>
-              Trades
-            </button>
-            <button type="button" class="header-btn history-toggle" id="agentToggle" title="Paper trading agent">
-              Agent
+              Books
             </button>
             <button type="button" class="header-btn history-toggle" id="historyToggle" title="View recorded snapshots">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3a9 9 0 1 0 9 9h-2a7 7 0 1 1-2.05-4.95L15 9h6V3l-2.76 2.76A8.96 8.96 0 0 0 13 3zm-1 5h2v5h-5V11h3V8z"/></svg>
@@ -2413,72 +2411,6 @@
       </div>
     </div>
   </main>
-  <div class="history-modal" id="tradesModal" aria-hidden="true">
-    <div class="history-backdrop" id="tradesBackdrop"></div>
-    <section class="history-dialog" id="tradesPanel" role="dialog" aria-modal="true" aria-label="Paper trades">
-      <div class="history-head">
-        <h2>Paper trades</h2>
-        <button type="button" class="history-close" id="tradesClose">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-          Close
-        </button>
-      </div>
-      <div class="history-toolbar">
-        <label for="tradesDayFilter">Day</label>
-        <select id="tradesDayFilter" title="Filter by IST day">
-          <option value="" selected>All days</option>
-        </select>
-        <label for="tradesBookFilter">Book</label>
-        <select id="tradesBookFilter" title="Filter by paper book">
-          <option value="" selected>All books</option>
-        </select>
-        <button type="button" id="tradesRefresh">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
-          Refresh
-        </button>
-        <span class="history-meta" id="tradesMeta">Paper only · latest first</span>
-      </div>
-      <div class="history-table-wrap" style="max-height:160px;margin-bottom:8px;">
-        <table class="history-table" id="tradesBookDayTable">
-          <thead>
-            <tr>
-              <th>Day</th>
-              <th>Book</th>
-              <th>Trades</th>
-              <th>Closed</th>
-              <th>Still open</th>
-              <th>PnL</th>
-            </tr>
-          </thead>
-          <tbody id="tradesBookDayRows">
-            <tr><td colspan="6" class="hist-muted">Book×day PnL loads with Trades</td></tr>
-          </tbody>
-        </table>
-      </div>
-      <div class="history-table-wrap">
-        <table class="history-table" id="tradesTable">
-          <thead>
-            <tr>
-              <th>Time</th>
-              <th>Book</th>
-              <th>Event</th>
-              <th>Side</th>
-              <th>Symbol</th>
-              <th>Entry</th>
-              <th>Exit</th>
-              <th>PnL</th>
-              <th>Reason</th>
-            </tr>
-          </thead>
-          <tbody id="tradesRows">
-            <tr><td colspan="9" class="hist-muted">Open Trades to load fills</td></tr>
-          </tbody>
-        </table>
-      </div>
-      <div class="history-detail" id="tradesDetail">Paper only · hover Book for entry/exit gates · latest first</div>
-      <div class="trades-float-tip" id="tradesFloatTip" hidden role="tooltip"></div>
-    </section>
-  </div>
   <div class="history-modal" id="loginModal" aria-hidden="true">
     <div class="history-backdrop" id="loginBackdrop"></div>
     <section class="history-dialog login-card" id="loginPanel" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
@@ -2521,6 +2453,11 @@
           Close
         </button>
       </div>
+      <div class="books-tabs" role="tablist" aria-label="Books or trades">
+        <button type="button" class="agent-btn primary" id="booksTabBooks" role="tab" aria-selected="true" aria-controls="agentBooksPane">Books</button>
+        <button type="button" class="agent-btn" id="booksTabTrades" role="tab" aria-selected="false" aria-controls="agentTradesPane">Trades</button>
+      </div>
+      <div id="agentBooksPane" role="tabpanel">
       <div class="agent-toolbar">
         <div class="agent-actions">
           <button type="button" class="agent-btn primary" id="agentAdviseBtn">Run trade cycle</button>
@@ -2614,11 +2551,68 @@
             <tr><th>Book</th><th>Mode</th><th>Source</th><th>Until</th><th>Reason</th><th></th></tr>
           </thead>
           <tbody id="agentGatesRows">
-            <tr><td colspan="6" class="hist-muted">Open Agent to load gates</td></tr>
+            <tr><td colspan="6" class="hist-muted">Open Books to load gates</td></tr>
           </tbody>
         </table>
       </div>
       </details>
+      </div>
+      <div id="agentTradesPane" role="tabpanel" hidden>
+      <div class="history-toolbar">
+        <label for="tradesDayFilter">Day</label>
+        <select id="tradesDayFilter" title="Filter by IST day">
+          <option value="" selected>All days</option>
+        </select>
+        <label for="tradesBookFilter">Book</label>
+        <select id="tradesBookFilter" title="Filter by paper book">
+          <option value="" selected>All books</option>
+        </select>
+        <button type="button" id="tradesRefresh">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+          Refresh
+        </button>
+        <span class="history-meta" id="tradesMeta">Paper only · latest first</span>
+      </div>
+      <div class="history-table-wrap" style="max-height:160px;margin-bottom:8px;">
+        <table class="history-table" id="tradesBookDayTable">
+          <thead>
+            <tr>
+              <th>Day</th>
+              <th>Book</th>
+              <th>Trades</th>
+              <th>Closed</th>
+              <th>Still open</th>
+              <th>PnL</th>
+            </tr>
+          </thead>
+          <tbody id="tradesBookDayRows">
+            <tr><td colspan="6" class="hist-muted">Book×day PnL loads with Trades</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="history-table-wrap">
+        <table class="history-table" id="tradesTable">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Book</th>
+              <th>Event</th>
+              <th>Side</th>
+              <th>Symbol</th>
+              <th>Entry</th>
+              <th>Exit</th>
+              <th>PnL</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody id="tradesRows">
+            <tr><td colspan="9" class="hist-muted">Open the Trades tab to load fills</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="history-detail" id="tradesDetail">Paper only · hover Book for entry/exit gates · latest first</div>
+      <div class="trades-float-tip" id="tradesFloatTip" hidden role="tooltip"></div>
+      </div>
     </section>
   </div>
   <div class="history-modal" id="historyModal" aria-hidden="true">
@@ -6315,9 +6309,8 @@
 
     function updateModalScrollLock() {
       const historyOpen = document.getElementById("historyModal")?.classList.contains("open");
-      const tradesOpen = document.getElementById("tradesModal")?.classList.contains("open");
       const agentOpen = document.getElementById("agentModal")?.classList.contains("open");
-      document.body.style.overflow = (historyOpen || tradesOpen || agentOpen) ? "hidden" : "";
+      document.body.style.overflow = (historyOpen || agentOpen) ? "hidden" : "";
     }
 
     function lsGet(key, fallback) {
@@ -6713,12 +6706,12 @@
       const modal = document.getElementById("historyModal");
       const btn = document.getElementById("historyToggle");
       if (open) {
-        const tradesModal = document.getElementById("tradesModal");
-        const tradesBtn = document.getElementById("tradesToggle");
-        if (tradesModal?.classList.contains("open")) {
-          tradesModal.classList.remove("open");
-          tradesModal.setAttribute("aria-hidden", "true");
-          tradesBtn?.classList.remove("active");
+        const agentModal = document.getElementById("agentModal");
+        if (agentModal?.classList.contains("open")) {
+          agentModal.classList.remove("open");
+          agentModal.setAttribute("aria-hidden", "true");
+          document.getElementById("agentToggle")?.classList.remove("active");
+          hideTradesBookTip();
         }
       }
       modal.classList.toggle("open", open);
@@ -7007,35 +7000,24 @@
       }
     }
 
-    async function setTradesOpen(open) {
-      const modal = document.getElementById("tradesModal");
-      const btn = document.getElementById("tradesToggle");
-      if (!modal || !btn) return;
-      if (open) {
-        const historyModal = document.getElementById("historyModal");
-        const historyBtn = document.getElementById("historyToggle");
-        if (historyModal?.classList.contains("open")) {
-          historyModal.classList.remove("open");
-          historyModal.setAttribute("aria-hidden", "true");
-          historyBtn?.classList.remove("active");
-        }
+    // Books window: "Books" (cards, live switches, gates) and "Trades" (paper trades table) tabs.
+    let booksTab = "books";
+    async function showBooksTab(tab) {
+      booksTab = tab === "trades" ? "trades" : "books";
+      const trades = booksTab === "trades";
+      document.getElementById("agentBooksPane").hidden = trades;
+      document.getElementById("agentTradesPane").hidden = !trades;
+      for (const [id, on] of [["booksTabBooks", !trades], ["booksTabTrades", trades]]) {
+        const b = document.getElementById(id);
+        b?.classList.toggle("primary", on);
+        b?.setAttribute("aria-selected", on ? "true" : "false");
       }
-      modal.classList.toggle("open", open);
-      modal.setAttribute("aria-hidden", open ? "false" : "true");
-      btn.classList.toggle("active", open);
-      updateModalScrollLock();
-      if (!open) hideTradesBookTip();
-      if (open) await loadPaperTrades();
+      if (trades) await loadPaperTrades();
+      else hideTradesBookTip();
     }
 
-    async function toggleTradesPanel() {
-      const modal = document.getElementById("tradesModal");
-      await setTradesOpen(!modal?.classList.contains("open"));
-    }
-
-    document.getElementById("tradesToggle")?.addEventListener("click", () => { toggleTradesPanel(); });
-    document.getElementById("tradesClose")?.addEventListener("click", () => { setTradesOpen(false); });
-    document.getElementById("tradesBackdrop")?.addEventListener("click", () => { setTradesOpen(false); });
+    document.getElementById("booksTabBooks")?.addEventListener("click", () => { showBooksTab("books"); });
+    document.getElementById("booksTabTrades")?.addEventListener("click", () => { showBooksTab("trades"); });
     document.getElementById("tradesRefresh")?.addEventListener("click", () => { loadPaperTrades(); });
     document.getElementById("tradesDayFilter")?.addEventListener("change", () => { loadPaperTrades(); });
     document.getElementById("tradesBookFilter")?.addEventListener("change", () => { loadPaperTrades(); });
@@ -7468,18 +7450,18 @@
       const btn = document.getElementById("agentToggle");
       if (!modal || !btn) return;
       if (open) {
-        document.getElementById("tradesModal")?.classList.remove("open");
         document.getElementById("historyModal")?.classList.remove("open");
-        document.getElementById("tradesToggle")?.classList.remove("active");
         document.getElementById("historyToggle")?.classList.remove("active");
       }
       modal.classList.toggle("open", open);
       modal.setAttribute("aria-hidden", open ? "false" : "true");
       btn.classList.toggle("active", open);
       updateModalScrollLock();
+      if (!open) hideTradesBookTip();
       if (open) {
         loadAgentTokenField();
         await loadAgentPanel();
+        if (booksTab === "trades") await loadPaperTrades();
       }
     }
 
@@ -7636,10 +7618,6 @@
 
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
-        if (document.getElementById("tradesModal")?.classList.contains("open")) {
-          setTradesOpen(false);
-          return;
-        }
         if (document.getElementById("agentModal")?.classList.contains("open")) {
           setAgentOpen(false);
           return;
