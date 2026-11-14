@@ -83,7 +83,7 @@ TAG_PREFIX = "llm"
 MODEL_OPENROUTER = "anthropic/claude-sonnet-5.5"
 MODEL_OPENAI: str | None = None
 LLM_TIMEOUT_S = 25.0  # a whole call, start to answer (OpenRouter's keep-alive padding defeats httpx's per-read timeout)
-LLM_MAX_TOKENS = 600
+LLM_MAX_TOKENS = 1000  # reasoning models (e.g. Grok 4.7 ~450 thinking tokens at low effort) need room; billed as used
 LIVE_EVENTS = frozenset({"order_intent", "order_sent", "order_send_error", "order_cancel_sent", "order_final",
                          "live_phase", "manual_needed", "live_mark"})
 
@@ -242,11 +242,11 @@ class LlmDecider:
             body = {"model": model, "temperature": 0.1, "max_tokens": LLM_MAX_TOKENS,
                     "messages": [{"role": "system", "content": self.prompt},
                                  {"role": "user", "content": json.dumps(state, separators=(",", ":"))}]}
-            if model.startswith("anthropic/"):
-                # Claude models always reason on OpenRouter; at default effort the thinking could use the whole
-                # token budget and return no answer. Low effort answers directly.
-                body["reasoning"] = {"effort": "low"}
             if name == "openrouter":
+                # Low reasoning effort for every OpenRouter model: Claude at default effort could use the whole token
+                # budget and return no answer; Grok 4.7 at default took ~17 s (past the deadline), ~10 s at low.
+                # (OpenAI's own endpoint rejects this field.)
+                body["reasoning"] = {"effort": "low"}
                 body["provider"] = {"sort": "latency"}  # fastest host of the same model; OpenRouter still falls back
             try:
                 r = self._post(f"{base.rstrip('/')}/chat/completions", json=body, timeout=LLM_TIMEOUT_S,
@@ -406,6 +406,11 @@ class LlmBuyer:
                 self.decided.add(str(ev.get("hm")))
                 ok = ev.get("valid") if "valid" in ev else ev.get("action") != "ERROR"
                 self.errors_in_row = 0 if ok else self.errors_in_row + 1
+                # The dashboard shows the last decision: keep today's across a restart (it went blank until the
+                # next minute's answer before).
+                self.last_decision = {"hm": ev.get("hm"), "action": ev.get("action") or "ERROR",
+                                      "reason": ev.get("reason") or ev.get("error"), "factors": ev.get("factors") or [],
+                                      "provider": ev.get("provider"), "inputs": ev.get("inputs") or {}}
             elif kind == "live_start":
                 self.entries += 1  # a live entry counts from its start line (its "open" comes once filled)
             elif kind == "live_abort":

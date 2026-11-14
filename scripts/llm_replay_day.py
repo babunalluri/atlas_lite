@@ -190,9 +190,18 @@ def main() -> None:
     ap.add_argument("--prompt", choices=sorted(llm_buyer.PROMPTS), help="prompt version for this replay only (default: live)")
     ap.add_argument("--reprice", help="decision log (jsonl) to refill without LLM calls")
     ap.add_argument("--rebuild", action="store_true", help="rebuild the cached day files from the recordings")
+    ap.add_argument("--until", default="", help="stop after this minute (HH:MM), e.g. 10:16 for the first hour")
+    ap.add_argument("--max-tokens", type=int, default=0, help="answer token cap for this replay (thinking models)")
     args = ap.parse_args()
+    if args.until:  # "9:45" -> "09:45"; anything else is refused (a bad value would replay the whole paid day)
+        try:
+            args.until = datetime.strptime(args.until, "%H:%M").strftime("%H:%M")
+        except ValueError:
+            ap.error(f"--until must be HH:MM, got {args.until!r}")
     if args.model:
         llm_buyer.MODEL_OPENROUTER = args.model  # read at call time by LlmDecider.targets()
+    if args.max_tokens:
+        llm_buyer.LLM_MAX_TOKENS = args.max_tokens
     OUT.mkdir(parents=True, exist_ok=True)
     cache, dcache = OUT / f"day_{args.day}.pkl", OUT / f"depth_{args.day}.pkl"
     if args.rebuild or not cache.exists():
@@ -224,6 +233,8 @@ def main() -> None:
     with log.open("w") as out_fh:
         for hm in [f"{h:02d}:{m:02d}" for h in range(9, 16) for m in range(60)]:
             prev = _minute(hm, -1)
+            if args.until and hm > args.until:
+                break
             if not ("09:15" <= hm <= llm_buyer.LIVE_ORDERS_UNTIL) or prev not in feed:
                 continue
             f = {**feed[prev], "bars_today": [x for x in bars if x["t"][11:16] < hm]}  # live: closed candles only

@@ -84,7 +84,7 @@ def test_decider_parses_and_has_no_openai_fallback() -> None:
     ok = LlmDecider(Creds(), post=lambda url, **kw: (bodies.append(kw["json"]),
                     Resp(200, '{"action": "buy_pe", "reason": "new lows"}'))[1]).decide({"time": "10:40"})
     assert ok["action"] == "BUY_PE" and ok["provider"] == "openrouter" and ok["model"] == "anthropic/claude-sonnet-5.5"
-    assert bodies[0]["reasoning"] == {"effort": "low"} and bodies[0]["max_tokens"] == 600  # answers, never empty
+    assert bodies[0]["reasoning"] == {"effort": "low"} and bodies[0]["max_tokens"] == 1000  # answers, never empty
     assert bodies[0]["provider"] == {"sort": "latency"}  # the fastest host of the same model
     assert LlmDecider(None).decide({})["error"] == "no_llm_credentials"
 
@@ -166,6 +166,7 @@ def test_restart_restores_position_decisions_and_day_total(tmp_path: Path) -> No
     finally:
         mod.datetime = real_now
     assert b2.position is not None and b2.position.leg == "pe" and b2.paper_entries == 2
+    assert b2.last_decision["hm"] == "10:10" and b2.last_decision["action"] == "BUY_PE"  # the card is not blank
     assert {"10:00", "10:05", "10:10"} <= b2.decided and b2.paper_realized == b.paper_realized
 
 
@@ -950,3 +951,44 @@ def test_freehand_prompt_v4_has_no_trading_rules_and_keeps_the_book_contract() -
     for rule_word in ("chasing", "0.25%", "opening-range", "entry_level", "careful", "not obliged"):
         assert rule_word not in v4  # freehand: no rules, no caution bias
     assert M.PROMPT_VERSION == "v4"  # the book runs freehand from 13 Nov
+
+
+def test_reasoning_field_goes_to_openrouter_only(monkeypatch) -> None:
+    class Creds:
+        api_key, base_url = "k1", "https://openrouter.ai/api/v1"
+        openai_api_key, openai_base_url = "k2", "https://api.openai.com/v1"
+
+    class Resp:
+        status_code = 200
+
+        def __init__(self, code=200):
+            self.status_code = code
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError("down")
+
+        def json(self):
+            return {"choices": [{"message": {"content": '{"action": "WAIT", "reason": "x"}'}}]}
+
+    bodies = {}
+
+    def post(url, **kw):
+        name = "openrouter" if "openrouter" in url else "openai"
+        bodies[name] = kw["json"]
+        return Resp(500 if name == "openrouter" else 200)
+
+    monkeypatch.setattr(M, "MODEL_OPENAI", "gpt-x")
+    out = LlmDecider(Creds(), post=post).decide({})
+    assert out["provider"] == "openai" and bodies["openrouter"]["reasoning"] == {"effort": "low"}
+    assert "reasoning" not in bodies["openai"] and "provider" not in bodies["openai"]  # OpenAI rejects these fields
+
+
+def test_replay_until_accepts_unpadded_time_and_refuses_junk(tmp_path) -> None:
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parents[1] / "scripts" / "llm_replay_day.py"
+    bad = subprocess.run([sys.executable, str(script), "2026-11-13", "--until", "945"], capture_output=True, text=True)
+    assert bad.returncode != 0 and "--until must be HH:MM" in bad.stderr
