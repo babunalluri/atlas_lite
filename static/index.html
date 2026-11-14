@@ -2582,6 +2582,9 @@
           <article class="book-card" data-src="expiryEveStrangleLine" data-title="NIFTY expiry-eve strangle">
             <div class="history-detail book-src" id="expiryEveStrangleLine">NIFTY expiry-eve strangle: —</div>
           </article>
+          <article class="book-card" data-src="expiryEveStrangle1pctLine" data-title="NIFTY expiry-eve strangle ±1%">
+            <div class="history-detail book-src" id="expiryEveStrangle1pctLine">NIFTY expiry-eve strangle ±1%: —</div>
+          </article>
           <article class="book-card" data-src="expiryDayStraddleLine" data-title="NIFTY expiry-day straddle">
             <div class="history-detail book-src" id="expiryDayStraddleLine">NIFTY expiry-day straddle: —</div>
           </article>
@@ -2590,34 +2593,6 @@
           </article>
           <article class="book-card" data-src="sensexExpiryDayStraddleLine" data-title="SENSEX expiry-day straddle">
             <div class="history-detail book-src" id="sensexExpiryDayStraddleLine">SENSEX expiry-day straddle: —</div>
-          </article>
-        </div>
-      </section>
-      <section class="book-group" aria-label="Weekly selling">
-        <h4 class="book-group-title">Weekly selling</h4>
-        <div class="book-grid">
-          <article class="book-card" data-src="weeklyStrangleLine" data-title="Weekly strangle">
-            <div class="history-detail book-src" id="weeklyStrangleLine">Weekly strangle: —</div>
-          </article>
-          <article class="book-card" data-src="weeklyCondorLine" data-title="Weekly condor 5%">
-            <div class="history-detail book-src" id="weeklyCondorLine">Weekly condor 5%: —</div>
-          </article>
-          <article class="book-card" data-src="weeklyStrangle1000Line" data-title="Weekly strangle 1,000">
-            <div class="history-detail book-src" id="weeklyStrangle1000Line">Weekly strangle 1,000: —</div>
-          </article>
-        </div>
-      </section>
-      <section class="book-group" aria-label="Scalper v3">
-        <h4 class="book-group-title">Scalper v3</h4>
-        <div class="book-grid">
-          <article class="book-card" data-src="scalperV3Line" data-title="Scalper v3 · 13:00">
-            <div class="history-detail book-src" id="scalperV3Line">Scalper v3 · 13:00: —</div>
-          </article>
-          <article class="book-card" data-src="scalperV31415Line" data-title="Scalper v3 · 14:15 hold">
-            <div class="history-detail book-src" id="scalperV31415Line">Scalper v3 · 14:15 hold: —</div>
-          </article>
-          <article class="book-card" data-src="scalperV3WingsLine" data-title="Scalper v3 · 1,000 wings">
-            <div class="history-detail book-src" id="scalperV3WingsLine">Scalper v3 · 1,000 wings: —</div>
           </article>
         </div>
       </section>
@@ -7252,43 +7227,6 @@
       }
     });
 
-    function renderScalperV3(v3, elId = "scalperV3Line", flag = "ATLAS_LITE_PAPER_SCALPER_V3") {
-      const line = document.getElementById(elId);
-      if (!line) return;
-      const name = v3.name || "Scalper v3";
-      if (!v3.enabled) {
-        line.textContent = `${name} · off (${flag}=0)`;
-        return;
-      }
-      const pos = v3.position;
-      // Logged only: the regime never blocks a v3 entry.
-      const g = v3.gamma;
-      const gammaText = g ? ` · last entry gamma ${g.regime} (${g.share > 0 ? "+" : ""}${g.share})` : "";
-      line.textContent = (pos
-        ? `${name} · short ${pos.atm} ${pos.wings ? "iron fly" : "straddle"} · credit ${pos.credit} · cost now ${pos.cost_now ?? "—"}` +
-          (pos.target != null ? ` (target ${pos.target} / stop ${pos.stop})` : " (held to 15:14)") + ` · open PnL ${pos.open_pnl ?? "—"}`
-        : `${name} · FLAT · sells the ATM ${v3.wing_pts ? `straddle with ${v3.wing_pts}-pt wings` : "straddle"} at ${v3.entry_at || "13:00"} on non-expiry days` + (v3.last_reject ? ` · ${v3.last_reject}` : "")) + gammaText;
-    }
-
-    function renderWeeklySell(elId, wb) {
-      const line = document.getElementById(elId);
-      if (!line) return;
-      const name = wb.name || wb.book || "Weekly book";
-      if (!wb.enabled) {
-        line.textContent = `${name} · off (ATLAS_LITE_PAPER_WEEKLY_SELL=0)`;
-        return;
-      }
-      const pos = wb.position;
-      if (!pos) {
-        const sessions = wb.sessions === 2 ? "two" : "three";
-        line.textContent = `${name} · FLAT · enters 15:25 ${sessions} sessions before expiry` + (wb.last_reject ? ` · ${wb.last_reject}` : "");
-        return;
-      }
-      line.textContent =
-        `${name} · exp ${pos.expiry} · ${pos.legs.join(", ")} · credit ${pos.credit}` +
-        ` · cost now ${pos.cost_now ?? "—"} (stop ${pos.stop_level}) · open PnL ${pos.open_pnl ?? "—"}`;
-    }
-
     function renderExpirySell(elId, eb) {
       const line = document.getElementById(elId);
       if (!line) return;
@@ -7479,13 +7417,8 @@
         renderLlmBuyer(paper.llm_buyer || {});
         loadLlmBuyerPaper();
         loadLlmBuyerLive();
-        renderScalperV3(paper.scalper_v3 || {});
-        renderScalperV3(paper.scalper_v3_1415 || {}, "scalperV31415Line", "ATLAS_LITE_PAPER_SCALPER_V3_1415");
-        renderScalperV3(paper.scalper_v3_wings || {}, "scalperV3WingsLine", "ATLAS_LITE_PAPER_SCALPER_V3_WINGS");
-        renderWeeklySell("weeklyStrangleLine", paper.weekly_strangle || {});
-        renderWeeklySell("weeklyCondorLine", paper.weekly_condor5 || {});
-        renderWeeklySell("weeklyStrangle1000Line", paper.weekly_strangle1000 || {});
         renderExpirySell("expiryEveStrangleLine", paper.expiry_eve_strangle || {});
+        renderExpirySell("expiryEveStrangle1pctLine", paper.expiry_eve_strangle_1pct || {});
         renderExpirySell("expiryDayStraddleLine", paper.expiry_day_straddle || {});
         renderExpirySell("sensexExpiryEveStrangleLine", paper.sensex_expiry_eve_strangle || {});
         renderExpirySell("sensexExpiryDayStraddleLine", paper.sensex_expiry_day_straddle || {});

@@ -63,6 +63,7 @@ KNOWN_BOOKS = (
     "ai_agent",
     "ict",
     "expiry_eve_strangle",
+    "expiry_eve_strangle_1pct",
     "expiry_day_straddle",
     "sensex_expiry_eve_strangle",
     "sensex_expiry_day_straddle",

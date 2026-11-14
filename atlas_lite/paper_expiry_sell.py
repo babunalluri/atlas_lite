@@ -50,6 +50,12 @@ SIZE_UP_VIX: float | None = None  # 1 lot always; 17.0 doubled lots at VIX >= 17
 BOOKS: dict[str, dict[str, Any]] = {
     "expiry_eve_strangle": {"index": "nifty", "ledger": "paper_expiry_eve_strangle.jsonl", "sessions": 1, "dist": 0.005,
                             "wing_pct": 0.05, "stop": 1.0, "min_vix": None, "name": "Expiry-eve strangle ±0.5% (5% wings)"},
+    # 14 Nov 2026 head-to-head winner (scratchpad sell_best.py / sell_robust.py, 2026 STT): ±1%, no wings, per-leg
+    # stop +100%. Per week, 1 lot: +Rs 1,524 / +Rs 1,253 (t 3.7 / 4.7), max drawdown -Rs 25k / -Rs 16k, every year
+    # positive; still t >= 2.8 with stop fills 5% worse and sales 3% cheaper. Wings and the VIX gate lowered results.
+    "expiry_eve_strangle_1pct": {"index": "nifty", "ledger": "paper_expiry_eve_strangle_1pct.jsonl", "sessions": 1,
+                                 "dist": 0.01, "wing_pct": None, "stop": 1.0, "min_vix": None,
+                                 "name": "Expiry-eve strangle ±1% (no wings)"},
     "expiry_day_straddle": {"index": "nifty", "ledger": "paper_expiry_day_straddle.jsonl", "sessions": 0, "dist": 0.0,
                             "wing_pct": 0.05, "stop": 0.5, "min_vix": 13.0, "name": "Expiry-day straddle (5% wings)"},
     # Same rules on SENSEX (BSE, Thursday expiry). Not backtested on SENSEX: this paper run is the test.

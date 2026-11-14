@@ -119,6 +119,19 @@ def test_gate_blocks_entry(tmp_path) -> None:
     assert frame(b, t(ENTRY_DAY, "15:25"), chain(), allow=False) is None and b.last_reject == "gate_paused"
 
 
+def test_retired_book_opens_nothing_but_an_open_position_still_closes(tmp_path) -> None:
+    b = mk(tmp_path, "weekly_strangle", None)
+    frame(b, t(ENTRY_DAY, "15:25"), chain())
+    assert b.position is not None
+    r = PaperWeeklySell(path=b.path, strategy="weekly_strangle", wing_pct=None, retired=True)  # restart, retired
+    assert r.position is not None and r.snapshot()["retired"] is True
+    ev = frame(r, t("2026-10-30", "15:25"), chain(F=22300))
+    assert ev is not None and ev["event"] == "close" and ev["reason"] == "stop"
+    nxt = date(2026, 11, 10)
+    assert frame(r, t("2026-11-05", "15:25"), chain(), expiry=nxt) is None  # 3 sessions before the next expiry
+    assert r.position is None and r.last_reject == "retired"
+
+
 def test_stop_fires_at_next_daily_check_not_intraday(tmp_path) -> None:
     b = mk(tmp_path, "weekly_strangle", None)
     frame(b, t(ENTRY_DAY, "15:25"), chain())

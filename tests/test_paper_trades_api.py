@@ -710,11 +710,11 @@ def test_retired_books_are_hidden_when_asked(tmp_path: Path) -> None:
         (tmp_path / name).write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
 
     ledger("paper_ict.jsonl", "ict", -1314.0)
-    ledger("paper_scalper_v3.jsonl", "scalper_v3", 695.0)
+    ledger("paper_expiry_day_straddle.jsonl", "expiry_day_straddle", 695.0)
     eng = _engine(tmp_path)
     everything = eng.list_paper_trades(limit=10)
-    assert set(everything["books"]) == {"ict", "scalper_v3"}
+    assert set(everything["books"]) == {"ict", "expiry_day_straddle"}
     shown = eng.list_paper_trades(limit=10, hide_retired=True)
-    assert shown["books"] == ["scalper_v3"]
-    assert {t["strategy"] for t in shown["trades"]} == {"scalper_v3"}
+    assert shown["books"] == ["expiry_day_straddle"]
+    assert {t["strategy"] for t in shown["trades"]} == {"expiry_day_straddle"}
     assert shown["pnl_total"] == 695.0

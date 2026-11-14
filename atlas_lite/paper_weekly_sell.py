@@ -165,6 +165,7 @@ class PaperWeeklySell:
     sessions: int = SESSIONS
     stop_mult: float = STOP_MULT
     width_pts: float | None = None  # fixed distance between the short strikes instead of sd
+    retired: bool = False  # no new trades; an open position still runs to its stop or expiry close
     position: WeeklyPosition | None = None
     entered_for: str = ""  # expiry already entered (one trade per weekly expiry)
     last_reject: str | None = None
@@ -448,6 +449,9 @@ class PaperWeeklySell:
                 self._append({"event": "stop_check", "ts": now.isoformat(), "day": pos_day(now),
                               "cost_ltp": round(cost, 2), "stop_level": round(self.stop_mult * pos.credit_ltp, 2)})
             return None
+        if self.retired:
+            self.last_reject = "retired"
+            return None
         if expiry is None or option_symbol is None or atm is None or not _is_nse_trading_day(today):
             return None
         if self.entered_for == expiry.isoformat():
@@ -470,6 +474,7 @@ class PaperWeeklySell:
             "book": self.strategy,
             "name": BOOKS.get(self.strategy, {}).get("name", self.strategy),
             "enabled": True,
+            "retired": self.retired,
             "wing_pct": self.wing_pct,
             "sessions": self.sessions,
             "width_pts": self.width_pts,

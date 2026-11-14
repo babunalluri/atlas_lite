@@ -79,6 +79,19 @@ def test_eve_strangle_enters_once_with_wings_first(tmp_path: Path) -> None:
     assert frame(b, t(EVE, "09:18"), chain()) is None  # one trade per expiry
 
 
+def test_eve_strangle_1pct_book_sells_two_naked_legs_at_one_percent(tmp_path: Path) -> None:
+    from atlas_lite.paper_expiry_sell import BOOKS
+
+    cfg = BOOKS["expiry_eve_strangle_1pct"]
+    assert (cfg["index"], cfg["sessions"], cfg["dist"], cfg["wing_pct"], cfg["stop"], cfg["min_vix"]) == \
+        ("nifty", 1, 0.01, None, 1.0, None)
+    b = PaperExpirySell(path=tmp_path / "eve1.jsonl", strategy="expiry_eve_strangle_1pct", sessions=cfg["sessions"],
+                        dist=cfg["dist"], wing_pct=cfg["wing_pct"], stop=cfg["stop"], min_vix=cfg["min_vix"])
+    ev = frame(b, t(EVE, "09:17"), chain(), vix=None)  # no VIX gate: enters without a VIX quote
+    assert ev and ev["event"] == "open" and ev["qty"] == 65
+    assert [(x["strike"], x["opt"], x["sign"]) for x in ev["legs"]] == [(23250, "CE", -1), (22750, "PE", -1)]
+
+
 def test_eve_strangle_leg_stop_then_expiry_close(tmp_path: Path) -> None:
     b = eve(tmp_path, wing=None)
     frame(b, t(EVE, "09:17"), chain())

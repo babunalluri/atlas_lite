@@ -267,6 +267,12 @@ MCX_INSTRUMENTS_FILE = "mcx_instruments.csv"  # display-only commodity futures i
 # Long straddle books retired (operator's call, 13 Nov 2026): open paper straddles are sold at the bids on the next
 # frame and the books never open again; their cards and the Live straddle switch are off the dashboard.
 LONG_STRADDLE_RETIRED = True
+# Retired 14 Nov 2026 (operator's call, after the selling head-to-head): the scalper v3 books (13:00 / 14:15 / wings)
+# are no longer built (intraday only, nothing carried); the weekly strangle / condor / strangle-1000 open no new
+# trades, and the positions already open run to their stop or expiry close (Tue 17 Nov). All six are off the
+# dashboard.
+SCALPER_V3_RETIRED = True
+WEEKLY_SELL_RETIRED = True
 NFO_INSTRUMENTS_META = "instruments.meta.json"
 MIN_BARS_FOR_ADX = 29
 # Overwrite tick-built OHLC with Kite REST for ~1 session+ of 1m bars.
@@ -300,6 +306,14 @@ RETIRED_PAPER_STRATEGIES = frozenset(
         "long_straddle_tp20",
         "long_straddle_trail",
         "long_straddle_leg50",
+        # retired 14 Nov 2026 (SCALPER_V3_RETIRED)
+        "scalper_v3",
+        "scalper_v3_1415",
+        "scalper_v3_wings",
+        # retired 14 Nov 2026 (WEEKLY_SELL_RETIRED); positions open on that day still settle in their ledgers
+        "weekly_strangle",
+        "weekly_condor5",
+        "weekly_strangle1000",
     }
 )
 
@@ -388,31 +402,35 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
         "target / stop / trail / time · shadow_open/close until approval · flat 15:14",
     ),
     "scalper_v3_1415": (
-        "14:15 on non-expiry trading days · sell ATM CE+PE · 1 lot · one trade a day · paper only",
+        "RETIRED 14 Nov 2026 · was: 14:15 on non-expiry trading days · sell ATM CE+PE · 1 lot · one trade a day · paper only",
         "no target or stop · flat 15:14",
     ),
     "scalper_v3_wings": (
-        "13:00 on non-expiry trading days · sell ATM CE+PE, buy CE/PE 1,000 pts out · 1 lot · paper only",
+        "RETIRED 14 Nov 2026 · was: 13:00 on non-expiry trading days · sell ATM CE+PE, buy CE/PE 1,000 pts out · 1 lot · paper only",
         "take profit at 30% of net credit / stop at −30% · else flat 15:14",
     ),
     "scalper_v3": (
-        "13:00 on non-expiry trading days · sell ATM CE+PE · 1 lot · one trade a day",
+        "RETIRED 14 Nov 2026 · was: 13:00 on non-expiry trading days · sell ATM CE+PE · 1 lot · one trade a day",
         "take profit at 30% of credit / stop at −30% · else flat 15:14",
     ),
     "weekly_strangle": (
-        "15:25, 3 sessions before Tuesday expiry · sell put/call at ±1.5 SD (ATM IV) · no wings · 1 lot",
+        "RETIRED 14 Nov 2026 (no new trades; open one runs to its stop or expiry) · was: 15:25, 3 sessions before Tuesday expiry · sell put/call at ±1.5 SD (ATM IV) · no wings · 1 lot",
         "stop at 15:25 daily if cost ≥ 3× credit · else hold to expiry, close 15:29",
     ),
     "weekly_condor5": (
-        "15:25, 3 sessions before Tuesday expiry · sell put/call at ±1.5 SD · buy wings 5% beyond · 1 lot",
+        "RETIRED 14 Nov 2026 (no new trades; open one runs to its stop or expiry) · was: 15:25, 3 sessions before Tuesday expiry · sell put/call at ±1.5 SD · buy wings 5% beyond · 1 lot",
         "stop at 15:25 daily if cost ≥ 3× credit · else hold to expiry, close 15:29",
     ),
     "weekly_strangle1000": (
-        "15:25, 2 sessions before Tuesday expiry · sell put/call 1,000 pts apart (F ± 500) · no wings · 1 lot",
+        "RETIRED 14 Nov 2026 (no new trades; open one runs to its stop or expiry) · was: 15:25, 2 sessions before Tuesday expiry · sell put/call 1,000 pts apart (F ± 500) · no wings · 1 lot",
         "stop at 15:25 daily if cost ≥ 3× credit · else hold to expiry, close 15:29",
     ),
     "expiry_eve_strangle": (
         "09:16, 1 session before expiry · buy 5% wings, sell CE/PE nearest F ± 0.5% · 1 lot",
+        "per-leg stop when a short leg doubles · else hold to expiry day, close 15:14",
+    ),
+    "expiry_eve_strangle_1pct": (
+        "09:16, 1 session before expiry · sell CE/PE nearest F ± 1% · no wings · 1 lot",
         "per-leg stop when a short leg doubles · else hold to expiry day, close 15:14",
     ),
     "expiry_day_straddle": (
@@ -776,12 +794,12 @@ class FeedEngine:
                 self._paper_ai_agent.lots,
                 self._paper_ai_agent.lots * lot,
             )
-        if paper_scalper_v3_enabled():
+        if paper_scalper_v3_enabled() and not SCALPER_V3_RETIRED:
             self._paper_v3 = PaperScalperV3(path=self.data_dir / SCALPER_V3_LEDGER, lot_size=self._nifty_option_lot())
             self._gamma_oi = GammaOi(self.data_dir)
             self._log.info("scalper_v3 paper book qty %d (13:00 straddle sale, no live orders)", self._paper_v3.qty)
         for name, cfg in SCALPER_V3_VARIANTS.items():
-            if paper_scalper_v3_variant_enabled(name):
+            if paper_scalper_v3_variant_enabled(name) and not SCALPER_V3_RETIRED:
                 self._paper_v3_variants[name] = PaperScalperV3(
                     path=self.data_dir / cfg["ledger"], lot_size=self._nifty_option_lot(),
                     strategy=name, name=cfg["name"], **cfg["kwargs"],
@@ -846,6 +864,7 @@ class FeedEngine:
                 self._paper_weekly[name] = PaperWeeklySell(
                     path=self.data_dir / cfg["ledger"], strategy=name, wing_pct=cfg["wing_pct"], lot_size=lot,
                     sessions=cfg.get("sessions", WEEKLY_SELL_SESSIONS), width_pts=cfg.get("width_pts"),
+                    retired=WEEKLY_SELL_RETIRED,
                 )
             self._log.info("weekly option-selling paper books: %s (qty %d, no live orders)", ", ".join(self._paper_weekly), lot)
         if paper_expiry_sell_enabled():
