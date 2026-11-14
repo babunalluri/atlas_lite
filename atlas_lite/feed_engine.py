@@ -87,6 +87,7 @@ from atlas_lite.paper_expiry_sell import (
     PaperExpirySell,
     paper_expiry_sell_enabled,
 )
+from atlas_lite.paper_g2t10 import LEDGER_NAME as G2T10_LEDGER, PaperG2T10, paper_g2t10_enabled
 from atlas_lite.paper_factor import (
     LEDGER_NAME as FACTOR_LEDGER,
     STRATEGY as FACTOR_STRATEGY,
@@ -314,6 +315,7 @@ RETIRED_PAPER_STRATEGIES = frozenset(
         "weekly_strangle",
         "weekly_condor5",
         "weekly_strangle1000",
+        "sensex_expiry_eve_strangle",  # retired 14 Nov 2026 (weakest SENSEX variant on BSE prices)
     }
 )
 
@@ -438,15 +440,19 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
         "per-leg stop at +50% · else close 15:14",
     ),
     "llm_buyer": (
-        f"09:16–{LLM_BUYER_LAST_ENTRY} · every minute the LLM decides freely (prompt v4): buy 1 lot ATM CE or PE · "
+        f"09:16–{LLM_BUYER_LAST_ENTRY} · Claude Sonnet 5.5 (prompt v4 freehand): buy 1 lot ATM CE or PE · "
         "paper: no limits; live: 2 entries, up to 4 while positive",
         f"an open trade is managed every minute until the LLM exits · −₹{LLM_BUYER_DAY_LOSS:,.0f} day stop · profit lock · "
         f"last exit {LLM_BUYER_EXIT_AT}",
     ),
-    "sensex_expiry_eve_strangle": (
-        "SENSEX (Thu expiry) · 09:16, 1 session before expiry · buy 5% wings, sell CE/PE nearest F ± 0.5% · "
-        "1 lot",
-        "per-leg stop when a short leg doubles · else hold to expiry day, close 15:14 · not backtested on SENSEX",
+    "g2t10": (
+        "10:00–15:00 · coded baseline for the LLM buyer (no LLM): 1-min close beyond the opening range / day high-low, "
+        "5-min move agrees, 0.25% no-chase then pullback · 1 lot ATM CE or PE · paper only",
+        "exit on a close back through the traded level or 15:08 · no new entries after 2 losing trades",
+    ),
+    "sensex_expiry_day_strangle": (
+        "SENSEX (Thu expiry) · 09:16 on expiry day · sell CE/PE nearest F ± 0.5% · no wings · 1 lot",
+        "per-leg stop at +50% · else close 15:14",
     ),
     "sensex_expiry_day_straddle": (
         "SENSEX (Thu expiry) · 09:16 on expiry day, only if VIX ≥ 13 · buy 5% wings, sell ATM CE+PE · "
@@ -525,6 +531,7 @@ class FeedEngine:
     _straddle_live: Any = field(default=None, repr=False)
     _llm_buyer: LlmBuyer | None = field(default=None, repr=False)
     _llm_buyer_live: Any = field(default=None, repr=False)
+    _paper_g2t10: PaperG2T10 | None = field(default=None, repr=False)
     # Previous day's NIFTY open interest, for the dealer-gamma reading Scalper v3 logs.
     _gamma_oi: GammaOi | None = field(default=None, repr=False)
     _gamma_oi_tried_at: float = field(default=0.0, repr=False)
@@ -840,6 +847,9 @@ class FeedEngine:
             )
             self._log.info("llm_buyer book: all day, 1 min (live when ticked, allowed=%s)",
                            self._llm_buyer_live.allowed())
+        if paper_g2t10_enabled():  # the LLM buyer's coded yardstick: same feed, no LLM, paper only
+            self._paper_g2t10 = PaperG2T10(path=self.data_dir / G2T10_LEDGER, lot_size=self._nifty_option_lot())
+            self._log.info("g2t10 baseline book (paper, qty %d)", self._paper_g2t10.lot_size)
         if paper_long_straddle_tp20_enabled():
             self._paper_long_str_tp20 = PaperLongStraddle(
                 path=self.data_dir / LONG_STRADDLE_TP20_LEDGER, lot_size=self._nifty_option_lot(),
@@ -941,6 +951,8 @@ class FeedEngine:
             self._tasks.append(asyncio.create_task(self._paper_long_straddle_loop()))
         if self._llm_buyer is not None:
             self._tasks.append(asyncio.create_task(self._llm_buyer_loop(self._llm_buyer)))
+        if self._paper_g2t10 is not None:
+            self._tasks.append(asyncio.create_task(self._paper_g2t10_loop(self._paper_g2t10)))
         if self._agent is not None:
             self._tasks.append(asyncio.create_task(self._agent_loop()))
 
@@ -3247,6 +3259,34 @@ class FeedEngine:
                 self._log.warning("llm_buyer book failed: %s", exc)
                 await asyncio.sleep(1.0)
 
+    async def _paper_g2t10_loop(self, book: PaperG2T10) -> None:
+        """G2T10 baseline: every second with the LLM buyer's feed (today's 1-minute bars, ATM symbols); paper only."""
+        interval = max(1.0, STREAM_INTERVAL_MS / 1000.0)
+        while True:
+            try:
+                now = datetime.now(IST)
+                if now.weekday() >= 5 and book.position is None:
+                    await asyncio.sleep(30.0)
+                    continue
+                book._new_day(now.strftime("%Y-%m-%d"))  # so decision_due sees today's state
+                due = book.decision_due(now) and "nifty" in self.notebooks
+                feed = self.build_feed("nifty") if due else {}  # built once a minute, not every second
+                nb = self.notebooks.get("nifty")
+                if feed and not feed.get("error") and nb and nb.bar_builder:
+                    day_prefix = now.strftime("%Y-%m-%d")
+                    feed = {**feed, "bars_today": [b for b in nb.bar_builder.bars[-400:]
+                                                   if str(b.get("t") or "").startswith(day_prefix)]}
+                if book.position is None and self._agent_gates and not self._agent_gates.entries_allowed(book.strategy, now):
+                    book.last_reject = "gate_paused"
+                else:
+                    book.on_frame(now=now, feed=feed, book=self.book)
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                self._log.warning("g2t10 book failed: %s", exc)
+                await asyncio.sleep(1.0)
+
     async def _refresh_gamma_oi(self, now: datetime) -> None:
         """Load the previous session's open interest once a trading morning; retry every 10 min."""
         gamma = self._gamma_oi
@@ -3974,6 +4014,12 @@ class FeedEngine:
             if self._llm_buyer is not None
             else {"ok": True, "mode": "paper", "enabled": False, "live_orders": False, "book": "llm_buyer",
                   "name": "LLM buyer"}
+        )
+        body["g2t10"] = (
+            self._paper_g2t10.snapshot(self.book)
+            if self._paper_g2t10 is not None
+            else {"ok": True, "mode": "paper", "enabled": False, "live_orders": False, "book": "g2t10",
+                  "name": "G2T10 · coded baseline"}
         )
         if self._paper_factor is None:
             body["factor_paper"] = {

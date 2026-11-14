@@ -1,5 +1,5 @@
 """Expiry-week NIFTY and SENSEX selling paper books, with VIX deciding whether the straddle trades; 1 lot each.
-Paper only, never Kite orders. The research below is NIFTY's; the SENSEX books run the same rules untested.
+Paper only, never Kite orders. The research below is NIFTY's unless marked SENSEX.
 
 Research (6 Nov 2026, real NSE option prices Apr 2019 – Nov 2026, rules picked on 2019–23 and
 judged on 2024–26; scratchpad fresh_search.py / sell_dynamic.py / sell_combo.py):
@@ -58,12 +58,15 @@ BOOKS: dict[str, dict[str, Any]] = {
                                  "name": "Expiry-eve strangle ±1% (no wings)"},
     "expiry_day_straddle": {"index": "nifty", "ledger": "paper_expiry_day_straddle.jsonl", "sessions": 0, "dist": 0.0,
                             "wing_pct": 0.05, "stop": 0.5, "min_vix": 13.0, "name": "Expiry-day straddle (5% wings)"},
-    # Same rules on SENSEX (BSE, Thursday expiry). Not backtested on SENSEX: this paper run is the test.
-    # India VIX (NIFTY options) stands in for SENSEX volatility; charges use the NSE schedule (BSE's
-    # option transaction charge is within ~0.003% of NSE's).
-    "sensex_expiry_eve_strangle": {"index": "sensex", "ledger": "paper_sensex_expiry_eve_strangle.jsonl", "sessions": 1,
-                                   "dist": 0.005, "wing_pct": 0.05, "stop": 1.0, "min_vix": None,
-                                   "name": "SENSEX expiry-eve strangle ±0.5% (5% wings)"},
+    # SENSEX (BSE, Thursday expiry). India VIX (NIFTY options) stands in for SENSEX volatility; charges use the NSE
+    # schedule (BSE's option transaction charge is within ~0.003% of NSE's).
+    # 14 Nov 2026, real BSE prices Jan 2024 - Nov 2026, 150 expiries (scratchpad sensex_sell_bt.py), 1 lot at
+    # SENSEX 82,000: expiry-day strangle +-0.5%, +50% leg stop, no wings +Rs 956 / +Rs 1,364 a week (t 2.4 / 4.6,
+    # 2024 / 2025-26), worst week -Rs 5k; best of 7 variants and the only one with t >= 2 in both. The expiry-eve
+    # strangle (5% wings) was the weakest (-Rs 183 / +Rs 852) and was retired that day (ledger kept).
+    "sensex_expiry_day_strangle": {"index": "sensex", "ledger": "paper_sensex_expiry_day_strangle.jsonl", "sessions": 0,
+                                   "dist": 0.005, "wing_pct": None, "stop": 0.5, "min_vix": None,
+                                   "name": "SENSEX expiry-day strangle ±0.5% (no wings)"},
     "sensex_expiry_day_straddle": {"index": "sensex", "ledger": "paper_sensex_expiry_day_straddle.jsonl", "sessions": 0,
                                    "dist": 0.0, "wing_pct": 0.05, "stop": 0.5, "min_vix": 13.0,
                                    "name": "SENSEX expiry-day straddle (5% wings)"},

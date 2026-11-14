@@ -65,9 +65,10 @@ KNOWN_BOOKS = (
     "expiry_eve_strangle",
     "expiry_eve_strangle_1pct",
     "expiry_day_straddle",
-    "sensex_expiry_eve_strangle",
+    "sensex_expiry_day_strangle",
     "sensex_expiry_day_straddle",
     "llm_buyer",
+    "g2t10",
 )
 
 # Retired after the 2026-10-30 paper review (or never past paper; short_iron_condor and iron_fly on 6 Nov). Their

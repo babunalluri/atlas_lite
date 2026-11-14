@@ -1,4 +1,4 @@
-"""LLM option buyer: one lot of the ATM NIFTY call OR put, side and timing chosen by an LLM. Paper by default.
+"""LLM option buyer (Claude Sonnet 5.5): one lot ATM NIFTY CE or PE. Paper by default.
 
 Every minute from 09:16 the LLM sees what a discretionary trader would see at that minute (new trades until
 15:00; a trade still open is managed every minute until it closes, at the latest 15:08) (NIFTY
@@ -75,15 +75,14 @@ EST_CHARGES = 80.0  # a buy and a sell of one ATM lot, for the running day-loss 
 SLIP_PTS = 1.0
 FUNDS_HEADROOM = 1.10
 TAG_PREFIX = "llm"
-# The trader: Claude Sonnet 5.5 via OpenRouter, reasoning effort low (operator's choice for live from 11 Nov 2026). The
-# 9 Nov replays (Opus +Rs 1,853, Sonnet +Rs 326) had a one-minute look-ahead in their fills; at the real ask/bid both
-# lost (Opus -Rs 2,835, Sonnet -Rs 769; GPT-4.1 live -Rs 747). No OpenAI fallback: OpenAI can't serve this model and a
-# different model is a different trader; if OpenRouter fails the book waits / holds (and sells after
-# MAX_ERRORS_HOLDING failures while holding).
+# One trader only (operator, 14 Nov 2026): Claude Sonnet 5.5 via OpenRouter. Model bake-offs (Opus / Gemini /
+# DeepSeek / Grok) are closed — Sonnet led on the 13 Nov chop day and is the live/paper book. No OpenAI fallback:
+# a different model is a different trader; if OpenRouter fails the book waits / holds (and sells after
+# MAX_ERRORS_HOLDING failures while holding). Replay can still pass --model for off-box studies.
 MODEL_OPENROUTER = "anthropic/claude-sonnet-5.5"
-MODEL_OPENAI: str | None = None
+MODEL_OPENAI: str | None = None  # unused; left so tests can flip it on for the dual-target path
 LLM_TIMEOUT_S = 25.0  # a whole call, start to answer (OpenRouter's keep-alive padding defeats httpx's per-read timeout)
-LLM_MAX_TOKENS = 1000  # reasoning models (e.g. Grok 4.7 ~450 thinking tokens at low effort) need room; billed as used
+LLM_MAX_TOKENS = 1000  # Sonnet at low effort still needs headroom; billed as used
 LIVE_EVENTS = frozenset({"order_intent", "order_sent", "order_send_error", "order_cancel_sent", "order_final",
                          "live_phase", "manual_needed", "live_mark"})
 
@@ -151,7 +150,8 @@ trade, when, which side, how long to hold and when to get out.
 Reply with JSON only: {"action": "...", "reason": "<one short sentence>"}
 When flat the action is one of BUY_CE, BUY_PE, WAIT, DONE_FOR_DAY. When holding: HOLD, EXIT."""
 PROMPTS = {"v2": SYSTEM_PROMPT_V2, "v3": SYSTEM_PROMPT_V3, "v4": SYSTEM_PROMPT_V4}
-PROMPT_VERSION = "v4"  # operator's call 13 Nov 2026: freehand only (v3 was live 12-13 Nov; v2/v3 kept for comparison)
+# Live/paper book uses v4 only. v2/v3 stay in PROMPTS for `scripts/llm_replay_day.py --prompt` studies.
+PROMPT_VERSION = "v4"
 
 
 def render_prompt(version: str) -> str:
@@ -243,9 +243,7 @@ class LlmDecider:
                     "messages": [{"role": "system", "content": self.prompt},
                                  {"role": "user", "content": json.dumps(state, separators=(",", ":"))}]}
             if name == "openrouter":
-                # Low reasoning effort for every OpenRouter model: Claude at default effort could use the whole token
-                # budget and return no answer; Grok 4.7 at default took ~17 s (past the deadline), ~10 s at low.
-                # (OpenAI's own endpoint rejects this field.)
+                # Sonnet at default reasoning effort can spend the whole token budget and return no answer.
                 body["reasoning"] = {"effort": "low"}
                 body["provider"] = {"sort": "latency"}  # fastest host of the same model; OpenRouter still falls back
             try:
@@ -298,7 +296,7 @@ class LlmBuyer:
     path_every_min: int = 5  # NIFTY path sample in the LLM's view
     straddle_every_min: int = 5  # straddle path sample
     tag_prefix: str = TAG_PREFIX
-    name: str = "LLM buyer · every minute"
+    name: str = "LLM buyer · Sonnet"
     max_entries: int = MAX_ENTRIES
     # Entries allowed beyond max_entries while today's closed P&L is positive (the hour book: up to 4 in all). An
     # extra trade is sold, and entries end, once the day's P&L falls to PROFIT_LOCK of its best closed level.
@@ -934,6 +932,7 @@ class LlmBuyer:
             pos["open_pnl"] = round(o) if o is not None else None
         return {
             "ok": True, "mode": "paper", "enabled": True, "book": self.strategy, "name": self.name,
+            "model": MODEL_OPENROUTER, "prompt": PROMPT_VERSION,
             "window": f"entries {self.first_decision}–{self.last_entry} · open trade managed to {self.exit_at} "
                       f"· every {self.decide_every_min} min",
             "live_orders": self.live is not None, "live": self.live_flag.snapshot() if self.live_flag else None,

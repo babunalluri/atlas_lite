@@ -2566,13 +2566,16 @@
           <article class="book-card" data-src="agentPositionLine" data-title="Agent · scalper v2">
             <div class="history-detail book-src" id="agentPositionLine">Agent · scalper v2: —</div>
           </article>
-          <article class="book-card" data-src="llmBuyerLine" data-title="LLM buyer · every minute">
-            <div class="history-detail book-src" id="llmBuyerLine">LLM option buyer: —</div>
+          <article class="book-card" data-src="llmBuyerLine" data-title="LLM buyer · Sonnet">
+            <div class="history-detail book-src" id="llmBuyerLine">LLM buyer · Sonnet: —</div>
             <details class="book-inputs" id="llmBuyerInputs" hidden>
               <summary id="llmBuyerInputsTitle">What it saw</summary>
               <div class="book-chips" id="llmBuyerFactors"></div>
               <dl class="book-inputs-list" id="llmBuyerInputsList"></dl>
             </details>
+          </article>
+          <article class="book-card" data-src="g2t10Line" data-title="G2T10 · coded baseline">
+            <div class="history-detail book-src" id="g2t10Line">G2T10 · coded baseline: —</div>
           </article>
         </div>
       </section>
@@ -2588,8 +2591,8 @@
           <article class="book-card" data-src="expiryDayStraddleLine" data-title="NIFTY expiry-day straddle">
             <div class="history-detail book-src" id="expiryDayStraddleLine">NIFTY expiry-day straddle: —</div>
           </article>
-          <article class="book-card" data-src="sensexExpiryEveStrangleLine" data-title="SENSEX expiry-eve strangle">
-            <div class="history-detail book-src" id="sensexExpiryEveStrangleLine">SENSEX expiry-eve strangle: —</div>
+          <article class="book-card" data-src="sensexExpiryDayStrangleLine" data-title="SENSEX expiry-day strangle ±0.5%">
+            <div class="history-detail book-src" id="sensexExpiryDayStrangleLine">SENSEX expiry-day strangle ±0.5%: —</div>
           </article>
           <article class="book-card" data-src="sensexExpiryDayStraddleLine" data-title="SENSEX expiry-day straddle">
             <div class="history-detail book-src" id="sensexExpiryDayStraddleLine">SENSEX expiry-day straddle: —</div>
@@ -7069,12 +7072,12 @@
       }).join("");
     }
 
-    // LLM option buyer: status line + its own live switch (/api/llm_buyer/live).
-    function renderLlmBuyer(lb, lineId = "llmBuyerLine", prefix = "llmBuyer") {
-      const line = document.getElementById(lineId);
+    // LLM buyer (Sonnet only): status line + Paper/Live switches.
+    function renderLlmBuyer(lb) {
+      const line = document.getElementById("llmBuyerLine");
       if (!line) return;
       if (!lb.enabled) {
-        line.textContent = "LLM option buyer · off (ATLAS_LITE_PAPER_LLM_BUYER=0)";
+        line.textContent = "LLM buyer · Sonnet · off (ATLAS_LITE_PAPER_LLM_BUYER=0)";
         return;
       }
       const d = lb.last_decision;
@@ -7086,18 +7089,36 @@
         : `FLAT${lb.stopped ? ` (${{ day_loss: "day loss stop hit", done_for_day: "done for today", profit_lock: "profit lock: kept half the day's best" }[lb.stopped] || lb.stopped})` : ""}`;
       const cap = lb.max_entries_if_positive > lb.max_entries ? ` (up to ${lb.max_entries_if_positive} while positive)` : "";
       const liveTxt = lb.live ? ` · live today: ${lb.entries ?? 0}/${lb.max_entries ?? 2}${cap} trades, PnL ${lb.day_realized ?? 0} (stop −${lb.day_loss_limit ?? 1500})` : " · paper only";
-      line.textContent = `${lb.name || "LLM option buyer"} · ${head} · paper today: ${lb.paper_entries ?? 0} trades, PnL ${lb.paper_realized ?? 0} (no limits)`
+      const model = (lb.model || "anthropic/claude-sonnet-5.5").replace(/^anthropic\//, "");
+      line.textContent = `${lb.name || "LLM buyer · Sonnet"} · ${model} · ${head} · paper today: ${lb.paper_entries ?? 0} trades, PnL ${lb.paper_realized ?? 0} (no limits)`
         + `${liveTxt}${said}`
         + (lb.last_reject ? ` · ${lb.last_reject}` : "");
-      renderLlmBuyerInputs(d, prefix);
+      renderLlmBuyerInputs(d);
+    }
+
+    // G2T10: the LLM buyer's coded yardstick (same feed, no LLM, paper only).
+    function renderG2t10(g) {
+      const line = document.getElementById("g2t10Line");
+      if (!line) return;
+      const name = g.name || "G2T10 · coded baseline";
+      if (!g.enabled) {
+        line.textContent = `${name} · off (ATLAS_LITE_PAPER_G2T10=0)`;
+        return;
+      }
+      const p = g.position;
+      const head = p
+        ? `holding ${String(p.leg || "").toUpperCase()} ${p.strike} @ ${p.fill} (level ${p.entry_level_kind} ${p.entry_level}) · open PnL ${p.open_pnl ?? "—"}`
+        : (g.entries_stopped ? "FLAT (2 losing trades: no new entries today)" : "FLAT");
+      line.textContent = `${name} · ${head} · today: ${g.trades_today ?? 0} trades, PnL ${g.realized_today ?? 0}`
+        + (g.last_reject && !p ? ` · ${g.last_reject}` : "");
     }
 
     // The factors the LLM named and every input it was given at its last decision.
-    function renderLlmBuyerInputs(d, prefix = "llmBuyer") {
-      const box = document.getElementById(`${prefix}Inputs`);
-      const chips = document.getElementById(`${prefix}Factors`);
-      const list = document.getElementById(`${prefix}InputsList`);
-      const title = document.getElementById(`${prefix}InputsTitle`);
+    function renderLlmBuyerInputs(d) {
+      const box = document.getElementById("llmBuyerInputs");
+      const chips = document.getElementById("llmBuyerFactors");
+      const list = document.getElementById("llmBuyerInputsList");
+      const title = document.getElementById("llmBuyerInputsTitle");
       if (!box || !chips || !list || !title) return;
       const inputs = d && d.inputs && typeof d.inputs === "object" ? d.inputs : null;
       box.hidden = !inputs || !Object.keys(inputs).length;
@@ -7415,12 +7436,13 @@
           }
         }
         renderLlmBuyer(paper.llm_buyer || {});
+        renderG2t10(paper.g2t10 || {});
         loadLlmBuyerPaper();
         loadLlmBuyerLive();
         renderExpirySell("expiryEveStrangleLine", paper.expiry_eve_strangle || {});
         renderExpirySell("expiryEveStrangle1pctLine", paper.expiry_eve_strangle_1pct || {});
         renderExpirySell("expiryDayStraddleLine", paper.expiry_day_straddle || {});
-        renderExpirySell("sensexExpiryEveStrangleLine", paper.sensex_expiry_eve_strangle || {});
+        renderExpirySell("sensexExpiryDayStrangleLine", paper.sensex_expiry_day_strangle || {});
         renderExpirySell("sensexExpiryDayStraddleLine", paper.sensex_expiry_day_straddle || {});
         if (macroEl) {
           macroEl.textContent =

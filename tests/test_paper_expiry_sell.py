@@ -196,6 +196,17 @@ def test_sensex_books_use_their_own_chain_and_lot(tmp_path: Path) -> None:
     assert [(x["strike"], x["opt"], x["sign"]) for x in ev["legs"]] == [
         (79800, "CE", 1), (72200, "PE", 1), (76000, "CE", -1), (76000, "PE", -1)]
 
+    cfg = BOOKS["sensex_expiry_day_strangle"]  # replaced the SENSEX eve strangle on 14 Nov 2026
+    assert "sensex_expiry_eve_strangle" not in BOOKS
+    assert (cfg["index"], cfg["sessions"], cfg["dist"], cfg["wing_pct"], cfg["stop"], cfg["min_vix"]) == \
+        ("sensex", 0, 0.005, None, 0.5, None)
+    sg = PaperExpirySell(path=tmp_path / "sxg.jsonl", strategy="sensex_expiry_day_strangle", sessions=0,
+                         dist=cfg["dist"], wing_pct=None, stop=cfg["stop"], min_vix=None, lot_size=20)
+    ev = sg.on_frame(now=t("2026-11-12", "09:17"), book=Book(rows), expiry=sx_exp, strikes=sx_strikes,
+                     option_symbol=sx_sym, atm=sx_f, vix=None)
+    assert ev["event"] == "open" and [(x["strike"], x["opt"], x["sign"]) for x in ev["legs"]] == [
+        (76400, "CE", -1), (75600, "PE", -1)]  # nearest F +- 0.5%, no wings, no VIX needed
+
 
 def test_missing_chain_is_reported_then_cleared(tmp_path: Path) -> None:
     b = day(tmp_path)
