@@ -7239,14 +7239,20 @@
         return;
       }
       const pos = eb.position;
+      const dr = eb.dry_run;
+      const m = dr && dr.margin;
+      const dry = dr
+        ? ` · live orders: DRY RUN (${dr.orders_today} built today, none sent` +
+          (m ? (m.error ? `; margin check failed: ${m.error}` : `; margin ₹${m.required} of ₹${m.available}${m.fits ? " fits" : " does NOT fit"}`) : "") + ")"
+        : "";
       if (!pos) {
         const when = eb.sessions === 0 ? "09:16 on expiry day" : "09:16 the session before expiry";
         const gate = eb.min_vix ? ` if VIX ≥ ${eb.min_vix}` : "";
-        line.textContent = `${name} · FLAT · enters ${when}${gate}` + (eb.last_reject ? ` · ${eb.last_reject}` : "");
+        line.textContent = `${name} · FLAT · enters ${when}${gate}` + (eb.last_reject ? ` · ${eb.last_reject}` : "") + dry;
         return;
       }
       line.textContent =
-        `${name} · exp ${pos.expiry} · qty ${pos.qty} (VIX ${pos.vix ?? "—"}) · ${pos.legs.join(", ")} · open PnL ${pos.open_pnl ?? "—"}`;
+        `${name} · exp ${pos.expiry} · qty ${pos.qty} (VIX ${pos.vix ?? "—"}) · ${pos.legs.join(", ")} · open PnL ${pos.open_pnl ?? "—"}` + dry;
     }
 
     function renderAgentLive(st, paper) {

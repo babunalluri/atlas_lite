@@ -214,3 +214,72 @@ def test_missing_chain_is_reported_then_cleared(tmp_path: Path) -> None:
                       atm=None, vix=15.0) is None
     assert b.last_reject == "no_chain"
     assert frame(b, t("2026-11-03", "09:17"), chain())["event"] == "open" and b.last_reject is None
+
+
+def test_dry_run_builds_same_day_orders_and_never_sends(tmp_path: Path) -> None:
+    from atlas_lite.expiry_dry_run import ExpiryDryRun
+
+    calls = []
+    dry = ExpiryDryRun(tmp_path / "dry.jsonl", margin_fn=lambda orders: calls.append(orders) or
+                       {"required": 90000.0, "available": 250000.0})
+    b = day(tmp_path)
+    b.on_event = lambda ev: (lambda orders: ev.get("event") == "open" and dry.check_margin(
+        "expiry_day_straddle", ev, orders))(dry.on_event("expiry_day_straddle", ev))
+    ev = frame(b, t("2026-11-03", "09:17"), chain())
+    assert ev and ev["event"] == "open"
+    rows = [json.loads(x) for x in (tmp_path / "dry.jsonl").read_text().splitlines()]
+    entry = [r["order"] for r in rows if r["action"] == "place_entry"]
+    stops = [r["order"] for r in rows if r["action"] == "place_stop"]
+    assert [o["transaction_type"] for o in entry] == ["BUY", "BUY", "SELL", "SELL"]  # wings first
+    assert all(o["product"] == "MIS" and o["order_type"] == "LIMIT" and o["exchange"] == "NFO" for o in entry)
+    assert len(stops) == 2 and all(o["order_type"] == "SL" and o["transaction_type"] == "BUY"
+                                   and o["price"] > o["trigger_price"] for o in stops)
+    short_ce = next(x for x in ev["legs"] if x["opt"] == "CE" and x["sign"] < 0)
+    assert any(o["tradingsymbol"] == short_ce["symbol"].split(":")[1]
+               and abs(o["trigger_price"] - ev["stops"][short_ce["symbol"]]) < 0.06 for o in stops)
+    m = next(r for r in rows if r["action"] == "margin_check")
+    assert m["fits"] is True and len(calls[0]) == 4  # entry basket only, no stop orders
+    # the short call stops, then the rest closes at 15:14
+    frame(b, t("2026-11-03", "11:00"), chain(bump={short_ce["symbol"]: short_ce["entry"] * 1.6}))
+    frame(b, t("2026-11-03", "15:14"), chain(scale=0.3))
+    rows = [json.loads(x) for x in (tmp_path / "dry.jsonl").read_text().splitlines()]
+    acts = [r["action"] for r in rows]
+    assert "stop_filled" in acts and acts.count("cancel_stop") == 1  # only the put's stop is still open
+    exits = [r["order"] for r in rows if r["action"] == "place_exit"]
+    assert sorted(o["transaction_type"] for o in exits) == ["BUY", "SELL", "SELL"]  # short put bought, wings sold
+    assert all(r["sent"] is False for r in rows)
+
+
+def test_dry_run_ignores_other_books(tmp_path: Path) -> None:
+    from atlas_lite.expiry_dry_run import ExpiryDryRun
+
+    dry = ExpiryDryRun(tmp_path / "dry.jsonl")
+    assert dry.on_event("expiry_eve_strangle", {"event": "open", "legs": []}) == []
+    assert not (tmp_path / "dry.jsonl").exists()
+
+
+def test_dry_run_after_a_restart_still_cancels_stops_and_skips_a_missed_close(tmp_path: Path) -> None:
+    from atlas_lite.expiry_dry_run import ExpiryDryRun
+
+    close = {"event": "close", "ts": "2026-11-03T15:14:00+05:30", "day": "2026-11-03", "qty": 65, "reason": "expiry",
+             "symbol": "NFO:W1CE,NFO:W1PE,NFO:S1CE,NFO:S1PE",
+             "legs": [{"strike": 24150, "opt": "CE", "exit": 0.05}, {"strike": 21850, "opt": "PE", "exit": 0.05},
+                      {"strike": 23000, "opt": "CE", "exit": 150.0, "stopped": True},
+                      {"strike": 23000, "opt": "PE", "exit": 12.3}]}
+    dry = ExpiryDryRun(tmp_path / "dry.jsonl")  # fresh object: nothing remembered from the open
+    orders = dry.on_event("expiry_day_straddle", close)
+    rows = [json.loads(x) for x in (tmp_path / "dry.jsonl").read_text().splitlines()]
+    assert [r["symbol"] for r in rows if r["action"] == "cancel_stop"] == ["NFO:S1PE"]
+    assert sorted((o["tradingsymbol"], o["transaction_type"]) for o in orders) == [
+        ("S1PE", "BUY"), ("W1CE", "SELL"), ("W1PE", "SELL")]
+    missed = ExpiryDryRun(tmp_path / "dry2.jsonl")
+    assert missed.on_event("expiry_day_straddle", {**close, "reason": "expiry_missed", "day": "2026-11-04"}) == []
+    assert [json.loads(x)["action"] for x in (tmp_path / "dry2.jsonl").read_text().splitlines()] == ["missed_close"]
+
+
+def test_dry_run_has_an_off_switch(monkeypatch) -> None:
+    from atlas_lite.expiry_dry_run import expiry_dry_run_enabled
+
+    assert expiry_dry_run_enabled()
+    monkeypatch.setenv("ATLAS_LITE_EXPIRY_DRY_RUN", "0")
+    assert not expiry_dry_run_enabled()

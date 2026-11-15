@@ -132,6 +132,7 @@ class PaperExpirySell:
     entered_for: str = ""  # expiry already entered (one trade per weekly expiry)
     last_reject: str | None = None
     last_event: dict[str, Any] | None = None
+    on_event: Callable[[dict[str, Any]], None] | None = field(default=None, repr=False)  # e.g. the dry-run order log
     _log: Any = field(default_factory=lambda: get_logger("atlas_lite.paper_expiry_sell"), repr=False)
 
     def __post_init__(self) -> None:
@@ -149,6 +150,11 @@ class PaperExpirySell:
             self._log.warning("%s ledger write failed: %s", self.strategy, exc)
             return None
         self.last_event = event
+        if self.on_event is not None:
+            try:
+                self.on_event(event)
+            except Exception as exc:  # noqa: BLE001 - a listener never breaks the paper book
+                self._log.warning("%s event listener failed: %s", self.strategy, exc)
         return event
 
     def _restore(self) -> None:

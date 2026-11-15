@@ -23,6 +23,12 @@ from atlas_lite.agent_gates import AgentGateStore
 from atlas_lite.agent_live import AgentLiveFlag, LIVE_FLAG_NAME
 from atlas_lite.agent_policy import ADX_RANGE, ADX_TREND, apply_book_policy
 from atlas_lite.agent_advisor import AgentAdvisor, agent_enabled
+from atlas_lite.expiry_dry_run import (
+    DRY_RUN_BOOKS,
+    LEDGER_NAME as EXPIRY_DRY_RUN_LEDGER,
+    ExpiryDryRun,
+    expiry_dry_run_enabled,
+)
 from atlas_lite.kite_orders import KiteOrderClient
 from atlas_lite.llm_buyer import (
     DAY_LOSS_LIMIT as LLM_BUYER_DAY_LOSS,
@@ -522,6 +528,7 @@ class FeedEngine:
     _paper_factor: PaperFactor | None = field(default=None, repr=False)
     _paper_weekly: dict[str, PaperWeeklySell] = field(default_factory=dict, repr=False)
     _paper_expiry: dict[str, PaperExpirySell] = field(default_factory=dict, repr=False)
+    _expiry_dry_run: ExpiryDryRun | None = field(default=None, repr=False)
     _option_lots: dict[tuple[str, Any], int] = field(default_factory=dict, repr=False)  # (index, expiry) -> lot
     _paper_v3: PaperScalperV3 | None = field(default=None, repr=False)
     _paper_v3_variants: dict[str, PaperScalperV3] = field(default_factory=dict, repr=False)
@@ -885,6 +892,12 @@ class FeedEngine:
                     lot_size=self._index_option_lot(cfg["index"]), name=cfg["name"],
                 )
             self._log.info("expiry-week selling paper books: %s (no live orders)", ", ".join(self._paper_expiry))
+        if self._paper_expiry and expiry_dry_run_enabled():
+            # Same-day expiry books: the Kite orders a live book would send are built and logged, never sent.
+            self._expiry_dry_run = ExpiryDryRun(self.data_dir / EXPIRY_DRY_RUN_LEDGER, margin_fn=self._kite_basket_margin)
+            for name in DRY_RUN_BOOKS & set(self._paper_expiry):
+                self._paper_expiry[name].on_event = lambda ev, n=name: self._expiry_dry_event(n, ev)
+            self._log.info("expiry dry-run orders (never sent): %s", ", ".join(sorted(DRY_RUN_BOOKS & set(self._paper_expiry))))
         if paper_factor_enabled():
             lot = self._nifty_option_lot()
             self._paper_factor = PaperFactor(path=self.data_dir / FACTOR_LEDGER, lot_size=lot)
@@ -3259,6 +3272,29 @@ class FeedEngine:
                 self._log.warning("llm_buyer book failed: %s", exc)
                 await asyncio.sleep(1.0)
 
+    def _expiry_dry_event(self, book: str, ev: dict[str, Any]) -> None:
+        """Log the dry-run orders for a paper event; an entry also gets a read-only margin check off the loop."""
+        dry = self._expiry_dry_run
+        if dry is None:
+            return
+        orders = dry.on_event(book, ev)
+        if ev.get("event") == "open" and orders:
+            try:
+                asyncio.get_running_loop().create_task(asyncio.to_thread(dry.check_margin, book, ev, orders))
+            except RuntimeError:  # no running loop (tests): skip the network check
+                pass
+
+    def _kite_basket_margin(self, orders: list[dict[str, Any]]) -> dict[str, Any]:
+        """Read-only Kite margin for an order basket (hedge benefit included) and the funds available. Places nothing."""
+        client = KiteOrderClient(self.credentials_path)
+        with client._client() as c:
+            r = c.post("/margins/basket", params={"consider_positions": "false"}, json=orders)
+            body = r.json() if r.content else {}
+            if r.status_code >= 400:
+                raise RuntimeError(str(body.get("message") or r.status_code))
+            final = ((body.get("data") or {}).get("final") or {}) if isinstance(body, dict) else {}
+        return {"required": round(float(final.get("total") or 0.0), 2), "available": round(client.equity_available(), 2)}
+
     async def _paper_g2t10_loop(self, book: PaperG2T10) -> None:
         """G2T10 baseline: every second with the LLM buyer's feed (today's 1-minute bars, ATM symbols); paper only."""
         interval = max(1.0, STREAM_INTERVAL_MS / 1000.0)
@@ -4009,6 +4045,8 @@ class FeedEngine:
                 if ebook is not None
                 else {"ok": True, "mode": "paper", "enabled": False, "live_orders": False, "book": name, "name": cfg["name"]}
             )
+            if ebook is not None and self._expiry_dry_run is not None and name in DRY_RUN_BOOKS:
+                body[name]["dry_run"] = self._expiry_dry_run.snapshot(name, datetime.now(IST).strftime("%Y-%m-%d"))
         body["llm_buyer"] = (
             self._llm_buyer.snapshot(self.book)
             if self._llm_buyer is not None
