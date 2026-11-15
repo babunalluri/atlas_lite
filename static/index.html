@@ -2446,7 +2446,7 @@
       <div class="history-head agent-head">
         <div class="agent-title">
           <h2>Trading books</h2>
-          <span class="agent-subtitle" id="agentMeta">Paper fills only · agent opens CE/PE · no live orders</span>
+          <span class="agent-subtitle" id="agentMeta">Paper books · real Kite orders only where a live switch is on</span>
         </div>
         <button type="button" class="history-close" id="agentClose">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
@@ -2460,7 +2460,6 @@
       <div id="agentBooksPane" role="tabpanel">
       <div class="agent-toolbar">
         <div class="agent-actions">
-          <button type="button" class="agent-btn primary" id="agentAdviseBtn">Run trade cycle</button>
           <button type="button" class="agent-btn" id="agentRefreshBtn">Refresh</button>
         </div>
         <div class="agent-account">
@@ -2479,11 +2478,6 @@
 
       <h3 class="agent-section-title">Live trading <span>real Kite orders · each switch is good for today only</span></h3>
       <div class="live-switches">
-        <label class="live-switch" for="agentLiveToggle" title="Real Kite orders for agent_paper only — requires sign-in">
-          <input type="checkbox" class="switch-input" id="agentLiveToggle" />
-          <span class="switch-track" aria-hidden="true"></span>
-          <span class="live-switch-text"><strong>Agent</strong><span id="agentLiveLine">Live: off (paper only)</span></span>
-        </label>
         <label class="live-switch" for="llmBuyerPaperToggle" title="LLM option buyer on/off: on = an LLM decides every minute and paper trades are recorded (uses LLM credit); off = no LLM calls, no trades. Stays as set across days.">
           <input type="checkbox" class="switch-input" id="llmBuyerPaperToggle" />
           <span class="switch-track" aria-hidden="true"></span>
@@ -2500,9 +2494,6 @@
       <section class="book-group" aria-label="Directional">
         <h4 class="book-group-title">Directional</h4>
         <div class="book-grid">
-          <article class="book-card" data-src="agentPositionLine" data-title="Agent · scalper v2">
-            <div class="history-detail book-src" id="agentPositionLine">Agent · scalper v2: —</div>
-          </article>
           <article class="book-card" data-src="llmBuyerLine" data-title="LLM buyer · Sonnet">
             <div class="history-detail book-src" id="llmBuyerLine">LLM buyer · Sonnet: —</div>
             <details class="book-inputs" id="llmBuyerInputs" hidden>
@@ -2537,11 +2528,6 @@
         </div>
       </section>
 
-      <details class="agent-diagnostics">
-        <summary>Agent diagnostics</summary>
-        <div class="history-detail" id="agentMacroLine">Macro: —</div>
-        <div class="history-detail" id="agentDecision">Last cycle: —</div>
-      </details>
 
       <details class="agent-diagnostics agent-gates-box">
         <summary>Book gates · pause or skip a book (Allow / Skip new entries / Pause)</summary>
@@ -7022,12 +7008,6 @@
     document.getElementById("tradesDayFilter")?.addEventListener("change", () => { loadPaperTrades(); });
     document.getElementById("tradesBookFilter")?.addEventListener("change", () => { loadPaperTrades(); });
 
-    function fmtMacroPct(field) {
-      if (!field || field.value == null || field.day_pct == null) return "—";
-      const n = Number(field.day_pct);
-      return `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
-    }
-
     function renderAgentGates(gates) {
       const tbody = document.getElementById("agentGatesRows");
       if (!tbody) return;
@@ -7255,33 +7235,6 @@
         `${name} · exp ${pos.expiry} · qty ${pos.qty} (VIX ${pos.vix ?? "—"}) · ${pos.legs.join(", ")} · open PnL ${pos.open_pnl ?? "—"}` + dry;
     }
 
-    function renderAgentLive(st, paper) {
-      const liveEl = document.getElementById("agentLiveLine");
-      const toggle = document.getElementById("agentLiveToggle");
-      const live = st.live || {};
-      const on = !!live.enabled;
-      const allowed = live.allowed !== false;
-      const ag = (paper && paper.agent) || {};
-      const posLive = !!(ag.position && ag.position.live) || !!st.agent_position_live;
-      if (toggle) {
-        toggle.checked = on;
-        toggle.disabled = !allowed;
-      }
-      if (!liveEl) return;
-      if (!allowed) {
-        liveEl.textContent = "Live: locked off on this host (ATLAS_LITE_AGENT_LIVE_ALLOWED=0)";
-        return;
-      }
-      if (on) {
-        liveEl.textContent = posLive
-          ? "Live: ON · real Kite orders · open live position must close on broker"
-          : "Live: ON · next agent entry places a real Kite market order (1 lot MIS)";
-      } else {
-        liveEl.textContent = posLive
-          ? "Live: OFF for new entries · open live position still closes on broker"
-          : "Live: off (paper only)";
-      }
-    }
 
     let atlasUiAuth = { authenticated: false, email: null, auth_configured: false };
 
@@ -7386,43 +7339,13 @@
 
     async function loadAgentPanel() {
       const meta = document.getElementById("agentMeta");
-      const macroEl = document.getElementById("agentMacroLine");
-      const decisionEl = document.getElementById("agentDecision");
-      const posEl = document.getElementById("agentPositionLine");
       try {
         await refreshUiAuth();
-        const [st, macro, paper] = await Promise.all([
+        const [st, paper] = await Promise.all([
           fetch("/api/agent").then((r) => r.json()),
-          fetch("/api/agent/macro").then((r) => r.json()),
           fetch("/api/paper").then((r) => r.json()),
         ]);
-        const liveOn = !!(st.live && st.live.enabled);
-        if (meta) {
-          const mode = liveOn ? "LIVE Kite orders" : "paper only";
-          if (st.scorecard_autopilot || st.executor === "scorecard") {
-            meta.textContent = `Scorecard autopilot · every ${st.interval_s || "—"}s · no LLM · ${mode}`;
-          } else if (st.has_credentials) {
-            const sparse = st.llm_sparse ? " · sparse LLM" : "";
-            meta.textContent = `Trading · ${st.model || "—"} · every ${st.interval_s || "—"}s${sparse} · ${mode}`;
-          } else {
-            meta.textContent =
-              "No LLM credentials · set OPENROUTER_API_KEY or llm_credentials (or enable scorecard autopilot)";
-          }
-        }
-        renderAgentLive(st, paper);
-        if (posEl) {
-          const ag = paper.agent || {};
-          const p = ag.position;
-          const pend = ag.pending;
-          const liveTag = p && p.live ? " LIVE" : "";
-          if (p) {
-            posEl.textContent = `Agent book OPEN${liveTag} ${String(p.side || "").toUpperCase()} @ ${p.entry} · tgt ${p.target} · stop ${p.stop} · day PnL ${ag.day_pnl ?? "—"}`;
-          } else if (pend && !pend.want_exit) {
-            posEl.textContent = `Agent book pending ${String(pend.side || "").toUpperCase()} entry · ${pend.reason || ""}`;
-          } else {
-            posEl.textContent = `Agent book FLAT · entries today ${ag.entries_today ?? 0} · day PnL ${ag.day_pnl ?? 0}`;
-          }
-        }
+        if (meta) meta.textContent = "Paper books · real Kite orders only where a live switch is on";
         renderLlmBuyer(paper.llm_buyer || {});
         renderG2t10(paper.g2t10 || {});
         loadLlmBuyerPaper();
@@ -7432,22 +7355,9 @@
         renderExpirySell("expiryDayStraddleLine", paper.expiry_day_straddle || {});
         renderExpirySell("sensexExpiryDayStrangleLine", paper.sensex_expiry_day_strangle || {});
         renderExpirySell("sensexExpiryDayStraddleLine", paper.sensex_expiry_day_straddle || {});
-        if (macroEl) {
-          macroEl.textContent =
-            `Macro as_of ${macro.fetched_at || "—"} · crude ${fmtMacroPct(macro.crude)} · gold ${fmtMacroPct(macro.gold)} · USDINR ${fmtMacroPct(macro.usdinr)} · ES ${fmtMacroPct(macro.es_futures)} · headlines ${((macro.headlines || []).length)}`;
-        }
-        if (decisionEl) {
-          const d = st.last_decision;
-          const tools = (d && d.tools) || [];
-          const acts = tools.map((t) => t.tool).filter(Boolean).join(", ") || "—";
-          decisionEl.textContent = d
-            ? `Last cycle: ${d.ok === false ? "ERR " + (d.error || "") : (d.reason || "ok")} · actions ${acts}`
-            : "Last cycle: —";
-        }
         renderAgentGates(st.gates || {});
       } catch (err) {
-        if (meta) meta.textContent = "Agent load failed";
-        if (decisionEl) decisionEl.textContent = String(err?.message || err);
+        if (meta) meta.textContent = `Books failed to load: ${err?.message || err}`;
       }
     }
 
@@ -7478,40 +7388,6 @@
     document.getElementById("agentClose")?.addEventListener("click", () => { setAgentOpen(false); });
     document.getElementById("agentBackdrop")?.addEventListener("click", () => { setAgentOpen(false); });
     document.getElementById("agentRefreshBtn")?.addEventListener("click", () => { loadAgentPanel(); });
-    document.getElementById("agentLiveToggle")?.addEventListener("change", async (ev) => {
-      const toggle = ev.target;
-      const want = !!toggle?.checked;
-      if (want) {
-        const ok = window.confirm(
-          "Enable LIVE agent?\n\nNext agent_paper entries will place real Kite market orders (1 lot MIS). An open live position still closes on the broker if you turn this off later.",
-        );
-        if (!ok) {
-          toggle.checked = false;
-          return;
-        }
-        await refreshUiAuth();
-        if (!atlasUiAuth.authenticated) {
-          toggle.checked = false;
-          setLoginOpen(true);
-          const meta = document.getElementById("agentMeta");
-          if (meta) meta.textContent = "Sign in to turn Live agent on";
-          return;
-        }
-      }
-      try {
-        await setAgentLive(want);
-      } catch (err) {
-        toggle.checked = !want;
-        const msg = String(err?.message || err);
-        const meta = document.getElementById("agentMeta");
-        if (msg === "login_required") {
-          setLoginOpen(true);
-          if (meta) meta.textContent = "Sign in to turn Live agent on";
-        } else if (meta) {
-          meta.textContent = msg;
-        }
-      }
-    });
     document.getElementById("agentLoginBtn")?.addEventListener("click", () => setLoginOpen(true));
     document.getElementById("agentLogoutBtn")?.addEventListener("click", async () => {
       await uiLogout();
@@ -7549,24 +7425,6 @@
         document.getElementById("loginPassword")?.focus();
       } finally {
         if (btn) btn.disabled = false;
-      }
-    });
-    document.getElementById("agentAdviseBtn")?.addEventListener("click", async () => {
-      const meta = document.getElementById("agentMeta");
-      if (meta) meta.textContent = "Running trade cycle…";
-      try {
-        const resp = await fetch("/api/agent/advise", {
-          method: "POST",
-          headers: atlasApiHeaders(),
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (resp.status === 401) {
-          throw new Error("401 — set API token in the Agent panel (same as ATLAS_LITE_API_TOKEN)");
-        }
-        if (!resp.ok || data.ok === false) throw new Error(data.error || data.detail || `HTTP ${resp.status}`);
-        await loadAgentPanel();
-      } catch (err) {
-        if (meta) meta.textContent = String(err?.message || err);
       }
     });
     document.getElementById("agentTokenSaveBtn")?.addEventListener("click", () => { saveAgentTokenField(); });

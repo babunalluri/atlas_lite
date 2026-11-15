@@ -75,7 +75,7 @@ KNOWN_BOOKS = (
 # flags stay off; the gates list leaves them out. Gates can still be read or set by name.
 RETIRED_BOOKS = frozenset(
     {"vwap_long", "short_straddle", "skew_fade", "long_iron_condor", "theta_cliff", "impulse_fade", "combo", "ict",
-     "ai_agent", "short_iron_condor", "iron_fly"}
+     "ai_agent", "short_iron_condor", "iron_fly", "agent"}  # agent: retired 15 Nov 2026
 )
 
 BOOK_ALIASES = {

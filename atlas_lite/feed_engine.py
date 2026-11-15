@@ -279,6 +279,10 @@ LONG_STRADDLE_RETIRED = True
 # trades, and the positions already open run to their stop or expiry close (Tue 17 Nov). All six are off the
 # dashboard.
 SCALPER_V3_RETIRED = True
+# Retired 15 Nov 2026 (operator's call): the agent book (scalper v2 scorecard autopilot) is no longer built. Its main
+# trigger (NIFTY >= 100 pts from the open, 09:30-12:00) continued only 49% of the time over 30 min in 7.5 years
+# (mean -1.7 pts) and broke even on the 29 recorded days; G2T10 is the coded baseline for the LLM buyer instead.
+AGENT_RETIRED = True
 WEEKLY_SELL_RETIRED = True
 NFO_INSTRUMENTS_META = "instruments.meta.json"
 MIN_BARS_FOR_ADX = 29
@@ -322,6 +326,7 @@ RETIRED_PAPER_STRATEGIES = frozenset(
         "weekly_condor5",
         "weekly_strangle1000",
         "sensex_expiry_eve_strangle",  # retired 14 Nov 2026 (weakest SENSEX variant on BSE prices)
+        "agent_paper",  # retired 15 Nov 2026 (AGENT_RETIRED)
     }
 )
 
@@ -400,7 +405,7 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
         "take +1σ / stop −1σ / ST flip · hard flat 15:15",
     ),
     "agent_paper": (
-        "09:45–15:00 · ATM CE/PE long or short from agent intent · 1 lot · "
+        "RETIRED 15 Nov 2026 · was: 09:45–15:00 · ATM CE/PE long or short from agent intent · 1 lot · "
         "cooldown / daily loss stop",
         "+10% target / −6% stop / trail after +4% · hold ≤20m · agent_exit · flat 15:14",
     ),
@@ -778,7 +783,7 @@ class FeedEngine:
                 self._paper_combo.lots * lot,
             )
         self._agent_live = AgentLiveFlag(self.data_dir / LIVE_FLAG_NAME)
-        if paper_agent_enabled():
+        if paper_agent_enabled() and not AGENT_RETIRED:
             nifty_nb = self.notebooks.get("nifty")
             lot = AGENT_LOT
             if nifty_nb and nifty_nb.universe:
@@ -908,7 +913,7 @@ class FeedEngine:
             )
 
         self._agent_gates = AgentGateStore(self.data_dir / "agent_gates.json")
-        if agent_enabled():
+        if agent_enabled() and not AGENT_RETIRED:
             self._agent = AgentAdvisor(
                 data_dir=self.data_dir,
                 gates=self._agent_gates,
