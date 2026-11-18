@@ -149,9 +149,21 @@ whether the move is likely to continue, not whether it has started. Decide entir
 trade, when, which side, how long to hold and when to get out.
 Reply with JSON only: {"action": "...", "reason": "<one short sentence>"}
 When flat the action is one of BUY_CE, BUY_PE, WAIT, DONE_FOR_DAY. When holding: HOLD, EXIT."""
-PROMPTS = {"v2": SYSTEM_PROMPT_V2, "v3": SYSTEM_PROMPT_V3, "v4": SYSTEM_PROMPT_V4}
-# Live/paper book uses v4 only. v2/v3 stay in PROMPTS for `scripts/llm_replay_day.py --prompt` studies.
-PROMPT_VERSION = "v4"
+# v5 (operator's call, 18 Nov 2026): v4 plus three pieces of information, no trading rules. (1) position.max_open_pnl_rs:
+# the trade's best open profit, so the model can see what it has given back (16/18 Nov: +Rs 1,967 -> -57, +Rs 1,888 ->
+# +244). (2) A fact from 7.5 years of NIFTY 1-min data (2019-26, both halves): after the first ~15 minutes the next
+# 15-60 minutes continued the opening move only ~46-58% of the time. (3) Overnight cues (US futures, Nikkei, Hang Seng,
+# Brent, USD/INR) and NIFTY's gap at the open, as context. Judge v5 on days after the change, against G2T10.
+SYSTEM_PROMPT_V5 = SYSTEM_PROMPT_V4.replace("Reply with JSON only:", """While you hold, position.max_open_pnl_rs is the best open profit this trade has reached (at max_open_pnl_at);
+compare it with open_pnl_rs to see how much of it is still there.
+History, for context: in NIFTY 2019-2026, after the first 15 minutes of the session the next 15-60 minutes continued
+the opening move only about half the time; a sharp early spike was about as likely to reverse as to continue.
+nifty_gap_at_open_pct is NIFTY's open versus yesterday's close, and overnight_cues_pct is how US index futures, Japan,
+Hong Kong, Brent crude and USD/INR moved since their own previous close (context only; fields may be missing).
+Reply with JSON only:""")
+PROMPTS = {"v2": SYSTEM_PROMPT_V2, "v3": SYSTEM_PROMPT_V3, "v4": SYSTEM_PROMPT_V4, "v5": SYSTEM_PROMPT_V5}
+# Live/paper book uses v5 (from 18 Nov; v4 before). v2-v4 stay in PROMPTS for `scripts/llm_replay_day.py --prompt` studies.
+PROMPT_VERSION = "v5"
 
 
 def render_prompt(version: str) -> str:
@@ -314,6 +326,10 @@ class LlmBuyer:
     position: Position | None = None
     live: LiveStraddle | None = None
     live_meta: dict[str, Any] = field(default_factory=dict)
+    # Best open P&L of the trade now open: (trade key, Rs, HH:MM). Shown to the LLM as position.max_open_pnl_rs so it can
+    # see how much it has given back. In memory only (after a restart it starts again from the current P&L).
+    trade_peak: tuple[str, float, str] | None = field(default=None, repr=False)
+    overnight: dict[str, Any] | None = field(default=None, repr=False)  # global cues (overnight_cues), set by the engine
     pending_close: dict[str, Any] | None = None
     month_live_pnl: dict[str, float] = field(default_factory=dict)
     history: dict[str, dict[str, float]] = field(default_factory=dict)  # minute -> spot / straddle samples
@@ -465,6 +481,23 @@ class LlmBuyer:
         self.last_feed = dict(feed)
         self.last_feed_at = hm
 
+    def _trade_key(self) -> str | None:
+        if self.live is not None:
+            return f"live {self.live_meta.get('ts')}"
+        return f"paper {self.position.opened_at}" if self.position is not None else None
+
+    def _track_peak(self, now: datetime, book: QuoteSource) -> None:
+        """Keep the best open P&L of the trade now open (checked every frame, at bids)."""
+        key = self._trade_key()
+        if key is None:
+            self.trade_peak = None
+            return
+        o = self._open_pnl(book)
+        if o is None:
+            return
+        if self.trade_peak is None or self.trade_peak[0] != key or o > self.trade_peak[1]:
+            self.trade_peak = (key, float(o), now.strftime("%H:%M"))
+
     def _open_pnl(self, book: QuoteSource) -> float | None:
         """Open P&L in Rs at bids (live: from the real fills), before charges."""
         if self.live is not None:
@@ -613,6 +646,11 @@ class LlmBuyer:
             **({"entries_left_today": left} if (left := self._entries_left()) is not None else {}),
             **self._price_action(f, spots, now),
         }
+        pdc = (f.get("prev_day") or {}).get("close") if isinstance(f.get("prev_day"), dict) else None
+        if spots and pdc:
+            s["nifty_gap_at_open_pct"] = round((spots[0] / float(pdc) - 1) * 100, 2)
+        if self.overnight and self.overnight.get("date") == now.strftime("%Y-%m-%d"):  # never yesterday's cues
+            s["overnight_cues_pct"] = {k: v for k, v in self.overnight.items() if k != "date"}
         if self.position is not None or self.live is not None:
             # While holding, the levels that keep moving are left out: the exit refers to position.entry_level, fixed at
             # entry (a moving level is what made 12 Nov's 09:48 exit use the wrong number).
@@ -635,6 +673,10 @@ class LlmBuyer:
                              "entry_reason": str(why or "")[:300],
                              "entry_level": round(float(lvl), 1) if lvl is not None else None,  # fixed at entry
                              "entry_level_kind": kind or None}
+            self._track_peak(now, book)
+            if self.trade_peak is not None and self.trade_peak[0] == self._trade_key():
+                s["position"]["max_open_pnl_rs"] = round(max(self.trade_peak[1], o or self.trade_peak[1]))
+                s["position"]["max_open_pnl_at"] = self.trade_peak[2]
         return s
 
     def apply(self, now: datetime, out: dict[str, Any], book: QuoteSource, *, allow_entry: bool = True) -> dict[str, Any] | None:
@@ -819,6 +861,7 @@ class LlmBuyer:
         self._kill_switch(now, today)
         if feed and not feed.get("error") and "09:15" <= hm <= "15:30":
             self._record(hm, feed)
+        self._track_peak(now, book)
         if not self.paper_enabled():  # "Paper" box off: close whatever is open, then stay idle (no LLM calls)
             if self.live is not None and self.live.phase in ("entering", "holding"):
                 self.live.request_exit("paper_off")

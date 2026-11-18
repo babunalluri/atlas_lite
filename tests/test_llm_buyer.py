@@ -779,9 +779,9 @@ def test_sparse_padding_is_cut_within_the_total_budget() -> None:
     srv.close()
 
 
-def test_live_prompt_is_v4_and_v3_keeps_the_book_contract() -> None:
-    assert M.PROMPT_VERSION == "v4" and M.SYSTEM_PROMPT == M.render_prompt("v4")
-    assert M.LlmDecider(None).prompt == M.SYSTEM_PROMPT  # the book's decider sends v4 (freehand)
+def test_live_prompt_is_v5_and_v3_keeps_the_book_contract() -> None:
+    assert M.PROMPT_VERSION == "v5" and M.SYSTEM_PROMPT == M.render_prompt("v5")
+    assert M.LlmDecider(None).prompt == M.SYSTEM_PROMPT  # the book's decider sends v5 (freehand + information)
     v3 = M.render_prompt("v3")
     assert "New trades only until 15:00" in v3 and "held until 15:08" in v3 and "{" not in v3.split("Reply with")[0]
     assert "entries_left_today" in v3 and "realised" not in v3
@@ -950,7 +950,52 @@ def test_freehand_prompt_v4_has_no_trading_rules_and_keeps_the_book_contract() -
     assert "BUY_CE, BUY_PE, WAIT, DONE_FOR_DAY" in v4 and "HOLD, EXIT" in v4 and "{" not in v4.split("Reply with")[0]
     for rule_word in ("chasing", "0.25%", "opening-range", "entry_level", "careful", "not obliged"):
         assert rule_word not in v4  # freehand: no rules, no caution bias
-    assert M.PROMPT_VERSION == "v4"  # the book runs freehand from 13 Nov
+    assert M.PROMPT_VERSION == "v5"  # v4 ran 13-18 Nov; v5 = v4 + information (still no rules)
+
+
+def test_prompt_v5_is_v4_plus_information_and_still_has_no_rules() -> None:
+    v4, v5 = M.render_prompt("v4"), M.render_prompt("v5")
+    assert v5.startswith(v4.split("Reply with JSON only:")[0])  # v4's text unchanged
+    for field in ("max_open_pnl_rs", "nifty_gap_at_open_pct", "overnight_cues_pct", "about half the time"):
+        assert field in v5
+    assert "{" not in v5.split("Reply with")[0] and "BUY_CE, BUY_PE, WAIT, DONE_FOR_DAY" in v5
+    for rule_word in ("chasing", "0.25%", "must", "never trade", "do not buy", "take profit"):
+        assert rule_word not in v5.lower()
+
+
+def test_state_shows_the_trades_best_open_profit_gap_and_todays_cues(tmp_path: Path) -> None:
+    b, q = book_at(tmp_path), Book()
+    pd = {"date": "2026-11-09", "open": 23900.0, "high": 24100.0, "low": 23850.0, "close": 23800.0}
+    fr = lambda hm: b.on_frame(now=t(hm), feed={**feed(), "prev_day": pd}, book=q)  # the engine adds prev_day each frame
+    fr("10:39")
+    b.apply(t("10:40"), {"hm": "10:40", "action": "BUY_CE", "reason": "breakout"}, q)  # fill 100.5
+    q.px[CE] = 130.0
+    fr("10:41")  # peak: bid 129.5 -> +Rs 1,885
+    q.px[CE] = 110.0
+    fr("10:42")
+    b.overnight = {"us_sp500_futures_pct": 0.3, "as_of": "09:10", "date": DAY}
+    st = b.state(t("10:42"), q)
+    pos = st["position"]
+    assert pos["open_pnl_rs"] == round((109.5 - 100.5) * 65) and pos["max_open_pnl_rs"] == round((129.5 - 100.5) * 65)
+    assert pos["max_open_pnl_at"] == "10:41"
+    assert st["overnight_cues_pct"] == {"us_sp500_futures_pct": 0.3, "as_of": "09:10"}
+    assert st["nifty_gap_at_open_pct"] == round((24000 / 23800 - 1) * 100, 2)
+    b.overnight = {"us_sp500_futures_pct": 0.3, "as_of": "09:10", "date": "2026-11-01"}
+    assert "overnight_cues_pct" not in b.state(t("10:43"), q)  # yesterday's cues are never shown
+    b.apply(t("10:44"), {"hm": "10:44", "action": "EXIT"}, q)
+    frame(b, "10:45", q)
+    assert b.trade_peak is None  # reset once flat
+
+
+def test_overnight_cue_change_is_measured_from_the_previous_daily_close() -> None:
+    from atlas_lite.overnight_cues import _pct_since_prev_close
+
+    day1, day2 = 1_763_337_600, 1_763_424_000  # two consecutive UTC midnights
+    payload = lambda last_t: {"chart": {"result": [{"meta": {"regularMarketPrice": 101.0, "regularMarketTime": last_t},
+                                                    "timestamp": [day1, day2], "indicators": {"quote": [{"close": [100.0, 100.5]}]}}]}}
+    assert _pct_since_prev_close(payload(day2 + 3600)) == 1.0  # today's bar is live: compare with yesterday's close 100
+    assert _pct_since_prev_close(payload(day2 + 3600 + 86_400)) == round((101 / 100.5 - 1) * 100, 2)
+    assert _pct_since_prev_close({"chart": {"result": []}}) is None
 
 
 def test_reasoning_field_goes_to_openrouter_only(monkeypatch) -> None:
