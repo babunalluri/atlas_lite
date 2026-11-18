@@ -452,7 +452,7 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
         "per-leg stop at +50% · else close 15:14",
     ),
     "llm_buyer": (
-        f"09:16–{LLM_BUYER_LAST_ENTRY} · Claude Sonnet 5.5 (prompt v5: freehand + peak P&L, opening fact, overnight cues): buy 1 lot ATM CE or PE · "
+        f"09:16–{LLM_BUYER_LAST_ENTRY} · Mistral Nemo from 19 Nov, Sonnet 5.5 before (prompt v5: freehand + peak P&L, opening fact, overnight cues): buy 1 lot ATM CE or PE · "
         "paper: no limits; live: 2 entries, up to 4 while positive",
         f"an open trade is managed every minute until the LLM exits · −₹{LLM_BUYER_DAY_LOSS:,.0f} day stop · profit lock · "
         f"last exit {LLM_BUYER_EXIT_AT}",

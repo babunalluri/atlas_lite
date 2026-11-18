@@ -1,4 +1,4 @@
-"""LLM option buyer (Claude Sonnet 5.5): one lot ATM NIFTY CE or PE. Paper by default.
+"""LLM option buyer (Mistral Nemo from 19 Nov 2026; Claude Sonnet 5.5 11-18 Nov): one lot ATM NIFTY CE or PE. Paper by default.
 
 Every minute from 09:16 the LLM sees what a discretionary trader would see at that minute (new trades until
 15:00; a trade still open is managed every minute until it closes, at the latest 15:08) (NIFTY
@@ -75,14 +75,15 @@ EST_CHARGES = 80.0  # a buy and a sell of one ATM lot, for the running day-loss 
 SLIP_PTS = 1.0
 FUNDS_HEADROOM = 1.10
 TAG_PREFIX = "llm"
-# One trader only (operator, 14 Nov 2026): Claude Sonnet 5.5 via OpenRouter. Model bake-offs (Opus / Gemini /
-# DeepSeek / Grok) are closed — Sonnet led on the 13 Nov chop day and is the live/paper book. No OpenAI fallback:
-# a different model is a different trader; if OpenRouter fails the book waits / holds (and sells after
-# MAX_ERRORS_HOLDING failures while holding). Replay can still pass --model for off-box studies.
-MODEL_OPENROUTER = "anthropic/claude-sonnet-5.5"
+# One trader only. Mistral Nemo via OpenRouter from 19 Nov 2026 (operator's call, 18 Nov): ~$0.02 a day vs ~$1.20 for
+# Claude Sonnet 5.5 (the trader 11-18 Nov). In spot checks of 9 / 17 / 18 Nov inputs Nemo bought calls in 12 of 13
+# entries (a call bias to watch on down-trend days). A different model is a different trader: its paper record starts
+# fresh on 19 Nov. No OpenAI fallback; if OpenRouter fails the book waits / holds (and sells after MAX_ERRORS_HOLDING
+# failures while holding). Replay can still pass --model for off-box studies.
+MODEL_OPENROUTER = "mistralai/mistral-nemo"
 MODEL_OPENAI: str | None = None  # unused; left so tests can flip it on for the dual-target path
 LLM_TIMEOUT_S = 25.0  # a whole call, start to answer (OpenRouter's keep-alive padding defeats httpx's per-read timeout)
-LLM_MAX_TOKENS = 1000  # Sonnet at low effort still needs headroom; billed as used
+LLM_MAX_TOKENS = 1000  # headroom for reasoning models; billed as used (Nemo answers in ~150-300 tokens)
 LIVE_EVENTS = frozenset({"order_intent", "order_sent", "order_send_error", "order_cancel_sent", "order_final",
                          "live_phase", "manual_needed", "live_mark"})
 
@@ -308,7 +309,7 @@ class LlmBuyer:
     path_every_min: int = 5  # NIFTY path sample in the LLM's view
     straddle_every_min: int = 5  # straddle path sample
     tag_prefix: str = TAG_PREFIX
-    name: str = "LLM buyer · Sonnet"
+    name: str = "LLM buyer · Nemo"
     max_entries: int = MAX_ENTRIES
     # Entries allowed beyond max_entries while today's closed P&L is positive (the hour book: up to 4 in all). An
     # extra trade is sold, and entries end, once the day's P&L falls to PROFIT_LOCK of its best closed level.

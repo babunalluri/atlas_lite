@@ -79,11 +79,11 @@ def test_decider_parses_and_has_no_openai_fallback() -> None:
 
     out = LlmDecider(Creds(), post=post).decide({"time": "10:40"})  # OpenRouter 402, no OpenAI fallback
     assert out["action"] == "" and out["error"].startswith("openrouter:") and out["inputs"] == {"time": "10:40"}
-    assert [m for _, m in calls] == ["anthropic/claude-sonnet-5.5"]
+    assert [m for _, m in calls] == [M.MODEL_OPENROUTER]
     bodies = []
     ok = LlmDecider(Creds(), post=lambda url, **kw: (bodies.append(kw["json"]),
                     Resp(200, '{"action": "buy_pe", "reason": "new lows"}'))[1]).decide({"time": "10:40"})
-    assert ok["action"] == "BUY_PE" and ok["provider"] == "openrouter" and ok["model"] == "anthropic/claude-sonnet-5.5"
+    assert ok["action"] == "BUY_PE" and ok["provider"] == "openrouter" and ok["model"] == M.MODEL_OPENROUTER
     assert bodies[0]["reasoning"] == {"effort": "low"} and bodies[0]["max_tokens"] == 1000  # answers, never empty
     assert bodies[0]["provider"] == {"sort": "latency"}  # the fastest host of the same model
     assert LlmDecider(None).decide({})["error"] == "no_llm_credentials"
@@ -781,6 +781,7 @@ def test_sparse_padding_is_cut_within_the_total_budget() -> None:
 
 def test_live_prompt_is_v5_and_v3_keeps_the_book_contract() -> None:
     assert M.PROMPT_VERSION == "v5" and M.SYSTEM_PROMPT == M.render_prompt("v5")
+    assert M.MODEL_OPENROUTER == "mistralai/mistral-nemo"  # the trader from 19 Nov (Sonnet 5.5 11-18 Nov)
     assert M.LlmDecider(None).prompt == M.SYSTEM_PROMPT  # the book's decider sends v5 (freehand + information)
     v3 = M.render_prompt("v3")
     assert "New trades only until 15:00" in v3 and "held until 15:08" in v3 and "{" not in v3.split("Reply with")[0]

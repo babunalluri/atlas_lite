@@ -2494,8 +2494,8 @@
       <section class="book-group" aria-label="Directional">
         <h4 class="book-group-title">Directional</h4>
         <div class="book-grid">
-          <article class="book-card" data-src="llmBuyerLine" data-title="LLM buyer · Sonnet">
-            <div class="history-detail book-src" id="llmBuyerLine">LLM buyer · Sonnet: —</div>
+          <article class="book-card" data-src="llmBuyerLine" data-title="LLM buyer · Nemo">
+            <div class="history-detail book-src" id="llmBuyerLine">LLM buyer · Nemo: —</div>
             <details class="book-inputs" id="llmBuyerInputs" hidden>
               <summary id="llmBuyerInputsTitle">What it saw</summary>
               <div class="book-chips" id="llmBuyerFactors"></div>
@@ -7034,12 +7034,12 @@
       }).join("");
     }
 
-    // LLM buyer (Sonnet only): status line + Paper/Live switches.
+    // LLM buyer (one model, Mistral Nemo from 19 Nov): status line + Paper/Live switches.
     function renderLlmBuyer(lb) {
       const line = document.getElementById("llmBuyerLine");
       if (!line) return;
       if (!lb.enabled) {
-        line.textContent = "LLM buyer · Sonnet · off (ATLAS_LITE_PAPER_LLM_BUYER=0)";
+        line.textContent = "LLM buyer · off (ATLAS_LITE_PAPER_LLM_BUYER=0)";
         return;
       }
       const d = lb.last_decision;
@@ -7051,8 +7051,8 @@
         : `FLAT${lb.stopped ? ` (${{ day_loss: "day loss stop hit", done_for_day: "done for today", profit_lock: "profit lock: kept half the day's best" }[lb.stopped] || lb.stopped})` : ""}`;
       const cap = lb.max_entries_if_positive > lb.max_entries ? ` (up to ${lb.max_entries_if_positive} while positive)` : "";
       const liveTxt = lb.live ? ` · live today: ${lb.entries ?? 0}/${lb.max_entries ?? 2}${cap} trades, PnL ${lb.day_realized ?? 0} (stop −${lb.day_loss_limit ?? 1500})` : " · paper only";
-      const model = (lb.model || "anthropic/claude-sonnet-5.5").replace(/^anthropic\//, "");
-      line.textContent = `${lb.name || "LLM buyer · Sonnet"} · ${model} · ${head} · paper today: ${lb.paper_entries ?? 0} trades, PnL ${lb.paper_realized ?? 0} (no limits)`
+      const model = String(lb.model || "").replace(/^[^/]+\//, "");
+      line.textContent = `${lb.name || "LLM buyer"} · ${model} · ${head} · paper today: ${lb.paper_entries ?? 0} trades, PnL ${lb.paper_realized ?? 0} (no limits)`
         + `${liveTxt}${said}`
         + (lb.last_reject ? ` · ${lb.last_reject}` : "");
       renderLlmBuyerInputs(d);
