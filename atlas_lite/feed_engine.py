@@ -93,7 +93,6 @@ from atlas_lite.paper_expiry_sell import (
     PaperExpirySell,
     paper_expiry_sell_enabled,
 )
-from atlas_lite.overnight_cues import fetch_overnight_cues
 from atlas_lite.paper_g2t10 import LEDGER_NAME as G2T10_LEDGER, PaperG2T10, paper_g2t10_enabled
 from atlas_lite.paper_factor import (
     LEDGER_NAME as FACTOR_LEDGER,
@@ -452,7 +451,7 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
         "per-leg stop at +50% · else close 15:14",
     ),
     "llm_buyer": (
-        f"09:16–{LLM_BUYER_LAST_ENTRY} · Mistral Nemo from 19 Nov, Sonnet 5.5 before (prompt v5: freehand + peak P&L, opening fact, overnight cues): buy 1 lot ATM CE or PE · "
+        f"09:16–{LLM_BUYER_LAST_ENTRY} · Mistral Nemo from 19 Nov, Sonnet 5.5 before (prompt v6: freehand + peak P&L and the opening fact): buy 1 lot ATM CE or PE · "
         "paper: no limits; live: 2 entries, up to 4 while positive",
         f"an open trade is managed every minute until the LLM exits · −₹{LLM_BUYER_DAY_LOSS:,.0f} day stop · profit lock · "
         f"last exit {LLM_BUYER_EXIT_AT}",
@@ -3231,8 +3230,6 @@ class FeedEngine:
         interval = max(1.0, STREAM_INTERVAL_MS / 1000.0)
         pending: asyncio.Task | None = None
         pending_hm, pending_at, pending_state = "", 0.0, {}
-        cues: asyncio.Task | None = None
-        cues_at = 0.0
         while True:
             try:
                 now = datetime.now(IST)
@@ -3246,16 +3243,6 @@ class FeedEngine:
                     await asyncio.sleep(30.0)
                     continue
                 hm = now.strftime("%H:%M")
-                # Global cues for the LLM (US futures, Asia, crude, USD/INR): every 10 min in a worker thread, so a slow
-                # Yahoo reply never delays the book; a failed fetch keeps the last good one.
-                if cues is not None and cues.done():
-                    got = cues.result() if not cues.cancelled() and cues.exception() is None else None
-                    if got:
-                        book.overnight = got
-                    cues = None
-                if cues is None and "09:00" <= hm <= "15:15" and time.monotonic() - cues_at > 600:
-                    cues_at = time.monotonic()
-                    cues = asyncio.create_task(asyncio.to_thread(fetch_overnight_cues))
                 feed = self.build_feed("nifty") if "09:15" <= hm <= "15:30" and "nifty" in self.notebooks else {}
                 if feed and not feed.get("error"):  # yesterday's open/high/low/close (retried until the bars have it)
                     nb = self.notebooks.get("nifty")

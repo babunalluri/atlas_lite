@@ -162,9 +162,15 @@ the opening move only about half the time; a sharp early spike was about as like
 nifty_gap_at_open_pct is NIFTY's open versus yesterday's close, and overnight_cues_pct is how US index futures, Japan,
 Hong Kong, Brent crude and USD/INR moved since their own previous close (context only; fields may be missing).
 Reply with JSON only:""")
-PROMPTS = {"v2": SYSTEM_PROMPT_V2, "v3": SYSTEM_PROMPT_V3, "v4": SYSTEM_PROMPT_V4, "v5": SYSTEM_PROMPT_V5}
-# Live/paper book uses v5 (from 18 Nov; v4 before). v2-v4 stay in PROMPTS for `scripts/llm_replay_day.py --prompt` studies.
-PROMPT_VERSION = "v5"
+# v6 (operator's call, 19 Nov 2026): v5 without the overnight cues and the gap at the open. Nemo cited "strong overnight
+# cues (US indices up, crude down)" in 5 of its 6 entries on 19 Nov, mostly to justify puts (the cues were bullish);
+# Sonnet cited them once in 10. Overnight news is priced in by the 09:15 open anyway. Peak P&L and the opening fact stay.
+SYSTEM_PROMPT_V6 = SYSTEM_PROMPT_V5.replace("""nifty_gap_at_open_pct is NIFTY's open versus yesterday's close, and overnight_cues_pct is how US index futures, Japan,
+Hong Kong, Brent crude and USD/INR moved since their own previous close (context only; fields may be missing).
+""", "")
+PROMPTS = {"v2": SYSTEM_PROMPT_V2, "v3": SYSTEM_PROMPT_V3, "v4": SYSTEM_PROMPT_V4, "v5": SYSTEM_PROMPT_V5, "v6": SYSTEM_PROMPT_V6}
+# Live/paper book uses v6 (from 19 Nov; v5 18-19 Nov, v4 before). Older versions stay for `scripts/llm_replay_day.py --prompt`.
+PROMPT_VERSION = "v6"
 
 
 def render_prompt(version: str) -> str:
@@ -330,7 +336,6 @@ class LlmBuyer:
     # Best open P&L of the trade now open: (trade key, Rs, HH:MM). Shown to the LLM as position.max_open_pnl_rs so it can
     # see how much it has given back. In memory only (after a restart it starts again from the current P&L).
     trade_peak: tuple[str, float, str] | None = field(default=None, repr=False)
-    overnight: dict[str, Any] | None = field(default=None, repr=False)  # global cues (overnight_cues), set by the engine
     pending_close: dict[str, Any] | None = None
     month_live_pnl: dict[str, float] = field(default_factory=dict)
     history: dict[str, dict[str, float]] = field(default_factory=dict)  # minute -> spot / straddle samples
@@ -647,11 +652,6 @@ class LlmBuyer:
             **({"entries_left_today": left} if (left := self._entries_left()) is not None else {}),
             **self._price_action(f, spots, now),
         }
-        pdc = (f.get("prev_day") or {}).get("close") if isinstance(f.get("prev_day"), dict) else None
-        if spots and pdc:
-            s["nifty_gap_at_open_pct"] = round((spots[0] / float(pdc) - 1) * 100, 2)
-        if self.overnight and self.overnight.get("date") == now.strftime("%Y-%m-%d"):  # never yesterday's cues
-            s["overnight_cues_pct"] = {k: v for k, v in self.overnight.items() if k != "date"}
         if self.position is not None or self.live is not None:
             # While holding, the levels that keep moving are left out: the exit refers to position.entry_level, fixed at
             # entry (a moving level is what made 12 Nov's 09:48 exit use the wrong number).
