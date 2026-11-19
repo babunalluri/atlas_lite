@@ -75,12 +75,13 @@ EST_CHARGES = 80.0  # a buy and a sell of one ATM lot, for the running day-loss 
 SLIP_PTS = 1.0
 FUNDS_HEADROOM = 1.10
 TAG_PREFIX = "llm"
-# Paper only (operator's call, 19 Nov 2026): a paper buy is PAPER_LOTS lots; one lot is sold automatically once its open
-# profit at the bid reaches PARTIAL_TARGET_PER_LOT, the rest stays with the LLM's exit. Tested on 35 LLM trades
-# (scratchpad two_lot.py): 2 lots plain -Rs 23,342, +Rs 1,500 target -Rs 13,241 (G2T10's trend trades: +43,805 ->
-# +14,110, so it gives up half of a trend day). Live trading stays 1 lot (no partial exits in the live order path).
+# Paper only (operator's call, 19 Nov 2026): a paper buy is PAPER_LOTS lots; one lot is sold automatically once its bid
+# is PARTIAL_TARGET_PCT above the price paid, the rest stays with the LLM's exit. A percentage, not rupees: premiums ran
+# Rs 25-248, so a fixed Rs 1,500 was 6-60% of the price. Tested (scratchpad two_lot.py, 2 lots): 35 LLM trades plain
+# -Rs 23,342 -> +20% -Rs 17,374; G2T10's 54 trades +Rs 43,805 -> +Rs 26,702 (+20% kept the most of the trend days
+# among the targets tried: 10-30%, Rs 1,000/1,500). Live trading stays 1 lot (no partial exits in the live order path).
 PAPER_LOTS = 2
-PARTIAL_TARGET_PER_LOT = 1500.0
+PARTIAL_TARGET_PCT = 0.20
 # One trader only. Mistral Nemo via OpenRouter from 19 Nov 2026 (operator's call, 18 Nov): ~$0.02 a day vs ~$1.20 for
 # Claude Sonnet 5.5 (the trader 11-18 Nov). In spot checks of 9 / 17 / 18 Nov inputs Nemo bought calls in 12 of 13
 # entries (a call bias to watch on down-trend days). A different model is a different trader: its paper record starts
@@ -182,7 +183,7 @@ SYSTEM_PROMPT_V7 = SYSTEM_PROMPT_V6.replace(
     """compare it with open_pnl_rs to see how much of it is still there.
 """, """given_back_from_peak_rs and share_of_peak_left_pct show how much of it is already gone, minutes_since_peak how long
 ago the best moment was, and nifty_against_trade_since_peak_pts how far NIFTY has moved against your trade since then.
-In paper trading a buy is 2 lots: one lot is sold for you once it is up Rs 1,500 (position.banked_rs); EXIT sells the
+In paper trading a buy is 2 lots: one lot is sold for you once its price is 20% above what you paid (position.banked_rs); EXIT sells the
 lots still held (position.lots_held). open_pnl_rs and max_open_pnl_rs count the whole trade, the sold lot included.
 """)
 PROMPTS["v7"] = SYSTEM_PROMPT_V7
@@ -933,12 +934,12 @@ class LlmBuyer:
         return self._partial_take(now, book)  # otherwise only the LLM's exit (or the forced exit) closes a paper trade
 
     def _partial_take(self, now: datetime, book: QuoteSource) -> dict[str, Any] | None:
-        """Paper: sell one lot once its open profit at the bid reaches PARTIAL_TARGET_PER_LOT (once per trade)."""
+        """Paper: sell one lot once its bid is PARTIAL_TARGET_PCT above the price paid (once per trade)."""
         pos = self.position
         if pos is None or pos.banked_gross or not pos.lot_size or pos.qty <= pos.lot_size:
             return None
         bid = self._sell_px(book, pos.symbol)
-        if bid is None or (bid - pos.fill) * pos.lot_size < PARTIAL_TARGET_PER_LOT:
+        if bid is None or bid < pos.fill * (1 + PARTIAL_TARGET_PCT):
             return None
         lot = pos.lot_size
         charges = round(float(kite_nfo_charges([(pos.fill, lot, "buy"), (bid, lot, "sell")])["total"]), 2)

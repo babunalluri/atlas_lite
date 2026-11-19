@@ -985,7 +985,7 @@ def test_state_shows_the_trades_best_open_profit_and_no_overnight_cues(tmp_path:
     fr("10:42")
     st = b.state(t("10:42"), q)
     pos = st["position"]
-    banked = (129.5 - 100.5) * 65  # one lot sold at 10:41 (+Rs 1,885 >= the Rs 1,500 lot target)
+    banked = (129.5 - 100.5) * 65  # one lot sold at 10:41 (bid 129.5 >= 100.5 * 1.20)
     peak = (129.5 - 100.5) * 130  # both lots at the 10:41 bid
     now_total = banked + (109.5 - 100.5) * 65
     assert pos["open_pnl_rs"] == round(now_total) and pos["max_open_pnl_rs"] == round(peak)
@@ -1043,13 +1043,14 @@ def test_paper_two_lots_sell_one_at_the_target_and_the_close_counts_both(tmp_pat
     b, q = book_at(tmp_path), Book()
     frame(b, "10:39", q)
     b.apply(t("10:40"), {"hm": "10:40", "action": "BUY_CE", "reason": "breakout"}, q)  # 2 lots at 100.5
-    q.px[CE] = 120.0  # bid 119.5: one lot +Rs 1,235 < Rs 1,500 -> nothing sold
+    q.px[CE] = 120.0  # bid 119.5 < 100.5 * 1.20 = 120.6 -> nothing sold
     assert frame(b, "10:41", q) is None and b.position.qty == 130
-    q.px[CE] = 125.0  # bid 124.5: one lot +Rs 1,560 -> sell one lot
+    q.px[CE] = 125.0  # bid 124.5 >= 120.6 (+20%) -> sell one lot
     ev = frame(b, "10:42", q)
     assert ev["event"] == "partial_close" and ev["qty"] == 65 and ev["exit"] == 124.5 and ev["reason"] == "lot_target"
     assert b.position.qty == 65 and b.position.banked_gross == round(24.0 * 65, 2)
     assert frame(b, "10:43", q) is None  # only once per trade
+    assert M.PARTIAL_TARGET_PCT == 0.20 and M.PAPER_LOTS == 2
     import atlas_lite.llm_buyer as mod
     real_now = mod.datetime
 
