@@ -75,6 +75,12 @@ EST_CHARGES = 80.0  # a buy and a sell of one ATM lot, for the running day-loss 
 SLIP_PTS = 1.0
 FUNDS_HEADROOM = 1.10
 TAG_PREFIX = "llm"
+# Paper only (operator's call, 19 Nov 2026): a paper buy is PAPER_LOTS lots; one lot is sold automatically once its open
+# profit at the bid reaches PARTIAL_TARGET_PER_LOT, the rest stays with the LLM's exit. Tested on 35 LLM trades
+# (scratchpad two_lot.py): 2 lots plain -Rs 23,342, +Rs 1,500 target -Rs 13,241 (G2T10's trend trades: +43,805 ->
+# +14,110, so it gives up half of a trend day). Live trading stays 1 lot (no partial exits in the live order path).
+PAPER_LOTS = 2
+PARTIAL_TARGET_PER_LOT = 1500.0
 # One trader only. Mistral Nemo via OpenRouter from 19 Nov 2026 (operator's call, 18 Nov): ~$0.02 a day vs ~$1.20 for
 # Claude Sonnet 5.5 (the trader 11-18 Nov). In spot checks of 9 / 17 / 18 Nov inputs Nemo bought calls in 12 of 13
 # entries (a call bias to watch on down-trend days). A different model is a different trader: its paper record starts
@@ -169,8 +175,19 @@ SYSTEM_PROMPT_V6 = SYSTEM_PROMPT_V5.replace("""nifty_gap_at_open_pct is NIFTY's 
 Hong Kong, Brent crude and USD/INR moved since their own previous close (context only; fields may be missing).
 """, "")
 PROMPTS = {"v2": SYSTEM_PROMPT_V2, "v3": SYSTEM_PROMPT_V3, "v4": SYSTEM_PROMPT_V4, "v5": SYSTEM_PROMPT_V5, "v6": SYSTEM_PROMPT_V6}
-# Live/paper book uses v6 (from 19 Nov; v5 18-19 Nov, v4 before). Older versions stay for `scripts/llm_replay_day.py --prompt`.
-PROMPT_VERSION = "v6"
+# v7 (operator's call, 19 Nov 2026): v6 plus ready-made giveback figures (information only, no rule). Nemo saw
+# max_open_pnl_rs on 19 Nov and kept writing "PE near max open PnL" after half of it was gone (+2,538 -> +1,365);
+# the given-back amount, share left, minutes since the peak and NIFTY's move against the trade remove the arithmetic.
+SYSTEM_PROMPT_V7 = SYSTEM_PROMPT_V6.replace(
+    """compare it with open_pnl_rs to see how much of it is still there.
+""", """given_back_from_peak_rs and share_of_peak_left_pct show how much of it is already gone, minutes_since_peak how long
+ago the best moment was, and nifty_against_trade_since_peak_pts how far NIFTY has moved against your trade since then.
+In paper trading a buy is 2 lots: one lot is sold for you once it is up Rs 1,500 (position.banked_rs); EXIT sells the
+lots still held (position.lots_held). open_pnl_rs and max_open_pnl_rs count the whole trade, the sold lot included.
+""")
+PROMPTS["v7"] = SYSTEM_PROMPT_V7
+# Live/paper book uses v7 (from 19 Nov; v6 and v5 18-19 Nov, v4 before). Older versions stay for replays.
+PROMPT_VERSION = "v7"
 
 
 def render_prompt(version: str) -> str:
@@ -294,6 +311,9 @@ class Position:
     reason: str = ""
     entry_level: float | None = None  # the price level the trade broke (code-picked at entry); the exit refers to it
     entry_level_kind: str = ""
+    lot_size: int = 0  # one lot (paper partial exit sells this many)
+    banked_gross: float = 0.0  # gross P&L of a lot already sold at the profit target
+    banked_charges: float = 0.0
 
 
 @dataclass
@@ -335,7 +355,7 @@ class LlmBuyer:
     live_meta: dict[str, Any] = field(default_factory=dict)
     # Best open P&L of the trade now open: (trade key, Rs, HH:MM). Shown to the LLM as position.max_open_pnl_rs so it can
     # see how much it has given back. In memory only (after a restart it starts again from the current P&L).
-    trade_peak: tuple[str, float, str] | None = field(default=None, repr=False)
+    trade_peak: tuple[str, float, str, float | None] | None = field(default=None, repr=False)  # + NIFTY at the peak
     pending_close: dict[str, Any] | None = None
     month_live_pnl: dict[str, float] = field(default_factory=dict)
     history: dict[str, dict[str, float]] = field(default_factory=dict)  # minute -> spot / straddle samples
@@ -441,7 +461,12 @@ class LlmBuyer:
                     self.position = Position(day=d, leg=ev["leg"], symbol=ev["symbol"], strike=int(ev.get("strike") or 0),
                                              qty=int(ev["qty"]), fill=float(ev["fill"]), opened_at=str(ev.get("ts")),
                                              reason=str(ev.get("reason") or ""), entry_level=_f(ev.get("entry_level")),
-                                             entry_level_kind=str(ev.get("entry_level_kind") or ""))
+                                             entry_level_kind=str(ev.get("entry_level_kind") or ""),
+                                             lot_size=int(ev.get("lot_size") or ev["qty"]))
+            elif kind == "partial_close" and self.position is not None:
+                self.position.qty -= int(ev.get("qty") or 0)
+                self.position.banked_gross += float(ev.get("pnl_gross") or 0.0)
+                self.position.banked_charges += float(ev.get("charges") or 0.0)
             elif kind == "close":
                 if ev.get("live"):
                     self.day_realized = round(self.day_realized + float(ev.get("pnl") or 0.0), 2)
@@ -502,7 +527,8 @@ class LlmBuyer:
         if o is None:
             return
         if self.trade_peak is None or self.trade_peak[0] != key or o > self.trade_peak[1]:
-            self.trade_peak = (key, float(o), now.strftime("%H:%M"))
+            spot = _f((self.last_feed or {}).get("spot"))
+            self.trade_peak = (key, float(o), now.strftime("%H:%M"), spot)
 
     def _open_pnl(self, book: QuoteSource) -> float | None:
         """Open P&L in Rs at bids (live: from the real fills), before charges."""
@@ -517,7 +543,9 @@ class LlmBuyer:
         if self.position is None:
             return 0.0
         bid = self._sell_px(book, self.position.symbol)
-        return None if bid is None else (bid - self.position.fill) * self.position.qty
+        if bid is None:
+            return None
+        return (bid - self.position.fill) * self.position.qty + self.position.banked_gross  # the whole trade, both lots
 
     def day_pnl(self, book: QuoteSource) -> float | None:
         o = self._open_pnl(book)
@@ -676,8 +704,25 @@ class LlmBuyer:
                              "entry_level_kind": kind or None}
             self._track_peak(now, book)
             if self.trade_peak is not None and self.trade_peak[0] == self._trade_key():
-                s["position"]["max_open_pnl_rs"] = round(max(self.trade_peak[1], o or self.trade_peak[1]))
-                s["position"]["max_open_pnl_at"] = self.trade_peak[2]
+                peak = max(self.trade_peak[1], o if o is not None else self.trade_peak[1])
+                pos = s["position"]
+                pos["max_open_pnl_rs"] = round(peak)
+                if self.position is not None and self.position.lot_size:
+                    pos["lots_held"] = self.position.qty // self.position.lot_size
+                    if self.position.banked_gross:
+                        pos["banked_rs"] = round(self.position.banked_gross)
+                pos["max_open_pnl_at"] = self.trade_peak[2]
+                # Ready-made giveback figures (v7): no arithmetic left to the model.
+                if o is not None:
+                    pos["given_back_from_peak_rs"] = round(max(0.0, peak - o))
+                    if peak > 0:
+                        pos["share_of_peak_left_pct"] = round(max(0.0, o) / peak * 100)
+                ph = self.trade_peak[2]
+                pos["minutes_since_peak"] = max(0, (int(hm[:2]) * 60 + int(hm[3:])) - (int(ph[:2]) * 60 + int(ph[3:])))
+                spot_now, spot_pk = s.get("nifty"), self.trade_peak[3]
+                if spot_now is not None and spot_pk is not None:
+                    against = (spot_pk - spot_now) if leg == "ce" else (spot_now - spot_pk)
+                    pos["nifty_against_trade_since_peak_pts"] = round(against, 1)
         return s
 
     def apply(self, now: datetime, out: dict[str, Any], book: QuoteSource, *, allow_entry: bool = True) -> dict[str, Any] | None:
@@ -756,14 +801,15 @@ class LlmBuyer:
         level, kind = self._traded_level(leg, now)
         if self.live_enabled():
             return self._open_live(now, leg, str(symbol), strike, px, reason, level, kind)
+        qty = self.qty * PAPER_LOTS
         ev = self._append({"event": "open", "ts": now.isoformat(), "day": self.day, "leg": leg, "symbol": symbol,
-                           "strike": strike, "qty": self.qty, "fill": round(px, 2), "entry": round(px, 2),
+                           "strike": strike, "qty": qty, "lot_size": self.qty, "fill": round(px, 2), "entry": round(px, 2),
                            "side": "long", "reason": reason, "entry_level": level, "entry_level_kind": kind})
         if ev is None:  # no ledger line, no position (a restart could not know about it)
             self.last_reject = "ledger_write_failed"
             return None
         self.paper_entries += 1
-        self.position = Position(day=self.day, leg=leg, symbol=str(symbol), strike=strike, qty=self.qty, fill=round(px, 2),
+        self.position = Position(day=self.day, leg=leg, symbol=str(symbol), strike=strike, qty=qty, lot_size=self.qty, fill=round(px, 2),
                                  opened_at=now.isoformat(), reason=reason, entry_level=level, entry_level_kind=kind)
         self.last_reject = None
         return ev
@@ -844,11 +890,13 @@ class LlmBuyer:
         if px is None:
             self.last_reject = "no_quote_for_exit"
             return None
-        charges = round(float(kite_nfo_charges([(pos.fill, pos.qty, "buy"), (px, pos.qty, "sell")])["total"]), 2)
-        gross = round((px - pos.fill) * pos.qty, 2)
+        charges = round(float(kite_nfo_charges([(pos.fill, pos.qty, "buy"), (px, pos.qty, "sell")])["total"])
+                        + pos.banked_charges, 2)
+        gross = round((px - pos.fill) * pos.qty + pos.banked_gross, 2)  # the trade's total: a lot banked earlier included
         ev = self._append({"event": "close", "ts": now.isoformat(), "day": pos.day, "leg": pos.leg, "symbol": pos.symbol,
                            "strike": pos.strike, "qty": pos.qty, "entry": pos.fill, "exit": round(px, 2),
-                           "pnl_gross": gross, "charges": charges, "pnl": round(gross - charges, 2), "reason": why})
+                           "pnl_gross": gross, "charges": charges, "pnl": round(gross - charges, 2), "reason": why,
+                           **({"banked_lot_pnl_gross": round(pos.banked_gross, 2)} if pos.banked_gross else {})})
         if ev is None:
             return None
         self.position = None
@@ -882,7 +930,28 @@ class LlmBuyer:
             return ev
         if hm >= self.exit_at:
             return self._exit(now, book, "square_off")
-        return None  # a paper trade has no day stop or profit lock: the LLM's exit or the forced exit closes it
+        return self._partial_take(now, book)  # otherwise only the LLM's exit (or the forced exit) closes a paper trade
+
+    def _partial_take(self, now: datetime, book: QuoteSource) -> dict[str, Any] | None:
+        """Paper: sell one lot once its open profit at the bid reaches PARTIAL_TARGET_PER_LOT (once per trade)."""
+        pos = self.position
+        if pos is None or pos.banked_gross or not pos.lot_size or pos.qty <= pos.lot_size:
+            return None
+        bid = self._sell_px(book, pos.symbol)
+        if bid is None or (bid - pos.fill) * pos.lot_size < PARTIAL_TARGET_PER_LOT:
+            return None
+        lot = pos.lot_size
+        charges = round(float(kite_nfo_charges([(pos.fill, lot, "buy"), (bid, lot, "sell")])["total"]), 2)
+        gross = round((bid - pos.fill) * lot, 2)
+        ev = self._append({"event": "partial_close", "ts": now.isoformat(), "day": pos.day, "leg": pos.leg,
+                           "symbol": pos.symbol, "qty": lot, "entry": pos.fill, "exit": round(bid, 2), "pnl_gross": gross,
+                           "charges": charges, "pnl": round(gross - charges, 2), "reason": "lot_target"})
+        if ev is None:
+            return None
+        pos.qty -= lot
+        pos.banked_gross += gross
+        pos.banked_charges += charges
+        return ev
 
     def _kill_switch(self, now: datetime, today: str) -> None:
         """Box unticked after being on today (or found off with a live trade of today open): sell the live position;

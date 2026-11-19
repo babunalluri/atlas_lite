@@ -95,12 +95,13 @@ def test_paper_entry_exit_and_decision_schedule(tmp_path: Path) -> None:
     assert not b.decision_due(t("09:19")) and b.decision_due(t("09:20")) and not b.decision_due(t("09:21"))
     frame(b, "10:40", q)
     ev = b.apply(t("10:40"), {"hm": "10:40", "action": "BUY_CE", "reason": "breakout"}, q)
-    assert ev["event"] == "open" and ev["leg"] == "ce" and ev["fill"] == 100.5 and ev["qty"] == 65
+    assert ev["event"] == "open" and ev["leg"] == "ce" and ev["fill"] == 100.5 and ev["qty"] == 130  # paper: 2 lots
     assert b.apply(t("10:45"), {"hm": "10:45", "action": "BUY_PE"}, q) is None  # a buy while holding is ignored
     assert "position" in b.state(t("10:45"), q) and b.decision_due(t("10:50"))
     q.px[CE] = 130.0
     close = b.apply(t("11:00"), {"hm": "11:00", "action": "EXIT", "reason": "target"}, q)
-    assert close["event"] == "close" and close["exit"] == 129.5 and close["pnl_gross"] == round(29.0 * 65, 2)
+    assert close["event"] == "close" and close["exit"] == 129.5 and close["pnl_gross"] == round(29.0 * 130, 2)  # no frame
+    # between: the lot target was never checked, both lots sold by the EXIT
     assert b.position is None and b.paper_realized == close["pnl"] and b.day_realized == 0.0  # live total untouched
     assert [e["action"] for e in ledger(b) if e["event"] == "decision"] == ["BUY_CE", "BUY_PE", "EXIT"]
 
@@ -780,7 +781,7 @@ def test_sparse_padding_is_cut_within_the_total_budget() -> None:
 
 
 def test_live_prompt_is_v5_and_v3_keeps_the_book_contract() -> None:
-    assert M.PROMPT_VERSION == "v6" and M.SYSTEM_PROMPT == M.render_prompt("v6")
+    assert M.PROMPT_VERSION == "v7" and M.SYSTEM_PROMPT == M.render_prompt("v7")
     assert M.MODEL_OPENROUTER == "mistralai/mistral-nemo"  # the trader from 19 Nov (Sonnet 5.5 11-18 Nov)
     assert M.LlmDecider(None).prompt == M.SYSTEM_PROMPT  # the book's decider sends v5 (freehand + information)
     v3 = M.render_prompt("v3")
@@ -951,7 +952,7 @@ def test_freehand_prompt_v4_has_no_trading_rules_and_keeps_the_book_contract() -
     assert "BUY_CE, BUY_PE, WAIT, DONE_FOR_DAY" in v4 and "HOLD, EXIT" in v4 and "{" not in v4.split("Reply with")[0]
     for rule_word in ("chasing", "0.25%", "opening-range", "entry_level", "careful", "not obliged"):
         assert rule_word not in v4  # freehand: no rules, no caution bias
-    assert M.PROMPT_VERSION == "v6"  # v4 13-18 Nov, v5 18-19 Nov, v6 = v5 without the overnight cues
+    assert M.PROMPT_VERSION == "v7"  # v4 13-18 Nov, v5/v6 18-19 Nov, v7 = v6 + ready-made giveback figures
 
 
 def test_prompt_v5_is_v4_plus_information_and_still_has_no_rules() -> None:
@@ -962,6 +963,11 @@ def test_prompt_v5_is_v4_plus_information_and_still_has_no_rules() -> None:
     v6 = M.render_prompt("v6")
     assert "overnight_cues_pct" not in v6 and "nifty_gap_at_open_pct" not in v6
     assert "max_open_pnl_rs" in v6 and "about half the time" in v6
+    v7 = M.render_prompt("v7")
+    for field in ("given_back_from_peak_rs", "share_of_peak_left_pct", "minutes_since_peak", "nifty_against_trade_since_peak_pts"):
+        assert field in v7 and field not in v6
+    for rule_word in ("must", "take profit", "exit when", "never"):
+        assert rule_word not in v7.lower().split("reply with")[0].split("given_back_from_peak_rs")[1]  # information, not a rule
     assert "{" not in v5.split("Reply with")[0] and "BUY_CE, BUY_PE, WAIT, DONE_FOR_DAY" in v5
     for rule_word in ("chasing", "0.25%", "must", "never trade", "do not buy", "take profit"):
         assert rule_word not in v5.lower()
@@ -979,8 +985,13 @@ def test_state_shows_the_trades_best_open_profit_and_no_overnight_cues(tmp_path:
     fr("10:42")
     st = b.state(t("10:42"), q)
     pos = st["position"]
-    assert pos["open_pnl_rs"] == round((109.5 - 100.5) * 65) and pos["max_open_pnl_rs"] == round((129.5 - 100.5) * 65)
-    assert pos["max_open_pnl_at"] == "10:41"
+    banked = (129.5 - 100.5) * 65  # one lot sold at 10:41 (+Rs 1,885 >= the Rs 1,500 lot target)
+    peak = (129.5 - 100.5) * 130  # both lots at the 10:41 bid
+    now_total = banked + (109.5 - 100.5) * 65
+    assert pos["open_pnl_rs"] == round(now_total) and pos["max_open_pnl_rs"] == round(peak)
+    assert pos["max_open_pnl_at"] == "10:41" and pos["lots_held"] == 1 and pos["banked_rs"] == round(banked)
+    assert pos["given_back_from_peak_rs"] == round(peak - now_total) and pos["share_of_peak_left_pct"] == round(now_total / peak * 100)
+    assert pos["minutes_since_peak"] == 1 and pos["nifty_against_trade_since_peak_pts"] == 0.0  # NIFTY flat in the test feed
     assert "overnight_cues_pct" not in st and "nifty_gap_at_open_pct" not in st  # removed in v6 (19 Nov)
     b.apply(t("10:44"), {"hm": "10:44", "action": "EXIT"}, q)
     frame(b, "10:45", q)
@@ -1026,3 +1037,33 @@ def test_replay_until_accepts_unpadded_time_and_refuses_junk(tmp_path) -> None:
     script = Path(__file__).resolve().parents[1] / "scripts" / "llm_replay_day.py"
     bad = subprocess.run([sys.executable, str(script), "2026-11-13", "--until", "945"], capture_output=True, text=True)
     assert bad.returncode != 0 and "--until must be HH:MM" in bad.stderr
+
+
+def test_paper_two_lots_sell_one_at_the_target_and_the_close_counts_both(tmp_path: Path, monkeypatch) -> None:
+    b, q = book_at(tmp_path), Book()
+    frame(b, "10:39", q)
+    b.apply(t("10:40"), {"hm": "10:40", "action": "BUY_CE", "reason": "breakout"}, q)  # 2 lots at 100.5
+    q.px[CE] = 120.0  # bid 119.5: one lot +Rs 1,235 < Rs 1,500 -> nothing sold
+    assert frame(b, "10:41", q) is None and b.position.qty == 130
+    q.px[CE] = 125.0  # bid 124.5: one lot +Rs 1,560 -> sell one lot
+    ev = frame(b, "10:42", q)
+    assert ev["event"] == "partial_close" and ev["qty"] == 65 and ev["exit"] == 124.5 and ev["reason"] == "lot_target"
+    assert b.position.qty == 65 and b.position.banked_gross == round(24.0 * 65, 2)
+    assert frame(b, "10:43", q) is None  # only once per trade
+    import atlas_lite.llm_buyer as mod
+    real_now = mod.datetime
+
+    class FakeDT(real_now):
+        @classmethod
+        def now(cls, tz=None):
+            return t("10:44")
+
+    monkeypatch.setattr(mod, "datetime", FakeDT)
+    r = book_at(tmp_path)  # restart after the partial exit (restores today's trade only)
+    monkeypatch.setattr(mod, "datetime", real_now)
+    assert r.position.qty == 65 and r.position.banked_gross == round(24.0 * 65, 2) and r.position.banked_charges > 0
+    q.px[CE] = 110.0
+    close = r.apply(t("10:50"), {"hm": "10:50", "action": "EXIT", "reason": "stalled"}, q)  # bid 109.5
+    assert close["qty"] == 65 and close["pnl_gross"] == round(24.0 * 65 + 9.0 * 65, 2)  # banked lot + the last lot
+    assert close["banked_lot_pnl_gross"] == round(24.0 * 65, 2)
+    assert close["charges"] > ev["charges"] and r.paper_realized == close["pnl"]  # both round trips charged once
