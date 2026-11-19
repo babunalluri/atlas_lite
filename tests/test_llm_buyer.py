@@ -782,7 +782,7 @@ def test_sparse_padding_is_cut_within_the_total_budget() -> None:
 
 def test_live_prompt_is_v5_and_v3_keeps_the_book_contract() -> None:
     assert M.PROMPT_VERSION == "v7" and M.SYSTEM_PROMPT == M.render_prompt("v7")
-    assert M.MODEL_OPENROUTER == "mistralai/mistral-nemo"  # the trader from 19 Nov (Sonnet 5.5 11-18 Nov)
+    assert M.MODEL_OPENROUTER == "anthropic/claude-sonnet-5.5"  # back to Sonnet from 20 Nov (Nemo 19 Nov only)
     assert M.LlmDecider(None).prompt == M.SYSTEM_PROMPT  # the book's decider sends v5 (freehand + information)
     v3 = M.render_prompt("v3")
     assert "New trades only until 15:00" in v3 and "held until 15:08" in v3 and "{" not in v3.split("Reply with")[0]
@@ -985,7 +985,7 @@ def test_state_shows_the_trades_best_open_profit_and_no_overnight_cues(tmp_path:
     fr("10:42")
     st = b.state(t("10:42"), q)
     pos = st["position"]
-    banked = (129.5 - 100.5) * 65  # one lot sold at 10:41 (bid 129.5 >= 100.5 * 1.20)
+    banked = (109.5 - 100.5) * 65  # lot 1 armed at 10:41 (bid 129.5), sold at 10:42 when the bid fell to 109.5
     peak = (129.5 - 100.5) * 130  # both lots at the 10:41 bid
     now_total = banked + (109.5 - 100.5) * 65
     assert pos["open_pnl_rs"] == round(now_total) and pos["max_open_pnl_rs"] == round(peak)
@@ -1039,32 +1039,37 @@ def test_replay_until_accepts_unpadded_time_and_refuses_junk(tmp_path) -> None:
     assert bad.returncode != 0 and "--until must be HH:MM" in bad.stderr
 
 
-def test_paper_two_lots_sell_one_at_the_target_and_the_close_counts_both(tmp_path: Path, monkeypatch) -> None:
+def test_paper_two_lots_trailing_stop_on_lot_one_and_the_close_counts_both(tmp_path: Path, monkeypatch) -> None:
     b, q = book_at(tmp_path), Book()
     frame(b, "10:39", q)
     b.apply(t("10:40"), {"hm": "10:40", "action": "BUY_CE", "reason": "breakout"}, q)  # 2 lots at 100.5
-    q.px[CE] = 120.0  # bid 119.5 < 100.5 * 1.20 = 120.6 -> nothing sold
-    assert frame(b, "10:41", q) is None and b.position.qty == 130
-    q.px[CE] = 125.0  # bid 124.5 >= 120.6 (+20%) -> sell one lot
-    ev = frame(b, "10:42", q)
-    assert ev["event"] == "partial_close" and ev["qty"] == 65 and ev["exit"] == 124.5 and ev["reason"] == "lot_target"
-    assert b.position.qty == 65 and b.position.banked_gross == round(24.0 * 65, 2)
-    assert frame(b, "10:43", q) is None  # only once per trade
-    assert M.PARTIAL_TARGET_PCT == 0.20 and M.PAPER_LOTS == 2
+    q.px[CE] = 110.0  # bid 109.5 < 100.5 * 1.10 = 110.55: not armed
+    assert frame(b, "10:41", q) is None and b.position.lot1_high == 0
+    q.px[CE] = 120.0  # bid 119.5: armed, high 119.5
+    assert frame(b, "10:42", q) is None and b.position.lot1_high == 119.5
+    q.px[CE] = 125.0  # bid 124.5: new high, no sale
+    assert frame(b, "10:43", q) is None and b.position.lot1_high == 124.5
+    q.px[CE] = 122.5  # bid 122.0 = 2.0% below 124.5 -> lot 1 sold
+    ev = frame(b, "10:44", q)
+    assert ev["event"] == "partial_close" and ev["qty"] == 65 and ev["exit"] == 122.0 and ev["reason"] == "lot_trailing_stop"
+    assert b.position.qty == 65 and b.position.banked_gross == round(21.5 * 65, 2)
+    q.px[CE] = 115.0
+    assert frame(b, "10:45", q) is None  # only once per trade
+    assert M.PARTIAL_ARM_PCT == 0.10 and M.PARTIAL_TRAIL_PCT == 0.02 and M.PAPER_LOTS == 2
     import atlas_lite.llm_buyer as mod
     real_now = mod.datetime
 
     class FakeDT(real_now):
         @classmethod
         def now(cls, tz=None):
-            return t("10:44")
+            return t("10:46")
 
     monkeypatch.setattr(mod, "datetime", FakeDT)
-    r = book_at(tmp_path)  # restart after the partial exit (restores today's trade only)
+    r = book_at(tmp_path)  # restart after lot 1 was sold (restores today's trade only)
     monkeypatch.setattr(mod, "datetime", real_now)
-    assert r.position.qty == 65 and r.position.banked_gross == round(24.0 * 65, 2) and r.position.banked_charges > 0
+    assert r.position.qty == 65 and r.position.banked_gross == round(21.5 * 65, 2) and r.position.banked_charges > 0
     q.px[CE] = 110.0
     close = r.apply(t("10:50"), {"hm": "10:50", "action": "EXIT", "reason": "stalled"}, q)  # bid 109.5
-    assert close["qty"] == 65 and close["pnl_gross"] == round(24.0 * 65 + 9.0 * 65, 2)  # banked lot + the last lot
-    assert close["banked_lot_pnl_gross"] == round(24.0 * 65, 2)
-    assert close["charges"] > ev["charges"] and r.paper_realized == close["pnl"]  # both round trips charged once
+    assert close["qty"] == 65 and close["pnl_gross"] == round(21.5 * 65 + 9.0 * 65, 2)  # banked lot + the last lot
+    assert close["banked_lot_pnl_gross"] == round(21.5 * 65, 2)
+    assert close["charges"] > ev["charges"] and r.paper_realized == close["pnl"]

@@ -1,4 +1,4 @@
-"""LLM option buyer (Mistral Nemo from 19 Nov 2026; Claude Sonnet 5.5 11-18 Nov): one lot ATM NIFTY CE or PE. Paper by default.
+"""LLM option buyer (Claude Sonnet 5.5; Mistral Nemo for one day, 19 Nov 2026): ATM NIFTY CE or PE. Paper by default.
 
 Every minute from 09:16 the LLM sees what a discretionary trader would see at that minute (new trades until
 15:00; a trade still open is managed every minute until it closes, at the latest 15:08) (NIFTY
@@ -75,22 +75,23 @@ EST_CHARGES = 80.0  # a buy and a sell of one ATM lot, for the running day-loss 
 SLIP_PTS = 1.0
 FUNDS_HEADROOM = 1.10
 TAG_PREFIX = "llm"
-# Paper only (operator's call, 19 Nov 2026): a paper buy is PAPER_LOTS lots; one lot is sold automatically once its bid
-# is PARTIAL_TARGET_PCT above the price paid, the rest stays with the LLM's exit. A percentage, not rupees: premiums ran
-# Rs 25-248, so a fixed Rs 1,500 was 6-60% of the price. Tested (scratchpad two_lot.py, 2 lots): 35 LLM trades plain
-# -Rs 23,342 -> +20% -Rs 17,374; G2T10's 54 trades +Rs 43,805 -> +Rs 26,702 (+20% kept the most of the trend days
-# among the targets tried: 10-30%, Rs 1,000/1,500). Live trading stays 1 lot (no partial exits in the live order path).
+# Paper only (operator's call, 19 Nov 2026): a paper buy is PAPER_LOTS lots. Lot 1 has a trailing stop: once its bid is
+# PARTIAL_ARM_PCT above the price paid, the highest bid since is followed and lot 1 is sold when the bid falls
+# PARTIAL_TRAIL_PCT below that high. The other lot stays with the LLM's exit. Live trading stays 1 lot.
+# Tested before choosing (scratchpad two_lot.py, 2 lots, 43 LLM trades / G2T10's 54): arm +10% trail 2% -Rs 17,820 /
+# +Rs 20,053; trail 5% -17,543 / +23,880; a fixed +20% sale -15,625 / +26,702 (operator chose the 10% / 2% trail).
 PAPER_LOTS = 2
-PARTIAL_TARGET_PCT = 0.20
-# One trader only. Mistral Nemo via OpenRouter from 19 Nov 2026 (operator's call, 18 Nov): ~$0.02 a day vs ~$1.20 for
-# Claude Sonnet 5.5 (the trader 11-18 Nov). In spot checks of 9 / 17 / 18 Nov inputs Nemo bought calls in 12 of 13
-# entries (a call bias to watch on down-trend days). A different model is a different trader: its paper record starts
-# fresh on 19 Nov. No OpenAI fallback; if OpenRouter fails the book waits / holds (and sells after MAX_ERRORS_HOLDING
-# failures while holding). Replay can still pass --model for off-box studies.
-MODEL_OPENROUTER = "mistralai/mistral-nemo"
+PARTIAL_ARM_PCT = 0.10
+PARTIAL_TRAIL_PCT = 0.02
+# One trader only: Claude Sonnet 5.5 via OpenRouter (~$1.20 a day). Mistral Nemo ran 19 Nov only (operator's call to
+# save cost) and was dropped the same evening: 46 trades by 12:06, 10 wins, -Rs 6,608 (Rs 4,015 of it charges), mostly
+# 1-minute trades and puts on a rising day. A different model is a different trader: Sonnet's record restarts on 20 Nov.
+# No OpenAI fallback; if OpenRouter fails the book waits / holds (and sells after MAX_ERRORS_HOLDING failures while
+# holding). Replay can still pass --model for off-box studies.
+MODEL_OPENROUTER = "anthropic/claude-sonnet-5.5"
 MODEL_OPENAI: str | None = None  # unused; left so tests can flip it on for the dual-target path
 LLM_TIMEOUT_S = 25.0  # a whole call, start to answer (OpenRouter's keep-alive padding defeats httpx's per-read timeout)
-LLM_MAX_TOKENS = 1000  # headroom for reasoning models; billed as used (Nemo answers in ~150-300 tokens)
+LLM_MAX_TOKENS = 1000  # Sonnet at low reasoning effort still needs headroom; billed as used
 LIVE_EVENTS = frozenset({"order_intent", "order_sent", "order_send_error", "order_cancel_sent", "order_final",
                          "live_phase", "manual_needed", "live_mark"})
 
@@ -183,7 +184,8 @@ SYSTEM_PROMPT_V7 = SYSTEM_PROMPT_V6.replace(
     """compare it with open_pnl_rs to see how much of it is still there.
 """, """given_back_from_peak_rs and share_of_peak_left_pct show how much of it is already gone, minutes_since_peak how long
 ago the best moment was, and nifty_against_trade_since_peak_pts how far NIFTY has moved against your trade since then.
-In paper trading a buy is 2 lots: one lot is sold for you once its price is 20% above what you paid (position.banked_rs); EXIT sells the
+In paper trading a buy is 2 lots: once the price is 10% above what you paid, one lot is sold for you when it falls 2%
+from its high since then (position.banked_rs); EXIT sells the
 lots still held (position.lots_held). open_pnl_rs and max_open_pnl_rs count the whole trade, the sold lot included.
 """)
 PROMPTS["v7"] = SYSTEM_PROMPT_V7
@@ -313,8 +315,9 @@ class Position:
     entry_level: float | None = None  # the price level the trade broke (code-picked at entry); the exit refers to it
     entry_level_kind: str = ""
     lot_size: int = 0  # one lot (paper partial exit sells this many)
-    banked_gross: float = 0.0  # gross P&L of a lot already sold at the profit target
+    banked_gross: float = 0.0  # gross P&L of a lot already sold by its trailing stop
     banked_charges: float = 0.0
+    lot1_high: float = 0.0  # highest bid since lot 1's trailing stop armed (0 = not armed; memory only)
 
 
 @dataclass
@@ -336,7 +339,7 @@ class LlmBuyer:
     path_every_min: int = 5  # NIFTY path sample in the LLM's view
     straddle_every_min: int = 5  # straddle path sample
     tag_prefix: str = TAG_PREFIX
-    name: str = "LLM buyer · Nemo"
+    name: str = "LLM buyer · Sonnet"
     max_entries: int = MAX_ENTRIES
     # Entries allowed beyond max_entries while today's closed P&L is positive (the hour book: up to 4 in all). An
     # extra trade is sold, and entries end, once the day's P&L falls to PROFIT_LOCK of its best closed level.
@@ -934,19 +937,28 @@ class LlmBuyer:
         return self._partial_take(now, book)  # otherwise only the LLM's exit (or the forced exit) closes a paper trade
 
     def _partial_take(self, now: datetime, book: QuoteSource) -> dict[str, Any] | None:
-        """Paper: sell one lot once its bid is PARTIAL_TARGET_PCT above the price paid (once per trade)."""
+        """Paper: lot 1's trailing stop. Arms once the bid is PARTIAL_ARM_PCT above the price paid; then sells one lot
+        when the bid falls PARTIAL_TRAIL_PCT below the highest bid since (once per trade)."""
         pos = self.position
         if pos is None or pos.banked_gross or not pos.lot_size or pos.qty <= pos.lot_size:
             return None
         bid = self._sell_px(book, pos.symbol)
-        if bid is None or bid < pos.fill * (1 + PARTIAL_TARGET_PCT):
+        if bid is None:
+            return None
+        if not pos.lot1_high:
+            if bid >= pos.fill * (1 + PARTIAL_ARM_PCT):
+                pos.lot1_high = bid  # armed
+            return None
+        pos.lot1_high = max(pos.lot1_high, bid)
+        if bid > pos.lot1_high * (1 - PARTIAL_TRAIL_PCT):
             return None
         lot = pos.lot_size
         charges = round(float(kite_nfo_charges([(pos.fill, lot, "buy"), (bid, lot, "sell")])["total"]), 2)
         gross = round((bid - pos.fill) * lot, 2)
         ev = self._append({"event": "partial_close", "ts": now.isoformat(), "day": pos.day, "leg": pos.leg,
                            "symbol": pos.symbol, "qty": lot, "entry": pos.fill, "exit": round(bid, 2), "pnl_gross": gross,
-                           "charges": charges, "pnl": round(gross - charges, 2), "reason": "lot_target"})
+                           "charges": charges, "pnl": round(gross - charges, 2), "reason": "lot_trailing_stop",
+                           "lot_high": round(pos.lot1_high, 2)})
         if ev is None:
             return None
         pos.qty -= lot
