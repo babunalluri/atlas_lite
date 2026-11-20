@@ -81,8 +81,23 @@ TAG_PREFIX = "llm"
 # Tested before choosing (scratchpad two_lot.py, 2 lots, 43 LLM trades / G2T10's 54): arm +10% trail 2% -Rs 17,820 /
 # +Rs 20,053; trail 5% -17,543 / +23,880; a fixed +20% sale -15,625 / +26,702 (operator chose the 10% / 2% trail).
 PAPER_LOTS = 2
+# Day-direction rule (operator's call, 20 Nov 2026), code-enforced on new entries: NIFTY (last closed 1-min candle) vs
+# today's 09:15 open (no trade while either is unknown): >= +DAY_DIRECTION_PCT -> calls only,
+# <= -DAY_DIRECTION_PCT -> puts only, in between -> no new trade (the LLM is not asked while flat). Open trades and
+# exits are not affected. Tested on the book's own 100 paper trades 11-20 Nov (scratchpad day_direction_filter.py):
+# -Rs 10,095 as traded -> +Rs 3,539 (46 trades); worst day -6,608 -> -3,927; still -Rs 4,958 without 20 Nov.
+DAY_DIRECTION_PCT = 0.25
+DAY_DIRECTION_RULE = True  # tests of other behaviour switch it off ("any" side allowed)
 PARTIAL_ARM_PCT = 0.10
 PARTIAL_TRAIL_PCT = 0.02
+# Lot-2 giveback stop (operator's call, 20 Nov 2026; paper only): once the bid is LOT2_ARM_PCT above the price paid,
+# the lots still held are sold when the bid has given back LOT2_GIVEBACK of its best profit since (bid <= fill +
+# (high - fill) * (1 - LOT2_GIVEBACK)). The LLM's EXIT still works before that. Tested (scratchpad exit_test.py, 100
+# trades 11-20 Nov, 2 lots): -Rs 16,903 -> -Rs 10,093 (30%: -12,854, 50%: -10,845); with the day-direction rule
+# -1,047 -> +2,078, but most of the gain is 20 Nov and it was worse on 17 Nov; runaway strikes left the depth tape, so
+# big winners are under-tested (the recorder now keeps held options). Re-check after 1-2 weeks of clean data.
+LOT2_ARM_PCT = 0.10
+LOT2_GIVEBACK = 0.40
 # One trader only: OpenAI GPT-6.2 Sol via OpenRouter from 20 Nov 2026 (operator's call; same price as Sonnet, ~$1.20 a
 # day). Check before switching (scratchpad luna_failures.py / sol_nov17.py, same inputs): on 18 Nov's 6 losing Sonnet
 # entries Sol bought 6 of 6 (like Sonnet); on 17 Nov's 4 Sonnet trades it made the same 4 calls (+Rs 2,852 vs
@@ -191,8 +206,14 @@ from its high since then (position.banked_rs); EXIT sells the
 lots still held (position.lots_held). open_pnl_rs and max_open_pnl_rs count the whole trade, the sold lot included.
 """)
 PROMPTS["v7"] = SYSTEM_PROMPT_V7
-# Live/paper book uses v7 (from 19 Nov; v6 and v5 18-19 Nov, v4 before). Older versions stay for replays.
-PROMPT_VERSION = "v7"
+# v8 (operator's call, 20 Nov 2026): v7 plus the code-enforced day-direction rule (allowed_entry), information only.
+SYSTEM_PROMPT_V8 = SYSTEM_PROMPT_V7.replace("Reply with JSON only:", """allowed_entry is set by code from NIFTY's move since the 09:15 open (nifty_vs_open_pct): +0.25% or more allows
+calls only, -0.25% or more puts only; a buy on the other side is refused. In paper trading, once the price is 10%
+above what you paid, the lots still held are also sold for you if the trade gives back 40% of its best profit since.
+Reply with JSON only:""")
+PROMPTS["v8"] = SYSTEM_PROMPT_V8
+# Live/paper book uses v8 (from 20 Nov evening; v7 19-20 Nov, v6 and v5 18-19 Nov, v4 before). Older versions stay for replays.
+PROMPT_VERSION = "v8"
 
 
 def render_prompt(version: str) -> str:
@@ -320,6 +341,7 @@ class Position:
     banked_gross: float = 0.0  # gross P&L of a lot already sold by its trailing stop
     banked_charges: float = 0.0
     lot1_high: float = 0.0  # highest bid since lot 1's trailing stop armed (0 = not armed; memory only)
+    lot2_high: float = 0.0  # highest bid since the lot-2 giveback stop armed (0 = not armed; memory only)
 
 
 @dataclass
@@ -570,7 +592,35 @@ class LlmBuyer:
         holding = self.position is not None or self.live is not None
         if holding:
             return self.live is None or self.live.phase == "holding"
-        return self._entry_open() and hm <= self.last_entry and self._feed_fresh(now)
+        # While flat the LLM is asked only when the day-direction rule allows a side.
+        return self._entry_open() and hm <= self.last_entry and self._feed_fresh(now) and self.allowed_side() is not None
+
+    def allowed_side(self) -> str | None:
+        """Day-direction rule: "ce" (calls only), "pe" (puts only) or None (no new trade). See DAY_DIRECTION_PCT.
+        "any" when the rule is switched off."""
+        if not DAY_DIRECTION_RULE:
+            return "any"
+        move = self.nifty_vs_open_pct()
+        if move is None:
+            return None
+        if move >= DAY_DIRECTION_PCT:
+            return "ce"
+        if move <= -DAY_DIRECTION_PCT:
+            return "pe"
+        return None
+
+    def nifty_vs_open_pct(self) -> float | None:
+        """NIFTY's last closed 1-min candle vs today's open (the first candle, if it starts by 09:20), in %. None when
+        the open is unknown (no closed candle yet, or a data gap after a restart): no new trade rather than a guess
+        (the book's own history starts at the restart, so its first spot is not the open)."""
+        bars = self._today_bars(self.last_feed)
+        if not bars or str(bars[0].get("t") or "")[11:16] > "09:20":
+            return None
+        try:
+            open_px, now_px = float(bars[0]["o"]), float(bars[-1]["c"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        return round((now_px / open_px - 1) * 100, 3) if open_px > 0 else None
 
     def _entry_open(self) -> bool:
         """May a new trade start? Paper: always (until the LLM says DONE_FOR_DAY). Live: the day limits on live trades."""
@@ -686,6 +736,10 @@ class LlmBuyer:
             **({"entries_left_today": left} if (left := self._entries_left()) is not None else {}),
             **self._price_action(f, spots, now),
         }
+        if self.position is None and self.live is None:
+            side = self.allowed_side()
+            s["nifty_vs_open_pct"] = self.nifty_vs_open_pct()
+            s["allowed_entry"] = {"ce": "calls only", "pe": "puts only", "any": "calls or puts"}.get(side, "no new trades")
         if self.position is not None or self.live is not None:
             # While holding, the levels that keep moving are left out: the exit refers to position.entry_level, fixed at
             # entry (a moving level is what made 12 Nov's 09:48 exit use the wrong number).
@@ -765,6 +819,13 @@ class LlmBuyer:
                 self._stop_entries(now, "day_loss")
                 return None
             if not self._entry_open() or now.strftime("%H:%M") > self.last_entry:
+                return None
+            want, side = ("ce" if act == "BUY_CE" else "pe"), self.allowed_side()
+            if side != "any" and want != side:
+                self.last_reject = "day_direction"
+                self._append({"event": "entry_blocked", "ts": now.isoformat(), "day": self.day, "hm": hm,
+                              "action": act, "why": "day_direction", "allowed": side,
+                              "nifty_vs_open_pct": self.nifty_vs_open_pct()})
                 return None
             return self._open(now, "ce" if act == "BUY_CE" else "pe", book, str(out.get("reason") or ""))
         if not holding and act == "DONE_FOR_DAY":
@@ -936,7 +997,26 @@ class LlmBuyer:
             return ev
         if hm >= self.exit_at:
             return self._exit(now, book, "square_off")
-        return self._partial_take(now, book)  # otherwise only the LLM's exit (or the forced exit) closes a paper trade
+        # Otherwise the lot-1 trail, the lot-2 giveback stop and the LLM's exit (or the forced exit) close a paper trade.
+        return self._partial_take(now, book) or self._lot2_giveback(now, book)
+
+    def _lot2_giveback(self, now: datetime, book: QuoteSource) -> dict[str, Any] | None:
+        """Paper: sell the lots still held once the trade has given back LOT2_GIVEBACK of its best profit since the bid
+        first reached LOT2_ARM_PCT above the price paid."""
+        pos = self.position
+        if pos is None:
+            return None
+        bid = self._sell_px(book, pos.symbol)
+        if bid is None:
+            return None
+        if not pos.lot2_high:
+            if bid >= pos.fill * (1 + LOT2_ARM_PCT):
+                pos.lot2_high = bid  # armed
+            return None
+        pos.lot2_high = max(pos.lot2_high, bid)
+        if bid > pos.fill + (pos.lot2_high - pos.fill) * (1 - LOT2_GIVEBACK):
+            return None
+        return self._exit(now, book, "lot2_giveback")
 
     def _partial_take(self, now: datetime, book: QuoteSource) -> dict[str, Any] | None:
         """Paper: lot 1's trailing stop. Arms once the bid is PARTIAL_ARM_PCT above the price paid; then sells one lot

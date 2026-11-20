@@ -2007,10 +2007,32 @@ class FeedEngine:
                         "step": step,
                         "expiry": expiry,
                     }
+        # Options the buying books hold are recorded too, even after NIFTY moves away from their strike: without them
+        # a runaway winner's price path leaves the tape and its exits cannot be studied (20 Nov 25550CE: tape best bid
+        # 170.9, real exit 221.15). Tagged leg "held"; ATM-relative rows are unchanged.
+        nifty = self.notebooks.get("nifty")
+        if nifty and nifty.universe and nifty.atm:
+            for sym, strike in self._held_option_symbols():
+                if sym in watch:
+                    continue
+                watch.add(sym)
+                meta[sym] = {"key": "held", "index": "nifty", "strike": strike, "atm": int(nifty.atm.strike),
+                             "step": int(nifty.universe.strike_step), "expiry": nifty.universe.expiry.isoformat()}
         if watch != self._depth_watch:
             self._depth_leg_rev.clear()
         self._depth_watch = watch
         self._depth_leg_meta = meta
+
+    def _held_option_symbols(self) -> list[tuple[str, int]]:
+        """(symbol, strike) of options the LLM buyer and G2T10 paper books hold right now."""
+        out: list[tuple[str, int]] = []
+        llm = self._llm_buyer
+        if llm is not None and llm.position is not None:
+            out.append((llm.position.symbol, int(llm.position.strike or 0)))
+        g2 = self._paper_g2t10
+        if g2 is not None and isinstance(g2.position, dict) and g2.position.get("symbol"):
+            out.append((str(g2.position["symbol"]), int(g2.position.get("strike") or 0)))
+        return out
 
     def _enqueue_depth_tick(self, symbol: str, row: dict[str, Any]) -> None:
         """Queue one ATM±1 leg tick (called from WS merge; drained by record loop)."""
@@ -2442,6 +2464,7 @@ class FeedEngine:
                     await self._recorder.append_depth_batch(batch, now=now)
                 hm = now.strftime("%H:%M")
                 if hm != self._structure_hm:
+                    self._sync_depth_watch()  # once a minute: picks up an option a book has just started holding
                     snap = self._structure_snapshot(now)
                     if snap is not None:
                         await self._recorder.append_structure(snap, now=now)
@@ -4102,6 +4125,8 @@ class FeedEngine:
     _PAPER_SHADOW_CLOSE_EVENTS = frozenset({"shadow_close"})
     _PAPER_PAIR_OPEN_EVENTS = _PAPER_OPEN_EVENTS | _PAPER_SHADOW_OPEN_EVENTS
     _PAPER_PAIR_CLOSE_EVENTS = _PAPER_CLOSE_EVENTS | _PAPER_SHADOW_CLOSE_EVENTS
+    # Shown in the trades list only: one lot sold early. Its P&L is already in the trade's close row.
+    _PAPER_INFO_EVENTS = frozenset({"partial_close"})
 
     def list_paper_trades(
         self,
@@ -4121,6 +4146,7 @@ class FeedEngine:
             | self._PAPER_CLOSE_EVENTS
             | self._PAPER_SHADOW_OPEN_EVENTS
             | self._PAPER_SHADOW_CLOSE_EVENTS
+            | self._PAPER_INFO_EVENTS
         )
         day_key = (day or "").strip() or None
         book_key = (book or "").strip() or None
@@ -4229,6 +4255,8 @@ class FeedEngine:
                         "info": self._paper_trade_info(event),
                         "book_file": path.name,
                         "shadow": shadow,
+                        **({"banked_lot_pnl_gross": event["banked_lot_pnl_gross"]}
+                           if event.get("banked_lot_pnl_gross") is not None else {}),
                     }
                 )
         self._backfill_open_opened_at(rows)
@@ -4271,6 +4299,7 @@ class FeedEngine:
             "book": book_key,
             "count": len(paired),
             "open_count": open_n,
+            "trade_count": open_n + closed_n,
             "closed_count": closed_n,
             "pnl_total": pnl_total,
             "shadow_open_count": shadow_open_n,
@@ -4397,6 +4426,11 @@ class FeedEngine:
                 continue
             if kind in cls._PAPER_PAIR_CLOSE_EVENTS:
                 stack = stacks.get(key) or []
+                if not stack and not key[2]:
+                    # Close without a side (llm_buyer): match the latest open on the same symbol.
+                    cands = [k for k, st in stacks.items() if st and k[:2] == key[:2] and k[3:] == key[3:]]
+                    if cands:
+                        stack = max((stacks[k] for k in cands), key=lambda st: str(st[-1].get("ts") or ""))
                 opened = stack.pop() if stack else None
                 out.append(cls._merge_paper_open_into_close(row, opened))
                 continue
@@ -4524,7 +4558,9 @@ class FeedEngine:
         out = list(buckets.values())
         for bucket in out:
             # "open" counts entries made that day (kept for older readers); still_open is what has not closed yet.
-            bucket["still_open"] = max(0, int(bucket["open"]) - int(bucket["closed"]))
+            # Paired opens are merged into their close rows, so the opens left here are still open.
+            bucket["still_open"] = int(bucket["open"])
+            bucket["trades"] = int(bucket["open"]) + int(bucket["closed"])
             if not bucket["pnl_known"]:
                 bucket["pnl_total"] = None
             else:

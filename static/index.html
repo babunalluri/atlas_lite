@@ -6895,7 +6895,7 @@
         return `<tr>
           <td>${escapeTradeHtml(row.day || "—")}</td>
           <td>${escapeTradeHtml(row.strategy || "—")}</td>
-          <td>${escapeTradeHtml(String(row.open ?? 0))}</td>
+          <td>${escapeTradeHtml(String(row.trades ?? row.open ?? 0))}</td>
           <td>${escapeTradeHtml(String(row.closed ?? 0))}</td>
           <td>${escapeTradeHtml(String(row.still_open ?? Math.max(0, (row.open ?? 0) - (row.closed ?? 0))))}</td>
           <td>${pnl}${est}</td>
@@ -6904,7 +6904,7 @@
       const totalCell = pnlTotal == null ? "—" : formatTradePnl(pnlTotal);
       tbody.innerHTML = `${body}<tr>
         <td colspan="2"><strong>Total</strong></td>
-        <td>${escapeTradeHtml(String(list.reduce((n, r) => n + (Number(r.open) || 0), 0)))}</td>
+        <td>${escapeTradeHtml(String(list.reduce((n, r) => n + (Number(r.trades ?? r.open) || 0), 0)))}</td>
         <td>${escapeTradeHtml(String(list.reduce((n, r) => n + (Number(r.closed) || 0), 0)))}</td>
         <td>${escapeTradeHtml(String(list.reduce((n, r) => n + (Number(r.still_open) || 0), 0)))}</td>
         <td><strong>${totalCell}</strong></td>
@@ -6920,8 +6920,15 @@
         return;
       }
       tbody.innerHTML = trades.map((row) => {
-        const ev = row.event || "—";
-        const pnl = ev === "open" ? "—" : formatTradePnl(row.pnl);
+        const rawEv = row.event || "—";
+        const lot1 = rawEv === "partial_close";
+        const twoLots = rawEv === "close" && row.banked_lot_pnl_gross != null;
+        const ev = lot1 ? "lot 1 sold" : (twoLots ? "close (lot 2)" : rawEv);
+        // Lot 1's P&L is already inside the close row's total, so it is shown in brackets.
+        const pnl = rawEv === "open" ? "—" : (lot1 ? `(${formatTradePnl(row.pnl)})` : formatTradePnl(row.pnl));
+        let reason = row.reason || "—";
+        if (lot1 && reason === "lot_trailing_stop") reason = "lot 1 trailing stop · P&L counted in the close row";
+        if (twoLots) reason = `${reason} · P&L = both lots`;
         const tip = (row.info && String(row.info).trim()) || "";
         const book = escapeTradeHtml(row.strategy || "—");
         const bookCell = tip
@@ -6936,7 +6943,7 @@
           <td>${formatTradeNum(row.entry)}</td>
           <td>${formatTradeNum(row.exit)}</td>
           <td>${pnl}</td>
-          <td>${escapeTradeHtml(row.reason || "—")}</td>
+          <td>${escapeTradeHtml(reason)}</td>
         </tr>`;
       }).join("");
     }
@@ -6961,7 +6968,7 @@
         renderTradesRows(data.trades || []);
         const n = (data.trades || []).length;
         const closed = data.closed_count != null ? data.closed_count : n;
-        const openN = data.open_count != null ? data.open_count : 0;
+        const openN = data.trade_count != null ? data.trade_count : (data.open_count != null ? data.open_count : 0);
         const pnlTxt = data.pnl_total == null
           ? "—"
           : `${Number(data.pnl_total) >= 0 ? "+" : ""}${Number(data.pnl_total).toFixed(2)}`;

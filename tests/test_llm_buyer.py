@@ -7,8 +7,17 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from atlas_lite import llm_buyer as M
 from atlas_lite.llm_buyer import LlmBuyer, LlmDecider
+
+
+@pytest.fixture(autouse=True)
+def _day_direction_off(monkeypatch, request):
+    """Most tests check other behaviour on a flat test market; the day-direction rule has its own tests below."""
+    if "day_direction" not in request.node.name:
+        monkeypatch.setattr(M, "DAY_DIRECTION_RULE", False)
 
 IST = ZoneInfo("Asia/Kolkata")
 DAY = "2026-11-11"  # Wednesday, a trading day
@@ -781,7 +790,7 @@ def test_sparse_padding_is_cut_within_the_total_budget() -> None:
 
 
 def test_live_prompt_is_v5_and_v3_keeps_the_book_contract() -> None:
-    assert M.PROMPT_VERSION == "v7" and M.SYSTEM_PROMPT == M.render_prompt("v7")
+    assert M.PROMPT_VERSION == "v8" and M.SYSTEM_PROMPT == M.render_prompt("v8")
     assert M.MODEL_OPENROUTER == "openai/gpt-6.2-sol"  # from 20 Nov (Sonnet 11-18 Nov, Nemo 19 Nov)
     assert M.LlmDecider(None).prompt == M.SYSTEM_PROMPT  # the book's decider sends v5 (freehand + information)
     v3 = M.render_prompt("v3")
@@ -952,7 +961,7 @@ def test_freehand_prompt_v4_has_no_trading_rules_and_keeps_the_book_contract() -
     assert "BUY_CE, BUY_PE, WAIT, DONE_FOR_DAY" in v4 and "HOLD, EXIT" in v4 and "{" not in v4.split("Reply with")[0]
     for rule_word in ("chasing", "0.25%", "opening-range", "entry_level", "careful", "not obliged"):
         assert rule_word not in v4  # freehand: no rules, no caution bias
-    assert M.PROMPT_VERSION == "v7"  # v4 13-18 Nov, v5/v6 18-19 Nov, v7 = v6 + ready-made giveback figures
+    assert M.PROMPT_VERSION == "v8"  # v4 13-18 Nov, v5/v6 18-19 Nov, v7 19-20 Nov, v8 = v7 + day-direction rule
 
 
 def test_prompt_v5_is_v4_plus_information_and_still_has_no_rules() -> None:
@@ -1053,8 +1062,8 @@ def test_paper_two_lots_trailing_stop_on_lot_one_and_the_close_counts_both(tmp_p
     ev = frame(b, "10:44", q)
     assert ev["event"] == "partial_close" and ev["qty"] == 65 and ev["exit"] == 122.0 and ev["reason"] == "lot_trailing_stop"
     assert b.position.qty == 65 and b.position.banked_gross == round(21.5 * 65, 2)
-    q.px[CE] = 115.0
-    assert frame(b, "10:45", q) is None  # only once per trade
+    q.px[CE] = 116.0  # bid 115.5: above the lot-2 giveback stop (100.5 + 24 * 0.6 = 114.9)
+    assert frame(b, "10:45", q) is None  # lot 1 only once per trade
     assert M.PARTIAL_ARM_PCT == 0.10 and M.PARTIAL_TRAIL_PCT == 0.02 and M.PAPER_LOTS == 2
     import atlas_lite.llm_buyer as mod
     real_now = mod.datetime
@@ -1073,3 +1082,65 @@ def test_paper_two_lots_trailing_stop_on_lot_one_and_the_close_counts_both(tmp_p
     assert close["qty"] == 65 and close["pnl_gross"] == round(21.5 * 65 + 9.0 * 65, 2)  # banked lot + the last lot
     assert close["banked_lot_pnl_gross"] == round(21.5 * 65, 2)
     assert close["charges"] > ev["charges"] and r.paper_realized == close["pnl"]
+
+
+def _dir_bars(last_close: float) -> list[dict]:
+    """Opens at 24,000 at 09:15; the last closed candle (09:40) closes at last_close."""
+    return [{"t": f"2026-11-11 09:{m:02d}", "o": 24000.0, "h": 24000.0, "l": 24000.0, "c": 24000.0} for m in range(15, 40)] + \
+           [{"t": "2026-11-11 09:40", "o": 24000.0, "h": max(24000.0, last_close), "l": min(24000.0, last_close), "c": last_close}]
+
+
+def test_day_direction_allows_only_the_side_of_the_days_move(tmp_path: Path) -> None:
+    for close, side, seen in ((24060.0, "ce", "calls only"), (23940.0, "pe", "puts only"), (24030.0, None, "no new trades")):
+        b, q = book_at(tmp_path / str(close)), Book()
+        b.on_frame(now=t("09:41"), feed={**feed(spot=close), "bars_today": _dir_bars(close)}, book=q)
+        assert b.allowed_side() == side  # +0.25% / -0.25% / +0.125% vs the 09:15 open
+        st = b.state(t("09:41"), q)
+        assert st["allowed_entry"] == seen and st["nifty_vs_open_pct"] == round((close / 24000 - 1) * 100, 3)
+    assert "allowed_entry" in M.SYSTEM_PROMPT and "0.25%" in M.SYSTEM_PROMPT
+
+
+def test_day_direction_refuses_the_other_side_and_logs_it(tmp_path: Path) -> None:
+    b, q = book_at(tmp_path), Book()
+    b.on_frame(now=t("09:41"), feed={**feed(spot=24060.0), "bars_today": _dir_bars(24060.0)}, book=q)
+    assert b.apply(t("09:41"), {"hm": "09:41", "action": "BUY_PE", "reason": "fade"}, q) is None
+    assert b.position is None and b.last_reject == "day_direction"
+    blocked = [e for e in ledger(b) if e["event"] == "entry_blocked"]
+    assert blocked and blocked[0]["allowed"] == "ce" and blocked[0]["action"] == "BUY_PE"
+    b.apply(t("09:41"), {"hm": "09:42", "action": "BUY_CE", "reason": "with the day"}, q)
+    assert b.position is not None and b.position.leg == "ce"
+
+
+def test_day_direction_skips_the_llm_while_flat_with_no_direction(tmp_path: Path) -> None:
+    b, q = book_at(tmp_path, first_decision="09:16", decide_every_min=1), Book()
+    b.on_frame(now=t("09:41"), feed={**feed(spot=24030.0), "bars_today": _dir_bars(24030.0)}, book=q)
+    assert b.decision_due(t("09:41")) is False  # inside +-0.25%: no new trade, so no LLM call
+    b.on_frame(now=t("09:41"), feed={**feed(spot=24070.0), "bars_today": _dir_bars(24070.0)}, book=q)
+    assert b.decision_due(t("09:41")) is True
+
+
+def test_day_direction_without_the_opening_candle_allows_no_trade(tmp_path: Path) -> None:
+    b, q = book_at(tmp_path), Book()
+    late = [{"t": f"2026-11-11 11:{m:02d}", "o": 24000.0, "h": 24100.0, "l": 24000.0, "c": 24100.0} for m in range(5)]
+    b.on_frame(now=t("11:05"), feed={**feed(spot=24100.0), "bars_today": late}, book=q)  # restart: bars from 11:00 only
+    assert b.nifty_vs_open_pct() is None and b.allowed_side() is None  # unknown open -> no trade, not a guess
+    b.on_frame(now=t("11:06"), feed={**feed(spot=24100.0), "bars_today": []}, book=q)
+    assert b.allowed_side() is None and b.state(t("11:06"), q)["allowed_entry"] == "no new trades"
+
+
+def test_paper_lot_two_is_sold_after_giving_back_40_percent_of_its_best_profit(tmp_path: Path) -> None:
+    b, q = book_at(tmp_path), Book()
+    frame(b, "10:39", q)
+    b.apply(t("10:40"), {"hm": "10:40", "action": "BUY_CE", "reason": "breakout"}, q)  # 2 lots at 100.5
+    q.px[CE] = 105.0  # bid 104.5: below +10%, not armed
+    assert frame(b, "10:41", q) is None and b.position.lot2_high == 0
+    q.px[CE] = 130.5  # bid 130.0: armed, high 130 (lot 1 armed too)
+    assert frame(b, "10:42", q) is None and b.position.lot2_high == 130.0
+    q.px[CE] = 127.0  # bid 126.5: 2.7% off the high -> lot 1 sold by its trail
+    assert frame(b, "10:43", q)["event"] == "partial_close"
+    q.px[CE] = 119.0  # bid 118.5 > 100.5 + 29.5 * 0.6 = 118.2: lot 2 kept
+    assert frame(b, "10:44", q) is None and b.position is not None
+    q.px[CE] = 118.5  # bid 118.0 <= 118.2: 40% of the best profit given back -> lot 2 sold
+    ev = frame(b, "10:45", q)
+    assert ev["event"] == "close" and ev["reason"] == "lot2_giveback" and ev["exit"] == 118.0 and b.position is None
+    assert M.LOT2_ARM_PCT == 0.10 and M.LOT2_GIVEBACK == 0.40 and "40% of its best profit" in M.SYSTEM_PROMPT

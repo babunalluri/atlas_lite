@@ -718,3 +718,41 @@ def test_retired_books_are_hidden_when_asked(tmp_path: Path) -> None:
     assert shown["books"] == ["expiry_day_straddle"]
     assert {t["strategy"] for t in shown["trades"]} == {"expiry_day_straddle"}
     assert shown["pnl_total"] == 695.0
+
+
+def test_llm_buyer_two_lots_pairs_opens_and_lists_lot1_sale(tmp_path: Path) -> None:
+    """llm_buyer closes carry no side: opens must still pair; lot 1's sale is listed but not counted."""
+    sym = "NFO:NIFTY26NOV25400CE"
+    rows = [
+        {"event": "open", "ts": "2026-11-20T09:18:02+05:30", "day": "2026-11-20", "leg": "ce", "symbol": sym,
+         "strike": 25400, "qty": 130, "entry": 141.9, "side": "long", "strategy": "llm_buyer"},
+        {"event": "partial_close", "ts": "2026-11-20T09:18:38+05:30", "day": "2026-11-20", "leg": "ce",
+         "symbol": sym, "qty": 65, "entry": 141.9, "exit": 155.25, "pnl": 796.42, "reason": "lot_trailing_stop",
+         "strategy": "llm_buyer"},
+        {"event": "close", "ts": "2026-11-20T09:22:03+05:30", "day": "2026-11-20", "leg": "ce", "symbol": sym,
+         "strike": 25400, "qty": 65, "entry": 141.9, "exit": 152.05, "pnl": 1385.94, "reason": "llm_exit",
+         "banked_lot_pnl_gross": 867.75, "strategy": "llm_buyer"},
+        {"event": "open", "ts": "2026-11-20T09:42:03+05:30", "day": "2026-11-20", "leg": "ce",
+         "symbol": "NFO:NIFTY26NOV25450CE", "strike": 25450, "qty": 130, "entry": 127.0, "side": "long",
+         "strategy": "llm_buyer"},
+    ]
+    (tmp_path / "paper_llm_buyer.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    out = _engine(tmp_path).list_paper_trades(limit=10)
+    assert [t["event"] for t in out["trades"]] == ["open", "close", "partial_close"]
+    close = out["trades"][1]
+    assert close["side"] == "long" and close["banked_lot_pnl_gross"] == 867.75
+    assert out["pnl_total"] == 1385.94  # lot 1 not counted twice
+    bd = out["by_book_day"][0]
+    assert bd["trades"] == 2 and bd["closed"] == 1 and bd["still_open"] == 1
+    assert out["trade_count"] == 2 and out["open_count"] == 1 and out["closed_count"] == 1
+
+
+def test_held_options_of_the_buying_books_are_listed_for_the_depth_tape(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+    eng = _engine(tmp_path)
+    eng._llm_buyer = SimpleNamespace(position=SimpleNamespace(symbol="NFO:NIFTY26NOV25550CE", strike=25550))
+    eng._paper_g2t10 = SimpleNamespace(position={"symbol": "NFO:NIFTY26NOV25500PE", "strike": 25500})
+    assert eng._held_option_symbols() == [("NFO:NIFTY26NOV25550CE", 25550), ("NFO:NIFTY26NOV25500PE", 25500)]
+    eng._llm_buyer = SimpleNamespace(position=None)
+    eng._paper_g2t10 = SimpleNamespace(position=None)
+    assert eng._held_option_symbols() == []
