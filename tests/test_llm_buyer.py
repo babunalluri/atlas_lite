@@ -782,7 +782,7 @@ def test_sparse_padding_is_cut_within_the_total_budget() -> None:
 
 def test_live_prompt_is_v5_and_v3_keeps_the_book_contract() -> None:
     assert M.PROMPT_VERSION == "v7" and M.SYSTEM_PROMPT == M.render_prompt("v7")
-    assert M.MODEL_OPENROUTER == "anthropic/claude-sonnet-5.5"  # back to Sonnet from 20 Nov (Nemo 19 Nov only)
+    assert M.MODEL_OPENROUTER == "openai/gpt-6.2-sol"  # from 20 Nov (Sonnet 11-18 Nov, Nemo 19 Nov)
     assert M.LlmDecider(None).prompt == M.SYSTEM_PROMPT  # the book's decider sends v5 (freehand + information)
     v3 = M.render_prompt("v3")
     assert "New trades only until 15:00" in v3 and "held until 15:08" in v3 and "{" not in v3.split("Reply with")[0]

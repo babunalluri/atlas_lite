@@ -1,4 +1,4 @@
-"""LLM option buyer (Claude Sonnet 5.5; Mistral Nemo for one day, 19 Nov 2026): ATM NIFTY CE or PE. Paper by default.
+"""LLM option buyer (OpenAI GPT-6.2 Sol from 20 Nov 2026; Claude Sonnet 5.5 11-18 Nov, Mistral Nemo 19 Nov): ATM NIFTY CE or PE. Paper by default.
 
 Every minute from 09:16 the LLM sees what a discretionary trader would see at that minute (new trades until
 15:00; a trade still open is managed every minute until it closes, at the latest 15:08) (NIFTY
@@ -83,15 +83,17 @@ TAG_PREFIX = "llm"
 PAPER_LOTS = 2
 PARTIAL_ARM_PCT = 0.10
 PARTIAL_TRAIL_PCT = 0.02
-# One trader only: Claude Sonnet 5.5 via OpenRouter (~$1.20 a day). Mistral Nemo ran 19 Nov only (operator's call to
-# save cost) and was dropped the same evening: 46 trades by 12:06, 10 wins, -Rs 6,608 (Rs 4,015 of it charges), mostly
-# 1-minute trades and puts on a rising day. A different model is a different trader: Sonnet's record restarts on 20 Nov.
+# One trader only: OpenAI GPT-6.2 Sol via OpenRouter from 20 Nov 2026 (operator's call; same price as Sonnet, ~$1.20 a
+# day). Check before switching (scratchpad luna_failures.py / sol_nov17.py, same inputs): on 18 Nov's 6 losing Sonnet
+# entries Sol bought 6 of 6 (like Sonnet); on 17 Nov's 4 Sonnet trades it made the same 4 calls (+Rs 2,852 vs
+# +Rs 2,671); ~2 s an answer, coherent reasons. Sonnet 5.5 traded 11-18 Nov; Mistral Nemo 19 Nov only (46 trades,
+# -Rs 6,608). A different model is a different trader: Sol's record starts 20 Nov.
 # No OpenAI fallback; if OpenRouter fails the book waits / holds (and sells after MAX_ERRORS_HOLDING failures while
 # holding). Replay can still pass --model for off-box studies.
-MODEL_OPENROUTER = "anthropic/claude-sonnet-5.5"
+MODEL_OPENROUTER = "openai/gpt-6.2-sol"
 MODEL_OPENAI: str | None = None  # unused; left so tests can flip it on for the dual-target path
 LLM_TIMEOUT_S = 25.0  # a whole call, start to answer (OpenRouter's keep-alive padding defeats httpx's per-read timeout)
-LLM_MAX_TOKENS = 1000  # Sonnet at low reasoning effort still needs headroom; billed as used
+LLM_MAX_TOKENS = 1000  # headroom for reasoning at low effort; billed as used
 LIVE_EVENTS = frozenset({"order_intent", "order_sent", "order_send_error", "order_cancel_sent", "order_final",
                          "live_phase", "manual_needed", "live_mark"})
 
@@ -339,7 +341,7 @@ class LlmBuyer:
     path_every_min: int = 5  # NIFTY path sample in the LLM's view
     straddle_every_min: int = 5  # straddle path sample
     tag_prefix: str = TAG_PREFIX
-    name: str = "LLM buyer · Sonnet"
+    name: str = "LLM buyer · GPT-6.2 Sol"
     max_entries: int = MAX_ENTRIES
     # Entries allowed beyond max_entries while today's closed P&L is positive (the hour book: up to 4 in all). An
     # extra trade is sold, and entries end, once the day's P&L falls to PROFIT_LOCK of its best closed level.
