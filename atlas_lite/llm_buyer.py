@@ -88,6 +88,11 @@ PAPER_LOTS = 2
 # -Rs 10,095 as traded -> +Rs 3,539 (46 trades); worst day -6,608 -> -3,927; still -Rs 4,958 without 20 Nov.
 DAY_DIRECTION_PCT = 0.25
 DAY_DIRECTION_RULE = True  # tests of other behaviour switch it off ("any" side allowed)
+# Pause after a loss (operator's call, 20 Nov 2026): no new entry for LOSS_PAUSE_MIN minutes after a trade (paper or
+# live) closes at a loss; the LLM is not asked while flat in the pause. Tested (scratchpad cooldown_test.py, 46 trades
+# kept by the day-direction rule, 11-20 Nov, lot-2 40% exit): +Rs 2,078 -> +Rs 8,770, worst day -7,697 -> -6,146,
+# 10 trades skipped (8 losers, 2 winners), no day worse (5 min +3,466; 15 min +9,200). 0 switches it off.
+LOSS_PAUSE_MIN = 10
 PARTIAL_ARM_PCT = 0.10
 PARTIAL_TRAIL_PCT = 0.02
 # Lot-2 giveback stop (operator's call, 20 Nov 2026; paper only): once the bid is LOT2_ARM_PCT above the price paid,
@@ -210,6 +215,7 @@ PROMPTS["v7"] = SYSTEM_PROMPT_V7
 SYSTEM_PROMPT_V8 = SYSTEM_PROMPT_V7.replace("Reply with JSON only:", """allowed_entry is set by code from NIFTY's move since the 09:15 open (nifty_vs_open_pct): +0.25% or more allows
 calls only, -0.25% or more puts only; a buy on the other side is refused. In paper trading, once the price is 10%
 above what you paid, the lots still held are also sold for you if the trade gives back 40% of its best profit since.
+After a trade closes at a loss there is no new trade for 10 minutes (you are not asked then).
 Reply with JSON only:""")
 PROMPTS["v8"] = SYSTEM_PROMPT_V8
 # Live/paper book uses v8 (from 20 Nov evening; v7 19-20 Nov, v6 and v5 18-19 Nov, v4 before). Older versions stay for replays.
@@ -397,6 +403,7 @@ class LlmBuyer:
     prev_day_for: str = ""
     prev_day_tried: str = ""
     errors_in_row: int = 0  # LLM answers in a row that failed (reset by any valid answer)
+    last_loss_exit_at: str = ""  # ISO time of today's last losing close (starts the LOSS_PAUSE_MIN pause)
     _log: Any = field(default_factory=lambda: get_logger("atlas_lite.llm_buyer"), repr=False)
 
     def __post_init__(self) -> None:
@@ -432,7 +439,27 @@ class LlmBuyer:
         except OSError as exc:
             self._log.warning("llm_buyer ledger write failed: %s", exc)
             return None
+        self._note_loss(event)
         return event
+
+    def _note_loss(self, event: dict[str, Any]) -> None:
+        """A close at a loss starts the pause (see LOSS_PAUSE_MIN)."""
+        try:
+            if event.get("event") == "close" and event.get("pnl") is not None and float(event["pnl"]) < 0:
+                self.last_loss_exit_at = str(event.get("ts") or "")
+        except (TypeError, ValueError):
+            pass
+
+    def in_loss_pause(self, now: datetime) -> bool:
+        if not LOSS_PAUSE_MIN or not self.last_loss_exit_at:
+            return False
+        try:
+            at = datetime.fromisoformat(self.last_loss_exit_at)
+        except ValueError:
+            return False
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=IST)
+        return at.date() == now.date() and (now - at).total_seconds() < LOSS_PAUSE_MIN * 60
 
     def _live_log(self, event: dict[str, Any]) -> dict[str, Any] | None:
         return self._append({"ts": datetime.now(IST).isoformat(), "day": self.live.day if self.live else self.day,
@@ -502,6 +529,7 @@ class LlmBuyer:
                 else:
                     self.paper_realized = round(self.paper_realized + float(ev.get("pnl") or 0.0), 2)
                     self.position = None
+                self._note_loss(ev)
             elif kind == "live_off" and d == today:
                 self.live_off_day = d  # already handled today: a restart does not log it again
             elif kind == "stop_entries" and ev.get("why") == "ui_off":
@@ -519,6 +547,7 @@ class LlmBuyer:
             self.paper_entries, self.paper_realized = 0, 0.0
             self.decided, self.history, self.last_decision = set(), {}, None
             self.last_feed, self.last_feed_at = {}, ""  # never trade on yesterday's ATM symbols
+            self.last_loss_exit_at = ""
 
     def ensure_prev_day(self, today: str, hm: str, bars: Callable[[], list[dict[str, Any]]]) -> dict[str, float] | None:
         """Yesterday's OHLC for today's view: looked up once a minute until the bars have it, then kept for the day
@@ -593,7 +622,8 @@ class LlmBuyer:
         if holding:
             return self.live is None or self.live.phase == "holding"
         # While flat the LLM is asked only when the day-direction rule allows a side.
-        return self._entry_open() and hm <= self.last_entry and self._feed_fresh(now) and self.allowed_side() is not None
+        return (self._entry_open() and hm <= self.last_entry and self._feed_fresh(now) and self.allowed_side() is not None
+                and not self.in_loss_pause(now))
 
     def allowed_side(self) -> str | None:
         """Day-direction rule: "ce" (calls only), "pe" (puts only) or None (no new trade). See DAY_DIRECTION_PCT.
@@ -819,6 +849,11 @@ class LlmBuyer:
                 self._stop_entries(now, "day_loss")
                 return None
             if not self._entry_open() or now.strftime("%H:%M") > self.last_entry:
+                return None
+            if self.in_loss_pause(now):
+                self.last_reject = "loss_pause"
+                self._append({"event": "entry_blocked", "ts": now.isoformat(), "day": self.day, "hm": hm,
+                              "action": act, "why": "loss_pause", "last_loss_exit_at": self.last_loss_exit_at})
                 return None
             want, side = ("ce" if act == "BUY_CE" else "pe"), self.allowed_side()
             if side != "any" and want != side:

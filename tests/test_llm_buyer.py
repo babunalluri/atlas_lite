@@ -18,6 +18,8 @@ def _day_direction_off(monkeypatch, request):
     """Most tests check other behaviour on a flat test market; the day-direction rule has its own tests below."""
     if "day_direction" not in request.node.name:
         monkeypatch.setattr(M, "DAY_DIRECTION_RULE", False)
+    if "loss_pause" not in request.node.name:
+        monkeypatch.setattr(M, "LOSS_PAUSE_MIN", 0)
 
 IST = ZoneInfo("Asia/Kolkata")
 DAY = "2026-11-11"  # Wednesday, a trading day
@@ -1144,3 +1146,41 @@ def test_paper_lot_two_is_sold_after_giving_back_40_percent_of_its_best_profit(t
     ev = frame(b, "10:45", q)
     assert ev["event"] == "close" and ev["reason"] == "lot2_giveback" and ev["exit"] == 118.0 and b.position is None
     assert M.LOT2_ARM_PCT == 0.10 and M.LOT2_GIVEBACK == 0.40 and "40% of its best profit" in M.SYSTEM_PROMPT
+
+
+def test_loss_pause_blocks_new_entries_for_ten_minutes_after_a_losing_close(tmp_path: Path, monkeypatch) -> None:
+    b, q = book_at(tmp_path, first_decision="09:16", decide_every_min=1), Book()
+    frame(b, "10:39", q)
+    b.apply(t("10:40"), {"hm": "10:40", "action": "BUY_CE", "reason": "breakout"}, q)  # at 100.5
+    q.px[CE] = 95.0
+    close = b.apply(t("10:42"), {"hm": "10:42", "action": "EXIT", "reason": "failed"}, q)  # bid 94.5: a loss
+    assert close["pnl"] < 0 and b.in_loss_pause(t("10:51")) and not b.in_loss_pause(t("10:52"))
+    frame(b, "10:45", q)
+    assert b.decision_due(t("10:45")) is False  # flat in the pause: the LLM is not asked
+    assert b.apply(t("10:45"), {"hm": "10:45", "action": "BUY_CE", "reason": "again"}, q) is None
+    assert b.last_reject == "loss_pause" and [e for e in ledger(b) if e["event"] == "entry_blocked"][-1]["why"] == "loss_pause"
+    real_now = M.datetime
+
+    class FakeDT(real_now):
+        @classmethod
+        def now(cls, tz=None):
+            return t("10:46")
+
+    monkeypatch.setattr(M, "datetime", FakeDT)
+    r = book_at(tmp_path, first_decision="09:16", decide_every_min=1)  # a restart keeps the pause
+    monkeypatch.setattr(M, "datetime", real_now)
+    assert r.last_loss_exit_at == close["ts"]
+    frame(b, "10:52", q)
+    assert b.decision_due(t("10:52")) is True
+    b.apply(t("10:52"), {"hm": "10:52", "action": "BUY_CE", "reason": "fresh"}, q)
+    assert b.position is not None
+    assert M.LOSS_PAUSE_MIN == 10 and "10 minutes" in M.SYSTEM_PROMPT
+
+
+def test_loss_pause_not_started_by_a_winning_close(tmp_path: Path) -> None:
+    b, q = book_at(tmp_path), Book()
+    frame(b, "10:39", q)
+    b.apply(t("10:40"), {"hm": "10:40", "action": "BUY_CE", "reason": "breakout"}, q)
+    q.px[CE] = 106.0  # bid 105.5 > 100.5: a win after charges
+    close = b.apply(t("10:42"), {"hm": "10:42", "action": "EXIT", "reason": "target"}, q)
+    assert close["pnl"] > 0 and not b.in_loss_pause(t("10:43"))
