@@ -2527,6 +2527,17 @@
           </article>
         </div>
       </section>
+      <section class="book-group" aria-label="Non-expiry-day selling">
+        <h4 class="book-group-title">Non-expiry-day selling</h4>
+        <div class="book-grid">
+          <article class="book-card" data-src="dailyStrangle05Line" data-title="Daily strangle ±0.5%">
+            <div class="history-detail book-src" id="dailyStrangle05Line">Daily strangle ±0.5%: —</div>
+          </article>
+          <article class="book-card" data-src="dailyPremium50Line" data-title="Daily ₹50-premium strangle">
+            <div class="history-detail book-src" id="dailyPremium50Line">Daily ₹50-premium strangle: —</div>
+          </article>
+        </div>
+      </section>
 
 
       <details class="agent-diagnostics agent-gates-box">
@@ -7233,7 +7244,11 @@
           (m ? (m.error ? `; margin check failed: ${m.error}` : `; margin ₹${m.required} of ₹${m.available}${m.fits ? " fits" : " does NOT fit"}`) : "") + ")"
         : "";
       if (!pos) {
-        const when = eb.sessions === 0 ? "09:16 on expiry day" : "09:16 the session before expiry";
+        const when = eb.kind === "daily" ? "09:16 on non-expiry days" : (eb.sessions === 0 ? "09:16 on expiry day" : "09:16 the session before expiry");
+        if (eb.retired) {
+          line.textContent = `${name} · RETIRED (no new trades)`;
+          return;
+        }
         const gate = eb.min_vix ? ` if VIX ≥ ${eb.min_vix}` : "";
         line.textContent = `${name} · FLAT · enters ${when}${gate}` + (eb.last_reject ? ` · ${eb.last_reject}` : "") + dry;
         return;
@@ -7362,6 +7377,8 @@
         renderExpirySell("expiryDayStraddleLine", paper.expiry_day_straddle || {});
         renderExpirySell("sensexExpiryDayStrangleLine", paper.sensex_expiry_day_strangle || {});
         renderExpirySell("sensexExpiryDayStraddleLine", paper.sensex_expiry_day_straddle || {});
+        renderExpirySell("dailyStrangle05Line", paper.daily_strangle_05 || {});
+        renderExpirySell("dailyPremium50Line", paper.daily_premium50 || {});
         renderAgentGates(st.gates || {});
       } catch (err) {
         if (meta) meta.textContent = `Books failed to load: ${err?.message || err}`;

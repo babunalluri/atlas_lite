@@ -69,13 +69,16 @@ KNOWN_BOOKS = (
     "sensex_expiry_day_straddle",
     "llm_buyer",
     "g2t10",
+    "daily_strangle_05",
+    "daily_premium50",
 )
 
 # Retired after the 2026-10-30 paper review (or never past paper; short_iron_condor and iron_fly on 6 Nov). Their
 # flags stay off; the gates list leaves them out. Gates can still be read or set by name.
 RETIRED_BOOKS = frozenset(
     {"vwap_long", "short_straddle", "skew_fade", "long_iron_condor", "theta_cliff", "impulse_fade", "combo", "ict",
-     "ai_agent", "short_iron_condor", "iron_fly", "agent"}  # agent: retired 15 Nov 2026
+     "ai_agent", "short_iron_condor", "iron_fly", "agent",  # agent: retired 15 Nov 2026
+     "expiry_eve_strangle", "sensex_expiry_day_straddle"}  # retired 21 Nov 2026 (unproven / superseded)
 )
 
 BOOK_ALIASES = {

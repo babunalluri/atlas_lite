@@ -48,16 +48,22 @@ DEFAULT_LOT_SIZE = 65
 SIZE_UP_VIX: float | None = None  # 1 lot always; 17.0 doubled lots at VIX >= 17 until 8 Nov 2026
 
 BOOKS: dict[str, dict[str, Any]] = {
+    # Retired 21 Nov 2026 (operator's call): superseded by the ±1% book below (the 14 Nov head-to-head found the 5% wings
+    # lowered results). No new trades; the position opened 20 Nov runs to its stops / the 23 Nov expiry close.
     "expiry_eve_strangle": {"index": "nifty", "ledger": "paper_expiry_eve_strangle.jsonl", "sessions": 1, "dist": 0.005,
-                            "wing_pct": 0.05, "stop": 1.0, "min_vix": None, "name": "Expiry-eve strangle ±0.5% (5% wings)"},
+                            "wing_pct": 0.05, "stop": 1.0, "min_vix": None, "name": "Expiry-eve strangle ±0.5% (5% wings)",
+                            "retired": True},
     # 14 Nov 2026 head-to-head winner (scratchpad sell_best.py / sell_robust.py, 2026 STT): ±1%, no wings, per-leg
     # stop +100%. Per week, 1 lot: +Rs 1,524 / +Rs 1,253 (t 3.7 / 4.7), max drawdown -Rs 25k / -Rs 16k, every year
     # positive; still t >= 2.8 with stop fills 5% worse and sales 3% cheaper. Wings and the VIX gate lowered results.
     "expiry_eve_strangle_1pct": {"index": "nifty", "ledger": "paper_expiry_eve_strangle_1pct.jsonl", "sessions": 1,
                                  "dist": 0.01, "wing_pct": None, "stop": 1.0, "min_vix": None,
                                  "name": "Expiry-eve strangle ±1% (no wings)"},
+    # From 21 Nov 2026 (operator's call) the tested version: plain ATM straddle, +50% leg stop, no wings, no VIX gate
+    # (wide-band re-run: +Rs 1,580 / +Rs 1,572 per expiry, t 4.6 / 4.0; the 14 Nov head-to-head found wings and the
+    # VIX >= 13 gate lowered results). Trades to 17 Nov had 5% wings and the VIX gate.
     "expiry_day_straddle": {"index": "nifty", "ledger": "paper_expiry_day_straddle.jsonl", "sessions": 0, "dist": 0.0,
-                            "wing_pct": 0.05, "stop": 0.5, "min_vix": 13.0, "name": "Expiry-day straddle (5% wings)"},
+                            "wing_pct": None, "stop": 0.5, "min_vix": None, "name": "Expiry-day straddle (no wings)"},
     # SENSEX (BSE, Thursday expiry). India VIX (NIFTY options) stands in for SENSEX volatility; charges use the NSE
     # schedule (BSE's option transaction charge is within ~0.003% of NSE's).
     # 14 Nov 2026, real BSE prices Jan 2024 - Nov 2026, 150 expiries (scratchpad sensex_sell_bt.py), 1 lot at
@@ -67,9 +73,23 @@ BOOKS: dict[str, dict[str, Any]] = {
     "sensex_expiry_day_strangle": {"index": "sensex", "ledger": "paper_sensex_expiry_day_strangle.jsonl", "sessions": 0,
                                    "dist": 0.005, "wing_pct": None, "stop": 0.5, "min_vix": None,
                                    "name": "SENSEX expiry-day strangle ±0.5% (no wings)"},
+    # Retired 21 Nov 2026 (operator's call): not proven on real BSE prices (day ATM straddle +Rs 529 / +Rs 1,569 a week,
+    # t 0.7 / 3.3: fails 2024). Ledger kept; no new trades.
     "sensex_expiry_day_straddle": {"index": "sensex", "ledger": "paper_sensex_expiry_day_straddle.jsonl", "sessions": 0,
                                    "dist": 0.0, "wing_pct": 0.05, "stop": 0.5, "min_vix": 13.0,
-                                   "name": "SENSEX expiry-day straddle (5% wings)"},
+                                   "name": "SENSEX expiry-day straddle (5% wings)", "retired": True},
+    # Non-expiry days (21 Nov 2026, operator's call): sold at 09:16, closed the same day at 15:14; never on an expiry day.
+    # (a) +-0.5% strangle, +100% leg stop. Real NSE O/H/L/C 2019-05..2026-11, 1,467 non-expiry days, crash days kept,
+    #     2026 costs (scratchpad daily_sell.py): +Rs 711 / +Rs 374 a day (t 4.3 / 2.6), worst day -Rs 30k, every year >= 0.
+    # (b) the marketfeed-telugu video's rule: OTM call and put priced nearest Rs 50, +30% leg stop, -Rs 2,000 day stop
+    #     (1% of ~Rs 2L margin). Same data, no day stop (scratchpad premium_strangle.py): non-expiry +Rs 69 / -Rs 4 a
+    #     day: run side by side to compare on real prices.
+    "daily_strangle_05": {"index": "nifty", "ledger": "paper_daily_strangle_05.jsonl", "sessions": 0, "dist": 0.005,
+                          "wing_pct": None, "stop": 1.0, "min_vix": None, "kind": "daily",
+                          "name": "Daily strangle ±0.5% (non-expiry days)"},
+    "daily_premium50": {"index": "nifty", "ledger": "paper_daily_premium50.jsonl", "sessions": 0, "dist": 0.0,
+                        "wing_pct": None, "stop": 0.3, "min_vix": None, "kind": "daily", "target_premium": 50.0,
+                        "day_stop_rs": 2000.0, "name": "Daily ₹50-premium strangle (non-expiry days)"},
 }
 
 
@@ -128,6 +148,7 @@ class PaperExpirySell:
     size_up_vix: float | None = SIZE_UP_VIX
     lot_size: int = DEFAULT_LOT_SIZE
     name: str = ""
+    retired: bool = False  # no new trades; an open position still runs to its stops or the expiry close
     position: ExpiryPosition | None = None
     entered_for: str = ""  # expiry already entered (one trade per weekly expiry)
     last_reject: str | None = None
@@ -229,7 +250,7 @@ class PaperExpirySell:
             return [k for k in strikes if (quote_ltp(book.get(option_symbol(k, opt))) or 0) > 0]
 
         pes, ces = live("PE"), live("CE")
-        sc, sp = nearest(ces, F * (1 + self.dist)), nearest(pes, F * (1 - self.dist))
+        sc, sp = self._pick_shorts(book, option_symbol, F, ces, pes)
         if sc is None or sp is None:
             self.last_reject = "no_short_strike"
             return None
@@ -267,8 +288,7 @@ class PaperExpirySell:
             "qty": qty, "lots": lots, "vix": vix, "forward": round(F, 2), "atm": atm,
             "credit_fill": credit, "entry": credit, "charges_open": charges_open,
             "stops": {leg.symbol: round(leg.entry * (1 + self.stop), 2) for leg in legs if leg.sign < 0},
-            "reason": f"{self.sessions} session(s) to expiry, short ±{self.dist:.1%}"
-            + (f", wings {self.wing_pct:.0%}" if self.wing_pct else ", no wings") + f", {lots} lot(s) at VIX {vix}",
+            "reason": self._open_reason(lots, vix),
         })
         if ev is None:
             return None
@@ -276,6 +296,14 @@ class PaperExpirySell:
         self.entered_for = pos.expiry
         self.last_reject = None
         return ev
+
+    def _pick_shorts(self, book: QuoteSource, option_symbol: Callable[[int, str], str], F: float,
+                     ces: list[int], pes: list[int]) -> tuple[int | None, int | None]:
+        return nearest(ces, F * (1 + self.dist)), nearest(pes, F * (1 - self.dist))
+
+    def _open_reason(self, lots: int, vix: float | None) -> str:
+        return (f"{self.sessions} session(s) to expiry, short ±{self.dist:.1%}"
+                + (f", wings {self.wing_pct:.0%}" if self.wing_pct else ", no wings") + f", {lots} lot(s) at VIX {vix}")
 
     # ---- stops / close ----
 
@@ -301,7 +329,7 @@ class PaperExpirySell:
         pos = self.position
         if pos is None:
             return None
-        known = reason != "expiry_missed"
+        known = reason not in ("expiry_missed", "day_missed")
         gross = pos.realized
         fills = []
         exits = []
@@ -362,6 +390,9 @@ class PaperExpirySell:
             return out
         if not _is_nse_trading_day(today):
             return None
+        if self.retired:
+            self.last_reject = "retired"
+            return None
         if expiry is None or option_symbol is None or atm is None:
             self.last_reject = "no_chain"  # shown on the dashboard: the index's option chain is not loaded
             return None
@@ -384,7 +415,7 @@ class PaperExpirySell:
             "ok": True, "mode": "paper", "live_orders": False, "enabled": True, "book": self.strategy,
             "name": self.name or BOOKS.get(self.strategy, {}).get("name", self.strategy),
             "sessions": self.sessions, "min_vix": self.min_vix, "size_up_vix": self.size_up_vix,
-            "last_reject": self.last_reject, "position": None,
+            "last_reject": self.last_reject, "position": None, "retired": self.retired,
         }
         if pos is not None:
             open_pts = 0.0
@@ -404,4 +435,119 @@ class PaperExpirySell:
                          for leg in pos.legs],
                 "open_pnl": round(pos.realized + open_pts * pos.qty - pos.charges_open - pos.charges_stops, 2) if known else None,
             }
+        return body
+
+
+@dataclass
+class PaperDailySell(PaperExpirySell):
+    """Non-expiry-day intraday strangle: sold at 09:16-09:30 on a trading day that is not the nearest expiry, one trade a
+    day, legs stopped at +stop, everything else bought back at 15:14 the same day. Strikes at F +- dist, or (with
+    target_premium) the OTM call and put whose price is nearest that premium. day_stop_rs closes the whole position
+    once its marked P&L after charges falls to -day_stop_rs."""
+
+    target_premium: float | None = None
+    day_stop_rs: float | None = None
+    entered_day: str = ""
+
+    def _restore(self) -> None:
+        super()._restore()
+        if not self.path.is_file():
+            return
+        try:
+            for line in self.path.read_text(encoding="utf-8").splitlines():
+                ev = json.loads(line)
+                if ev.get("strategy") == self.strategy and ev.get("event") == "open":
+                    self.entered_day = str(ev.get("day") or "")
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    def _pick_shorts(self, book: QuoteSource, option_symbol: Callable[[int, str], str], F: float,
+                     ces: list[int], pes: list[int]) -> tuple[int | None, int | None]:
+        if self.target_premium is None:
+            return super()._pick_shorts(book, option_symbol, F, ces, pes)
+        target = float(self.target_premium)
+
+        def pick(ks: list[int], opt: str) -> int | None:
+            px = {k: quote_ltp(book.get(option_symbol(k, opt))) or 0.0 for k in ks}
+            px = {k: v for k, v in px.items() if v > 0 and abs(v - target) <= 0.4 * target}
+            return min(px, key=lambda k: (abs(px[k] - target), k)) if px else None
+
+        return pick([k for k in ces if k > F], "CE"), pick([k for k in pes if k < F], "PE")
+
+    def _open_reason(self, lots: int, vix: float | None) -> str:
+        how = f"premium ≈ ₹{self.target_premium:g}" if self.target_premium is not None else f"±{self.dist:.1%}"
+        stop = f", day stop −₹{self.day_stop_rs:,.0f}" if self.day_stop_rs else ""
+        return f"non-expiry day, short {how}, leg stop +{self.stop:.0%}{stop}, {lots} lot(s) at VIX {vix}"
+
+    def _try_open(self, now: datetime, book: QuoteSource, expiry: date, strikes: list[int],
+                  option_symbol: Callable[[int, str], str], atm: int, vix: float | None) -> dict[str, Any] | None:
+        ev = super()._try_open(now, book, expiry, strikes, option_symbol, atm, vix)
+        if ev is not None:
+            self.entered_day = now.strftime("%Y-%m-%d")
+        return ev
+
+    def marked_pnl(self) -> float | None:
+        pos = self.position
+        if pos is None:
+            return None
+        open_pts = 0.0
+        for leg in pos.legs:
+            if leg.exit is None:
+                if leg.mark is None:
+                    return None
+                open_pts += leg.sign * (leg.mark - leg.fill)
+        return pos.realized + open_pts * pos.qty - pos.charges_open - pos.charges_stops
+
+    def on_frame(self, *, now: datetime, book: QuoteSource, expiry: date | None, strikes: list[int],
+                 option_symbol: Callable[[int, str], str] | None, atm: int | None, vix: float | None,
+                 allow_entry: bool = True) -> dict[str, Any] | None:
+        today = now.date()
+        pos = self.position
+        if pos is not None:
+            for leg in pos.legs:
+                ltp = quote_ltp(book.get(leg.symbol))
+                if ltp is not None and ltp >= 0:
+                    leg.mark = ltp
+            if pos.day != today.isoformat():  # engine was down at 15:14: book at last marks, P&L unknown
+                return self._close(now, book, "day_missed")
+            if not _is_nse_trading_day(today) or not hm_ge(now, MARKET_OPEN) or not hm_lt(now, MARKET_CLOSE):
+                return None
+            if hm_ge(now, EXIT_AT):
+                return self._close(now, book, "day_close")
+            out = None
+            for leg in pos.legs:
+                if leg.sign < 0 and leg.exit is None and leg.mark is not None and leg.mark >= leg.entry * (1 + self.stop):
+                    out = self._leg_stop(now, book, leg) or out
+            if all(leg.exit is not None for leg in pos.legs if leg.sign < 0):
+                return self._close(now, book, "all_legs_stopped")
+            if self.day_stop_rs:
+                mtm = self.marked_pnl()
+                if mtm is not None and mtm <= -float(self.day_stop_rs):
+                    return self._close(now, book, "day_stop")
+            return out
+        if not _is_nse_trading_day(today):
+            return None
+        if self.retired:
+            self.last_reject = "retired"
+            return None
+        if expiry is None or option_symbol is None or atm is None:
+            self.last_reject = "no_chain"
+            return None
+        if self.last_reject == "no_chain":
+            self.last_reject = None
+        if self.entered_day == today.isoformat():
+            return None
+        if not hm_ge(now, ENTRY_AT) or hm_ge(now, ENTRY_CLOSED):
+            return None
+        if expiry <= today:
+            self.last_reject = "expiry_day"  # the expiry books trade today; this book only on other days
+            return None
+        if not allow_entry:
+            self.last_reject = "gate_paused"
+            return None
+        return self._try_open(now, book, expiry, strikes, option_symbol, atm, vix)
+
+    def snapshot(self, book: QuoteSource | None = None) -> dict[str, Any]:
+        body = super().snapshot(book)
+        body.update({"kind": "daily", "target_premium": self.target_premium, "day_stop_rs": self.day_stop_rs})
         return body

@@ -90,6 +90,7 @@ from atlas_lite.paper_weekly_sell import (
 )
 from atlas_lite.paper_expiry_sell import (
     BOOKS as EXPIRY_SELL_BOOKS,
+    PaperDailySell,
     PaperExpirySell,
     paper_expiry_sell_enabled,
 )
@@ -326,6 +327,8 @@ RETIRED_PAPER_STRATEGIES = frozenset(
         "weekly_condor5",
         "weekly_strangle1000",
         "sensex_expiry_eve_strangle",  # retired 14 Nov 2026 (weakest SENSEX variant on BSE prices)
+        "sensex_expiry_day_straddle",  # retired 21 Nov 2026 (not proven on BSE prices)
+        # expiry_eve_strangle (retired 21 Nov) joins this list once its open 20 Nov position has closed (23 Nov).
         "agent_paper",  # retired 15 Nov 2026 (AGENT_RETIRED)
     }
 )
@@ -439,7 +442,7 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
         "stop at 15:25 daily if cost ≥ 3× credit · else hold to expiry, close 15:29",
     ),
     "expiry_eve_strangle": (
-        "09:16, 1 session before expiry · buy 5% wings, sell CE/PE nearest F ± 0.5% · 1 lot",
+        "RETIRED 21 Nov 2026 (no new trades; the open one runs to its stop or expiry) · was: 09:16, 1 session before expiry · buy 5% wings, sell CE/PE nearest F ± 0.5% · 1 lot",
         "per-leg stop when a short leg doubles · else hold to expiry day, close 15:14",
     ),
     "expiry_eve_strangle_1pct": (
@@ -447,8 +450,16 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
         "per-leg stop when a short leg doubles · else hold to expiry day, close 15:14",
     ),
     "expiry_day_straddle": (
-        "09:16 on expiry day, only if VIX ≥ 13 · buy 5% wings, sell ATM CE+PE · 1 lot",
+        "09:16 on expiry day · sell ATM CE+PE · no wings, no VIX gate (tested version, from 21 Nov) · 1 lot",
         "per-leg stop at +50% · else close 15:14",
+    ),
+    "daily_strangle_05": (
+        "09:16 on non-expiry trading days · sell CE/PE nearest F ± 0.5% (nearest weekly) · no wings · 1 lot",
+        "per-leg stop at +100% · else close 15:14 the same day",
+    ),
+    "daily_premium50": (
+        "09:16 on non-expiry trading days · sell the OTM CE and PE priced nearest ₹50 (video rule) · no wings · 1 lot",
+        "per-leg stop at +30% · whole position closed at −₹2,000 · else close 15:14 the same day",
     ),
     "llm_buyer": (
         f"09:16–{LLM_BUYER_LAST_ENTRY} · GPT-6.2 Sol from 20 Nov (prompt v7: freehand + peak P&L, giveback figures, opening fact; paper 2 lots: lot 1 trailing stop armed at +10%, sold 2% below its high): buy 1 lot ATM CE or PE · "
@@ -466,8 +477,8 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
         "per-leg stop at +50% · else close 15:14",
     ),
     "sensex_expiry_day_straddle": (
-        "SENSEX (Thu expiry) · 09:16 on expiry day, only if VIX ≥ 13 · buy 5% wings, sell ATM CE+PE · "
-        "1 lot",
+        "RETIRED 21 Nov 2026 (no new trades) · was: SENSEX (Thu expiry) · 09:16 on expiry day, only if VIX ≥ 13 · "
+        "buy 5% wings, sell ATM CE+PE · 1 lot",
         "per-leg stop at +50% · else close 15:14 · not backtested on SENSEX",
     ),
     "factor_paper": (
@@ -891,11 +902,16 @@ class FeedEngine:
             self._log.info("weekly option-selling paper books: %s (qty %d, no live orders)", ", ".join(self._paper_weekly), lot)
         if paper_expiry_sell_enabled():
             for name, cfg in EXPIRY_SELL_BOOKS.items():
-                self._paper_expiry[name] = PaperExpirySell(
+                common = dict(
                     path=self.data_dir / cfg["ledger"], strategy=name, sessions=cfg["sessions"], dist=cfg["dist"],
                     wing_pct=cfg["wing_pct"], stop=cfg["stop"], min_vix=cfg["min_vix"],
-                    lot_size=self._index_option_lot(cfg["index"]), name=cfg["name"],
+                    lot_size=self._index_option_lot(cfg["index"]), name=cfg["name"], retired=cfg.get("retired", False),
                 )
+                if cfg.get("kind") == "daily":  # non-expiry days, closed the same day
+                    self._paper_expiry[name] = PaperDailySell(
+                        **common, target_premium=cfg.get("target_premium"), day_stop_rs=cfg.get("day_stop_rs"))
+                else:
+                    self._paper_expiry[name] = PaperExpirySell(**common)
             self._log.info("expiry-week selling paper books: %s (no live orders)", ", ".join(self._paper_expiry))
         if self._paper_expiry and expiry_dry_run_enabled():
             # Same-day expiry books: the Kite orders a live book would send are built and logged, never sent.

@@ -170,7 +170,8 @@ def test_sensex_books_use_their_own_chain_and_lot(tmp_path: Path) -> None:
     from atlas_lite.paper_expiry_sell import BOOKS
 
     assert {BOOKS[n]["index"] for n in BOOKS} == {"nifty", "sensex"}
-    assert BOOKS["sensex_expiry_day_straddle"]["min_vix"] == BOOKS["expiry_day_straddle"]["min_vix"]
+    nd = BOOKS["expiry_day_straddle"]  # the tested version from 21 Nov: plain ATM straddle, +50% leg stop
+    assert (nd["dist"], nd["wing_pct"], nd["stop"], nd["min_vix"]) == (0.0, None, 0.5, None)
     fo_csv = ("name,instrument_type,expiry,lot_size\nSENSEX,CE,2026-11-12,20\nNIFTY,CE,2026-11-09,65\n")
     assert option_lot_size(fo_csv, "SENSEX", expiry=date(2026, 11, 12), default=1) == 20
     assert option_lot_size(fo_csv, "SENSEX", expiry=date(2026, 11, 19), default=1) == 1
@@ -283,3 +284,78 @@ def test_dry_run_has_an_off_switch(monkeypatch) -> None:
     assert expiry_dry_run_enabled()
     monkeypatch.setenv("ATLAS_LITE_EXPIRY_DRY_RUN", "0")
     assert not expiry_dry_run_enabled()
+
+
+def test_retired_book_opens_nothing_but_finishes_its_open_position(tmp_path: Path) -> None:
+    from atlas_lite.paper_expiry_sell import BOOKS
+
+    assert BOOKS["expiry_eve_strangle"].get("retired") and BOOKS["sensex_expiry_day_straddle"].get("retired")
+    assert not BOOKS["expiry_eve_strangle_1pct"].get("retired") and not BOOKS["expiry_day_straddle"].get("retired")
+    b = eve(tmp_path, wing=None)
+    frame(b, t(EVE, "09:17"), chain())  # opened while still running (as on 20 Nov)
+    r = PaperExpirySell(path=tmp_path / "eve.jsonl", strategy="expiry_eve_strangle", sessions=1, dist=0.005,
+                        wing_pct=None, stop=1.0, retired=True)  # restart after retiring
+    assert r.position is not None and r.snapshot()["retired"] is True
+    close = frame(r, t("2026-11-03", "15:14"), chain(scale=0.1))
+    assert close and close["event"] == "close" and close["reason"] == "expiry"
+    fresh = PaperExpirySell(path=tmp_path / "eve2.jsonl", strategy="expiry_eve_strangle", sessions=1, dist=0.005,
+                            wing_pct=None, stop=1.0, retired=True)
+    assert frame(fresh, t(EVE, "09:17"), chain()) is None and fresh.position is None and fresh.last_reject == "retired"
+
+
+
+def daily(tmp_path: Path, name: str):
+    from atlas_lite.paper_expiry_sell import BOOKS, PaperDailySell
+
+    c = BOOKS[name]
+    return PaperDailySell(path=tmp_path / f"{name}.jsonl", strategy=name, sessions=c["sessions"], dist=c["dist"],
+                          wing_pct=c["wing_pct"], stop=c["stop"], min_vix=c["min_vix"],
+                          target_premium=c.get("target_premium"), day_stop_rs=c.get("day_stop_rs"))
+
+
+def test_daily_strangle_trades_non_expiry_days_once_and_closes_the_same_day(tmp_path: Path) -> None:
+    b = daily(tmp_path, "daily_strangle_05")
+    assert frame(b, t(str(EXPIRY), "09:17"), chain()) is None and b.last_reject == "expiry_day"  # never on expiry day
+    ev = frame(b, t(EVE, "09:17"), chain())
+    assert ev["event"] == "open" and [(x["strike"], x["opt"], x["sign"]) for x in ev["legs"]] == [
+        (23100, "CE", -1), (22900, "PE", -1)]  # F +- 0.5%, no wings
+    assert "non-expiry day" in ev["reason"]
+    assert frame(b, t(EVE, "15:13"), chain()) is None and b.position is not None
+    close = frame(b, t(EVE, "15:14"), chain())
+    assert close["event"] == "close" and close["reason"] == "day_close" and close["pnl_known"]
+    assert frame(b, t(EVE, "09:20"), chain()) is None and b.position is None  # one trade a day
+    r = daily(tmp_path, "daily_strangle_05")  # restart the same day: still done for the day
+    assert r.entered_day == EVE and frame(r, t(EVE, "09:21"), chain()) is None
+
+
+def test_daily_strangle_left_open_overnight_is_closed_with_unknown_pnl(tmp_path: Path) -> None:
+    b = daily(tmp_path, "daily_strangle_05")
+    frame(b, t(EVE, "09:17"), chain())
+    r = daily(tmp_path, "daily_strangle_05")  # engine was down through 15:14
+    close = frame(r, t("2026-11-04", "09:16"), chain())
+    assert close["reason"] == "day_missed" and close["pnl"] is None
+
+
+def test_daily_premium50_picks_otm_legs_near_fifty_and_day_stop_closes_everything(tmp_path: Path) -> None:
+    from atlas_lite.paper_expiry_sell import BOOKS
+
+    c = BOOKS["daily_premium50"]
+    assert (c["target_premium"], c["stop"], c["day_stop_rs"], c["kind"]) == (50.0, 0.3, 2000.0, "daily")
+    b = daily(tmp_path, "daily_premium50")
+    rows = chain()
+    ev = frame(b, t(EVE, "09:17"), rows)
+    assert ev["event"] == "open"
+    legs = {x["opt"]: x for x in ev["legs"]}
+    for opt in ("CE", "PE"):
+        px = {k: rows[sym(k, opt)]["last_price"] for k in STRIKES
+              if (k > ev["forward"] if opt == "CE" else k < ev["forward"]) and rows[sym(k, opt)]["last_price"] > 0}
+        best = min(px, key=lambda k: (abs(px[k] - 50), k))
+        assert legs[opt]["strike"] == best and abs(legs[opt]["entry"] - 50) <= 20
+    assert "premium ≈ ₹50" in ev["reason"] and "day stop −₹2,000" in ev["reason"]
+    ce, pe = legs["CE"], legs["PE"]
+    stop = frame(b, t(EVE, "10:00"), chain(bump={ce["symbol"]: ce["entry"] * 1.35}))  # call through its +30% stop
+    assert stop["event"] == "leg_stop" and b.position is not None
+    assert frame(b, t(EVE, "10:30"), chain(bump={pe["symbol"]: pe["entry"] * 1.10})) is None  # still above -Rs 2,000
+    out = frame(b, t(EVE, "11:00"), chain(bump={pe["symbol"]: pe["entry"] * 1.29}))  # put +29%: under its leg stop
+    assert out["event"] == "close" and out["reason"] == "day_stop" and b.position is None
+    assert out["pnl"] <= -2000 + 200  # closed at the first frame past -Rs 2,000 (fills at bid/ask)
