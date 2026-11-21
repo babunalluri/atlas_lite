@@ -756,3 +756,35 @@ def test_held_options_of_the_buying_books_are_listed_for_the_depth_tape(tmp_path
     eng._llm_buyer = SimpleNamespace(position=None)
     eng._paper_g2t10 = SimpleNamespace(position=None)
     assert eng._held_option_symbols() == []
+
+
+def test_paper_marks_lists_open_legs_and_todays_trades_read_incrementally(tmp_path: Path) -> None:
+    from atlas_lite.llm_buyer import LlmBuyer
+    from atlas_lite.paper_expiry_sell import BOOKS, ExpiryPosition, Leg, PaperExpirySell
+
+    eng = _engine(tmp_path)
+    c = BOOKS["expiry_eve_strangle_1pct"]
+    eb = PaperExpirySell(path=tmp_path / c["ledger"], strategy="expiry_eve_strangle_1pct", sessions=1, dist=0.01,
+                         wing_pct=None, stop=1.0)
+    eb.position = ExpiryPosition(day="2026-11-20", expiry="2026-11-23", opened_at="2026-11-20T09:16:00+05:30", qty=65, vix=16.27,
+                                 charges_open=60.0, legs=[Leg(25600, "CE", -1, "NFO:NIFTY26NOV25600CE", 48.0, 48.4, exit=94.7),
+                                                          Leg(25100, "PE", -1, "NFO:NIFTY26NOV25100PE", 51.85, 51.75)])
+    eng._paper_expiry["expiry_eve_strangle_1pct"] = eb
+    llm = tmp_path / "paper_llm_buyer.jsonl"
+    llm.write_text("\n".join(json.dumps(r) for r in [
+        {"event": "decision", "day": "2026-11-20", "ts": "2026-11-20T09:17:02+05:30", "action": "WAIT"},
+        {"event": "open", "day": "2026-11-20", "ts": "2026-11-20T09:18:02+05:30", "leg": "ce", "symbol": "NFO:NIFTY26NOV25400CE",
+         "fill": 141.9, "strategy": "llm_buyer"},
+        {"event": "close", "day": "2026-11-19", "ts": "2026-11-19T10:00:00+05:30", "symbol": "NFO:X", "pnl": 5.0},
+    ]) + "\n")
+    eng._llm_buyer = LlmBuyer(path=llm)
+    m = eng.paper_marks("nifty", day="2026-11-20")
+    sold = [(x["strike"], x["opt"], x["side"], x["stopped"], x["stop"]) for x in m["legs"]]
+    assert sold == [(25600, "CE", "S", True, 96.0), (25100, "PE", "S", False, 103.7)]
+    assert [(e["book"], e["action"], e["symbols"], e["price"]) for e in m["events"]] == [("llm_buyer", "BUY", "25400CE", 141.9)]
+    with llm.open("a") as fh:  # new lines are picked up on the next call (incremental read)
+        fh.write(json.dumps({"event": "close", "day": "2026-11-20", "ts": "2026-11-20T09:22:03+05:30", "leg": "ce",
+                             "symbol": "NFO:NIFTY26NOV25400CE", "exit": 152.05, "pnl": 1385.94}) + "\n")
+    m2 = eng.paper_marks("nifty", day="2026-11-20")
+    assert [(e["action"], e["pnl"]) for e in m2["events"]] == [("BUY", None), ("EXIT", 1385.94)]
+    assert eng.paper_marks("sensex", day="2026-11-20")["legs"] == []  # other index: nothing

@@ -675,6 +675,12 @@
     .chart-link { cursor: pointer; }
     .header-atm { cursor: pointer; }
     .chain-table td.strike-col { cursor: pointer; }
+    /* Paper positions on the option chain: S = sold, B = bought (display only). */
+    .pos-tag { display: inline-block; margin-left: 4px; padding: 0 4px; border-radius: 3px; font-size: 10px; font-weight: 600;
+      line-height: 14px; vertical-align: middle; white-space: nowrap; color: #fff; cursor: help; }
+    .pos-tag.pos-sell { background: #c2413b; }
+    .pos-tag.pos-buy { background: #1f8a5b; }
+    .pos-tag.pos-stopped { opacity: 0.45; text-decoration: line-through; }
     .chain-summary-item.chart-link { cursor: pointer; }
     .chart-toolbar-end {
       margin-left: auto;
@@ -2374,6 +2380,7 @@
               <button type="button" class="chart-tool-btn chart-shot-btn" id="chartDrawRedo" title="Redo drawing (⌘Y)" aria-label="Redo drawing"></button>
               <button type="button" class="chart-tool-btn" id="chartDrawClear" title="Clear drawings">Clear</button>
               <button type="button" class="chart-tool-btn" id="chartResetBtn" title="Reset chart zoom and scroll">Reset</button>
+              <select class="chart-tool-btn" id="chartTradesSelect" title="Paper positions and today's paper trades on the chart and the option chain" aria-label="Paper trades shown"></select>
               <div class="chart-menu" id="chartDrawMenu">
                 <button type="button" class="chart-tool-btn" id="chartDrawToggle" aria-haspopup="true" aria-expanded="false">Draw</button>
                 <div class="chart-menu-panel" id="chartDrawPanel" hidden></div>
@@ -5140,7 +5147,7 @@
         const store = niftyChart._chartStore.getOverlayStore();
         const out = [];
         store._instances.forEach((arr) => {
-          arr.forEach((ov) => out.push(ov));
+          arr.forEach((ov) => { if (ov.groupId !== "paper-marks") out.push(ov); });  // paper marks are not drawings
         });
         return out;
       } catch (_) {
@@ -5265,6 +5272,8 @@
         });
       } catch (_) {}
       overlayIgnore = false;
+      paperMarksDrawnSig = "";  // removeOverlay() above also cleared the paper marks
+      applyPaperMarksToChart();
     }
 
     function undoDrawing() {
@@ -5570,6 +5579,8 @@
       restoreIndicators();
       syncPred30Pad();
       if (bars.length) checkPriceAlerts(bars);
+      paperMarksDrawnSig = "";  // redraw paper marks on the fresh data
+      applyPaperMarksToChart();
     }
 
     function mergeCandleBars(incoming) {
@@ -5656,6 +5667,8 @@
       chartDrawTool = null;
       pushOverlayHistory();
       renderDrawBar();
+      paperMarksDrawnSig = "";  // "Clear" removes drawings, not the paper marks
+      applyPaperMarksToChart();
     }
 
     function readChartBarSpace() {
@@ -7842,6 +7855,197 @@
       </tr>`;
     }
 
+    // ---- paper positions on the option chain and the chart (display only) ----
+    // One selector filters both: "off", "all" or a single book. Kept light: small triangles, P&L only on exits.
+    const PAPER_SHORT = {
+      llm_buyer: "Sol", g2t10: "G2T10", expiry_eve_strangle_1pct: "Eve1%", expiry_eve_strangle: "Eve0.5%",
+      expiry_day_straddle: "ExpDay", sensex_expiry_day_strangle: "SX", sensex_expiry_day_straddle: "SXstr",
+      daily_strangle_05: "D0.5%", daily_premium50: "D₹50",
+    };
+    let paperMarks = { legs: [], events: [] };
+    let paperMarksDrawnSig = "";
+    let chartTradesBook = (() => {
+      try { return localStorage.getItem("atlas.chartTradesBook") || "all"; } catch (_) { return "all"; }
+    })();
+
+    function paperBookShown(book) {
+      return chartTradesBook === "all" || chartTradesBook === book;
+    }
+
+    let paperMarksLoadedAt = 0;
+    async function loadPaperMarks(force) {
+      if (!force && Date.now() - paperMarksLoadedAt < 5000) return;  // markers refresh every 5 s, not with every chain tick
+      paperMarksLoadedAt = Date.now();
+      try {
+        const resp = await fetch(withNotebookQuery("/api/paper/marks"));
+        if (!resp.ok) return;
+        const data = await resp.json();
+        paperMarks = { legs: data.legs || [], events: data.events || [] };
+        syncChartTradesSelect();
+        applyPaperMarksToChart();
+      } catch (_) {}
+    }
+
+    function escapeMarkText(v) {
+      return String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+
+    function chainPosTags(strike, opt) {
+      if (chartTradesBook === "off") return "";
+      const legs = (paperMarks.legs || []).filter((l) => l.on_chain && l.strike === strike && l.opt === opt && paperBookShown(l.book));
+      return legs.map((l) => {
+        const sold = l.side === "S";
+        const tip = [
+          `${l.label} · ${sold ? "sold" : "bought"} ${l.strike} ${l.opt} at ${l.entry ?? "—"}`,
+          l.stopped ? "leg stopped" : `now ${l.mark ?? "—"} · ${l.pnl_pts == null ? "—" : (l.pnl_pts >= 0 ? "+" : "") + l.pnl_pts} pts`,
+          l.stop != null && !l.stopped ? `stop at ${l.stop}` : "",
+        ].filter(Boolean).join(" · ");
+        return ` <span class="pos-tag ${sold ? "pos-sell" : "pos-buy"}${l.stopped ? " pos-stopped" : ""}" title="${escapeMarkText(tip)}">${l.side} ${escapeMarkText(PAPER_SHORT[l.book] || l.label)}</span>`;
+      }).join("");
+    }
+
+    function paperMarkValueAt(tsMs, fallback, below) {
+      // The chart candle (any interval) that holds the trade's time: buys sit under its low, sells / exits over its high.
+      let list = [];
+      try { list = (niftyChart && niftyChart.getDataList()) || []; } catch (_) { list = []; }
+      let lo = 0, hi = list.length - 1, best = null;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (Number(list[mid].timestamp) <= tsMs) { best = list[mid]; lo = mid + 1; } else { hi = mid - 1; }
+      }
+      if (!best) return fallback != null ? Number(fallback) : null;
+      return Number(below ? best.low : best.high);
+    }
+
+    function compactRs(v) {
+      const a = Math.abs(v);
+      const t = a >= 1000 ? `${(a / 1000).toFixed(a >= 10000 ? 0 : 1)}k` : `${Math.round(a)}`;
+      return `${v >= 0 ? "+" : "−"}${t}`;
+    }
+
+    function registerPaperMarkOverlays() {
+      if (registerPaperMarkOverlays.done || typeof klinecharts === "undefined") return;
+      registerPaperMarkOverlays.done = true;
+      try {
+        // A small triangle at the trade's candle (up = bought, down = sold / exited); exits carry a short P&L.
+        klinecharts.registerOverlay({
+          name: "paperTradeMark", totalStep: 2, lock: true,
+          needDefaultPointFigure: false, needDefaultXAxisFigure: false, needDefaultYAxisFigure: false,
+          createPointFigures: ({ coordinates, overlay }) => {
+            const c = coordinates[0];
+            if (!c) return [];
+            const d = overlay.extendData || {};
+            const up = d.dir === "up";
+            const y = up ? c.y + 8 : c.y - 8;
+            const s = 5;
+            const tri = up
+              ? [{ x: c.x, y: y - s }, { x: c.x - s, y: y + s }, { x: c.x + s, y: y + s }]
+              : [{ x: c.x, y: y + s }, { x: c.x - s, y: y - s }, { x: c.x + s, y: y - s }];
+            const figs = [{ type: "polygon", attrs: { coordinates: tri }, styles: { style: "fill", color: d.color }, ignoreEvent: true }];
+            if (d.text) {
+              figs.push({
+                type: "text", ignoreEvent: true,
+                attrs: { x: c.x, y: up ? y + s + 2 : y - s - 2, text: d.text, align: "center", baseline: up ? "top" : "bottom" },
+                styles: { color: d.color, size: 10, weight: "bold", backgroundColor: "transparent", borderSize: 0, paddingLeft: 0, paddingRight: 0, paddingTop: 0, paddingBottom: 0 },
+              });
+            }
+            return figs;
+          },
+        });
+        // A thin dashed line at an open sold strike, with a short tag at the right edge.
+        klinecharts.registerOverlay({
+          name: "paperStrikeLine", totalStep: 2, lock: true,
+          needDefaultPointFigure: false, needDefaultXAxisFigure: false, needDefaultYAxisFigure: false,
+          createPointFigures: ({ coordinates, bounding, overlay }) => {
+            const c = coordinates[0];
+            if (!c) return [];
+            const d = overlay.extendData || {};
+            return [
+              { type: "line", ignoreEvent: true, attrs: { coordinates: [{ x: 0, y: c.y }, { x: bounding.width, y: c.y }] },
+                styles: { style: "dashed", dashedValue: [3, 4], size: 1, color: d.color } },
+              { type: "text", ignoreEvent: true,
+                attrs: { x: bounding.width - 4, y: c.y - 2, text: d.text, align: "right", baseline: "bottom" },
+                styles: { color: d.color, size: 10, backgroundColor: "transparent", borderSize: 0, paddingLeft: 0, paddingRight: 0, paddingTop: 0, paddingBottom: 0 } },
+            ];
+          },
+        });
+      } catch (_) {}
+    }
+
+    function applyPaperMarksToChart() {
+      if (!niftyChart) return;
+      const sig = JSON.stringify([chartTradesBook, paperMarks, (niftyRawBars || []).length]);
+      if (sig === paperMarksDrawnSig) return;
+      paperMarksDrawnSig = sig;
+      registerPaperMarkOverlays();
+      overlayIgnore = true;
+      try {
+        try { niftyChart.removeOverlay({ groupId: "paper-marks" }); } catch (_) {}
+        if (chartTradesBook === "off") return;
+        const bars = niftyRawBars || [];
+        const lastBar = bars[bars.length - 1];
+        const lastTs = lastBar && typeof lastBar.time !== "string" ? Number(lastBar.time) * 1000 : Date.now();
+        (paperMarks.legs || []).filter((l) => l.side === "S" && !l.stopped && paperBookShown(l.book)).forEach((l, i) => {
+          try {
+            niftyChart.createOverlay({
+              name: "paperStrikeLine", id: `paper_leg_${i}`, groupId: "paper-marks", lock: true,
+              points: [{ timestamp: lastTs, value: l.strike }],
+              extendData: { color: "#c2413b", text: `${PAPER_SHORT[l.book] || l.label} ${l.opt} ${l.strike}` },
+            });
+          } catch (_) {}
+        });
+        (paperMarks.events || []).filter((e) => paperBookShown(e.book)).forEach((e, i) => {
+          const ts = Date.parse(e.ts);
+          const value = paperMarkValueAt(ts, e.nifty, e.action === "BUY");
+          if (!Number.isFinite(ts) || value == null || !Number.isFinite(value)) return;
+          let dir = "down", color = "#c2413b", text = "";
+          if (e.action === "BUY") { dir = "up"; color = "#1f8a5b"; }
+          else if (e.action === "SELL") { color = "#c2413b"; }
+          else if (e.action === "STOP") { color = "#c2413b"; text = "✕"; }
+          else if (e.action === "LOT 1") { color = "#b7791f"; }
+          else { color = (e.pnl ?? 0) >= 0 ? "#1f8a5b" : "#c2413b"; text = e.pnl == null ? "" : compactRs(e.pnl); }
+          try {
+            niftyChart.createOverlay({
+              name: "paperTradeMark", id: `paper_ev_${i}`, groupId: "paper-marks", lock: true,
+              points: [{ timestamp: ts, value }], extendData: { dir, color, text },
+            });
+          } catch (_) {}
+        });
+      } finally {
+        overlayIgnore = false;
+      }
+    }
+
+    function syncChartTradesSelect() {
+      const sel = document.getElementById("chartTradesSelect");
+      if (!sel) return;
+      const books = new Set();
+      (paperMarks.legs || []).forEach((l) => books.add(l.book));
+      (paperMarks.events || []).forEach((e) => books.add(e.book));
+      if (chartTradesBook !== "all" && chartTradesBook !== "off") books.add(chartTradesBook);
+      const opts = [["all", "Trades: all books"], ["off", "Trades: off"],
+        ...[...books].sort().map((b) => [b, `Trades: ${PAPER_SHORT[b] || b}`])];
+      const want = opts.map((o) => o[0]).join("|");
+      if (sel.dataset.opts !== want) {
+        sel.innerHTML = opts.map(([v, t]) => `<option value="${escapeMarkText(v)}">${escapeMarkText(t)}</option>`).join("");
+        sel.dataset.opts = want;
+      }
+      sel.value = chartTradesBook;
+    }
+
+    function initChartTradesSelect() {
+      const sel = document.getElementById("chartTradesSelect");
+      if (!sel || sel.dataset.ready) return;
+      sel.dataset.ready = "1";
+      syncChartTradesSelect();
+      sel.addEventListener("change", () => {
+        chartTradesBook = sel.value || "all";
+        try { localStorage.setItem("atlas.chartTradesBook", chartTradesBook); } catch (_) {}
+        applyPaperMarksToChart();
+        loadChainSnapshot();  // re-render the chain badges for the chosen book
+      });
+    }
+
     function renderChainRows(data) {
       const tbody = document.getElementById("chainRows");
       const rows = data.rows || [];
@@ -7862,9 +8066,9 @@
         return `<tr class="${cls}" data-strike="${row.strike}">
           <td class="${chainSideClass("ce", row.strike, spot)}">${formatChainOi(ce.oi)}</td>
           <td class="${chainSideClass("ce", row.strike, spot)}">${formatChainChg(ce.chg_pct)}</td>
-          <td class="${chainSideClass("ce", row.strike, spot)}">${formatChainNum(ce.ltp)}</td>
+          <td class="${chainSideClass("ce", row.strike, spot)}">${formatChainNum(ce.ltp)}${chainPosTags(row.strike, "CE")}</td>
           <td class="strike-col">${row.strike}</td>
-          <td class="${chainSideClass("pe", row.strike, spot)}">${formatChainNum(pe.ltp)}</td>
+          <td class="${chainSideClass("pe", row.strike, spot)}">${chainPosTags(row.strike, "PE")}${formatChainNum(pe.ltp)}</td>
           <td class="${chainSideClass("pe", row.strike, spot)}">${formatChainChg(pe.chg_pct)}</td>
           <td class="${chainSideClass("pe", row.strike, spot)}">${formatChainOi(pe.oi)}</td>
         </tr>`;
@@ -7898,10 +8102,10 @@
           ${chainExtrasCells(ce, "ce", row.strike, spot)}
           <td class="${chainSideClass("ce", row.strike, spot)}">${formatChainOi(ce.oi)}</td>
           <td class="${chainSideClass("ce", row.strike, spot)}">${formatChainChg(ce.chg_pct)}</td>
-          <td class="${chainSideClass("ce", row.strike, spot)}">${formatChainNum(ce.ltp)}</td>
+          <td class="${chainSideClass("ce", row.strike, spot)}">${formatChainNum(ce.ltp)}${chainPosTags(row.strike, "CE")}</td>
           <td class="strike-col">${row.strike}</td>
           <td class="strike-col">${formatChainPcr(row.pcr)}</td>
-          <td class="${chainSideClass("pe", row.strike, spot)}">${formatChainNum(pe.ltp)}</td>
+          <td class="${chainSideClass("pe", row.strike, spot)}">${chainPosTags(row.strike, "PE")}${formatChainNum(pe.ltp)}</td>
           <td class="${chainSideClass("pe", row.strike, spot)}">${formatChainChg(pe.chg_pct)}</td>
           <td class="${chainSideClass("pe", row.strike, spot)}">${formatChainOi(pe.oi)}</td>
           ${chainExtrasCells(pe, "pe", row.strike, spot)}
@@ -8047,11 +8251,15 @@
       syncChainExtrasBtn();
     }
     initChainSplit();
+    initChartTradesSelect();
 
     async function loadChainSnapshot() {
       if (document.visibilityState === "hidden") return;
       try {
-        const resp = await fetch(withNotebookQuery(chainExtrasOn ? "/api/chain?extras=1" : "/api/chain"));
+        const [resp] = await Promise.all([
+          fetch(withNotebookQuery(chainExtrasOn ? "/api/chain?extras=1" : "/api/chain")),
+          loadPaperMarks(),
+        ]);
         if (!resp.ok) {
           document.getElementById("chainMeta").textContent = "Failed to load chain";
           return;
@@ -8581,6 +8789,8 @@
       applyNotebookChrome();
       niftyRawBars = [];
       niftyLastBarTime = null;
+      paperMarks = { legs: [], events: [] };  // the other index's paper marks are fetched fresh
+      paperMarksLoadedAt = 0;
       if (typeof serverDmiByTime !== "undefined" && serverDmiByTime && typeof serverDmiByTime.clear === "function") {
         serverDmiByTime.clear();
       }

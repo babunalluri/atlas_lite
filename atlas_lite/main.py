@@ -379,6 +379,14 @@ async def api_arb_trades(
     return await asyncio.to_thread(read)
 
 
+@app.get("/api/paper/marks")
+async def api_paper_marks(nb: str = Query(default="nifty")) -> dict[str, Any]:
+    """Open paper option legs and today's paper trades for one index (option chain tags, chart markers)."""
+    if _engine is None:
+        raise HTTPException(status_code=503, detail="engine not started")
+    return await asyncio.to_thread(_engine.paper_marks, nb)
+
+
 @app.get("/api/paper/trades")
 async def api_paper_trades(
     limit: int = Query(default=200, ge=1, le=1000),

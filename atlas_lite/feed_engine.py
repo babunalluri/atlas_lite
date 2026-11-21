@@ -7,6 +7,7 @@ build_feed, candles, build_option_chain. Paper trading stays NIFTY-only.
 from __future__ import annotations
 
 import asyncio
+import threading
 import json
 import time
 from collections import deque
@@ -254,6 +255,25 @@ from atlas_lite.specs import (
 )
 
 IST = ZoneInfo("Asia/Kolkata")
+
+
+def _num(v: Any) -> float | None:
+    """A ledger number as float, or None."""
+    try:
+        return None if v is None else round(float(v), 2)
+    except (TypeError, ValueError):
+        return None
+
+
+# Short labels for the chain tags and chart markers (paper books that hold options).
+MARK_LABELS: dict[str, str] = {
+    "llm_buyer": "Sol", "g2t10": "G2T10", "expiry_eve_strangle_1pct": "Eve ±1%", "expiry_eve_strangle": "Eve ±0.5%",
+    "expiry_day_straddle": "Exp-day straddle", "sensex_expiry_day_strangle": "SX exp-day ±0.5%",
+    "sensex_expiry_day_straddle": "SX exp-day straddle", "daily_strangle_05": "Daily ±0.5%",
+    "daily_premium50": "Daily ₹50",
+}
+MARK_EVENTS = frozenset({"open", "close", "partial_close", "leg_stop"})
+_MARKS_LOCK = threading.Lock()  # /api/paper/marks runs in worker threads: one ledger reader at a time
 MAINTENANCE_LOOP_S = 60.0
 IV_GREEKS_REFRESH_S = 2.0
 CHAIN_GREEKS_REFRESH_S = 5.0
@@ -3873,6 +3893,112 @@ class FeedEngine:
         if self._agent_live is None:
             self._agent_live = AgentLiveFlag(self.data_dir / LIVE_FLAG_NAME)
         return self._agent_live.set_enabled(bool(enabled), source=source)
+
+    def _ledger_today(self, path: Path, today: str) -> list[dict[str, Any]]:
+        """Today's open/close/partial_close/leg_stop lines of one ledger, read incrementally (new bytes only)."""
+        with _MARKS_LOCK:
+            return list(self._ledger_today_locked(path, today))
+
+    def _ledger_today_locked(self, path: Path, today: str) -> list[dict[str, Any]]:
+        cache = self.__dict__.setdefault("_marks_tail", {})
+        st = cache.get(str(path))
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return []
+        if st is None or st["day"] != today or size < st["pos"]:
+            st = {"day": today, "pos": 0, "rows": [], "rest": b""}
+            cache[str(path)] = st
+        if size > st["pos"]:
+            with path.open("rb") as fh:
+                fh.seek(st["pos"])
+                chunk = st["rest"] + fh.read(size - st["pos"])
+            st["pos"] = size
+            lines = chunk.split(b"\n")
+            st["rest"] = lines.pop()  # a line still being written
+            for raw in lines:
+                if not raw or b'"decision"' in raw[:40] or today.encode() not in raw:
+                    continue
+                try:
+                    ev = json.loads(raw)
+                except ValueError:
+                    continue
+                if ev.get("day") == today and ev.get("event") in MARK_EVENTS:
+                    st["rows"].append(ev)
+        return st["rows"]
+
+    def paper_marks(self, nb: str = "nifty", day: str | None = None) -> dict[str, Any]:
+        """Open paper option legs and today's paper trade events for one index, for the option chain tags and the
+        chart markers. Display only."""
+        runtime = self.notebooks.get(nb)
+        chain_syms: set[str] = set()
+        if runtime and runtime.chain_cache:
+            chain_syms = set(runtime.chain_cache[1]) | set(runtime.chain_cache[2])
+        today = day or datetime.now(IST).strftime("%Y-%m-%d")
+        legs: list[dict[str, Any]] = []
+
+        def add_leg(book: str, symbol: str, strike: int, opt: str, side: str, entry: float | None,
+                    stop: float | None = None, stopped: bool = False) -> None:
+            mark = quote_ltp(self.book.get(symbol))
+            pnl_pt = None
+            if mark is not None and entry is not None and not stopped:
+                pnl_pt = round((mark - entry) if side == "B" else (entry - mark), 2)
+            legs.append({"book": book, "label": MARK_LABELS.get(book, book), "symbol": symbol,
+                         "strike": int(strike), "opt": opt, "side": side, "entry": entry, "mark": mark,
+                         "pnl_pts": pnl_pt, "stop": stop, "stopped": stopped, "on_chain": symbol in chain_syms})
+
+        books: dict[str, str] = {}  # book -> index
+        for name, eb in self._paper_expiry.items():
+            index = EXPIRY_SELL_BOOKS.get(name, {}).get("index", "nifty")
+            books[name] = index
+            if index != nb or eb.position is None:
+                continue
+            for leg in eb.position.legs:
+                add_leg(name, leg.symbol, leg.strike, leg.opt, "S" if leg.sign < 0 else "B", leg.fill,
+                        stop=round(leg.entry * (1 + eb.stop), 2) if leg.sign < 0 else None, stopped=leg.exit is not None)
+        if self._llm_buyer is not None:
+            books["llm_buyer"] = "nifty"
+            pos = self._llm_buyer.position
+            if nb == "nifty" and pos is not None:
+                add_leg("llm_buyer", pos.symbol, pos.strike, pos.leg.upper(), "B", pos.fill)
+        if self._paper_g2t10 is not None:
+            books["g2t10"] = "nifty"
+            gp = self._paper_g2t10.position
+            if nb == "nifty" and isinstance(gp, dict) and gp.get("symbol"):
+                add_leg("g2t10", str(gp["symbol"]), int(gp.get("strike") or 0), str(gp.get("leg") or "")[-2:].upper(),
+                        "B", _num(gp.get("fill")))
+
+        bars = list(runtime.bar_builder.bars) if runtime and runtime.bar_builder else []
+        nifty_at = {str(b.get("t") or "")[11:16]: b.get("c") for b in bars if str(b.get("t") or "").startswith(today)}
+        events: list[dict[str, Any]] = []
+        files = {name: self.data_dir / EXPIRY_SELL_BOOKS[name]["ledger"] for name in self._paper_expiry
+                 if name in EXPIRY_SELL_BOOKS}
+        if self._llm_buyer is not None:
+            files["llm_buyer"] = self._llm_buyer.path
+        if self._paper_g2t10 is not None:
+            files["g2t10"] = self._paper_g2t10.path
+        for name, path in files.items():
+            if books.get(name) != nb:
+                continue
+            for ev in self._ledger_today(Path(path), today):
+                ts = str(ev.get("ts") or "")
+                hm = ts[11:16]
+                kind = ev.get("event")
+                sell_book = name in self._paper_expiry
+                if kind == "open":
+                    action = "SELL" if sell_book else "BUY"
+                elif kind == "leg_stop":
+                    action = "STOP"
+                else:
+                    action = "EXIT" if kind == "close" else "LOT 1"
+                sym = str(ev.get("symbol") or ev.get("leg") or "")  # leg_stop lines name the stopped leg in "leg"
+                short = ",".join(x.split(":")[-1][-7:] for x in sym.split(",") if x)
+                events.append({"book": name, "label": MARK_LABELS.get(name, name), "ts": ts, "hm": hm,
+                               "kind": kind, "action": action, "symbols": short,
+                               "price": _num(ev.get("exit") if kind != "open" else ev.get("fill", ev.get("credit_fill"))),
+                               "pnl": _num(ev.get("pnl")), "nifty": nifty_at.get(hm)})
+        events.sort(key=lambda e: e["ts"])
+        return {"ok": True, "nb": nb, "day": today, "legs": legs, "events": events}
 
     def paper_snapshot(self) -> dict[str, Any]:
         if self._paper is None:
