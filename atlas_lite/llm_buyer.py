@@ -1,7 +1,8 @@
 """LLM option buyer (OpenAI GPT-6.2 Sol from 20 Nov 2026; Claude Sonnet 5.5 11-18 Nov, Mistral Nemo 19 Nov): ATM NIFTY CE or PE. Paper by default.
 
 Every minute from 09:16 the LLM sees what a discretionary trader would see at that minute (new trades until
-15:00; a trade still open is managed every minute until it closes, at the latest 15:08) (NIFTY
+15:00; a trade still open is managed every minute, plus a check at hh:mm:30 (HOLD_CHECK_30S), until it closes, at the
+latest 15:08) (NIFTY
 path and range, % change, VIX and its change, ATM IV against today's high/low, IV percentile, PCR, futures OI
 vs day high, ATM call/put prices and the straddle path, days to expiry, its own position and P&L) and answers
 BUY_CE / BUY_PE / WAIT / DONE_FOR_DAY when flat, HOLD / EXIT when holding. It also sees the previous session's
@@ -9,17 +10,19 @@ open, high, low and close (from the engine's 1-minute bars). Evidence is thin: t
 dates hidden) were 5-minute, full-day, on four hand-picked days (+Rs 6,581 / -Rs 1,296 / +Rs 3,449 / -Rs 2,444);
 this all-day, 1-minute setup has not been replayed.
 
-Code, not the LLM, owns the risk:
-- Day loss stop DAY_LOSS_LIMIT: today's closed P&L plus the open position at bids, after estimated charges,
-  checked every frame. Hit -> exit at once and no more entries today.
-- At most MAX_ENTRIES a day (a book may allow more while the day's closed P&L is positive, with a profit lock:
-  an extra trade is sold once the day's P&L falls to PROFIT_LOCK of its best closed level); no new entry after
-  the book's last entry time; everything is sold at its exit time.
+Code, not the LLM, owns the risk. Paper and live run the same trading rules (operator's decision 23 Nov 2026):
+- 2 lots a trade; lot 1's trailing stop (armed +10%, sold 2% off its best bid) and the 40% giveback stop on the
+  rest; the day-direction entry rule; the 10-minute pause after a loss; the stretch limit (no new entry once NIFTY
+  has been 1.2% from the open); no trade cap, no profit lock.
+- Live only (safety limits; paper has none): day loss stop DAY_LOSS_LIMIT (today's closed live P&L plus the open
+  position at bids, after estimated charges; the budget left is a stop on the open trade; hit -> sold and no more
+  live entries today) and the month stop MONTH_LOSS_LIMIT. No new entry after the last entry time; everything is
+  sold at its exit time.
 - An LLM error, timeout or unusable answer (not an allowed action) is treated as WAIT / HOLD;
   MAX_ERRORS_HOLDING of them in a row while holding sell the position ("llm_unavailable"). A decision that no longer fits the position (a buy while holding, an
   exit while flat) is ignored.
 
-Live (intraday MIS, 1 lot): decided at each entry, on a day the dashboard checkbox "Live LLM buyer" is ticked
+Live (intraday MIS, 2 lots, as paper): decided at each entry, on a day the dashboard checkbox "Live LLM buyer" is ticked
 and the host allows it (ATLAS_LITE_LLM_BUYER_LIVE_ALLOWED=1). Before buying, the option's ask x qty plus 10%
 must fit the funds Kite shows available, and live stops for the month at MONTH_LOSS_LIMIT. Orders are run by
 atlas_lite/live_straddle.py with a single leg (tagged orders, holdings from this book's own fills).
@@ -67,10 +70,13 @@ EXIT_AT, LIVE_ORDERS_UNTIL = "15:08", "15:12"  # Zerodha squares F&O MIS off at 
 DECIDE_EVERY_MIN = 1
 MAX_ENTRIES = 2
 MAX_ENTRIES_IF_POSITIVE = 4  # more entries while today's closed P&L is positive (profit lock applies)
-MAX_ERRORS_HOLDING = 5  # LLM errors in a row while holding -> sell (~5 minutes without a working LLM at 1/min)
+MAX_ERRORS_HOLDING = 5  # LLM errors in a row while holding -> sell (~2.5 min without a working LLM with the :30 check)
 DAY_LOSS_LIMIT = 1_500.0  # was 2,000 until 11 Nov 2026 (operator's call with prompt v3)
 PROFIT_LOCK = 0.5  # extra trades on a winning day: keep at least half of the day's best closed P&L
 MONTH_LOSS_LIMIT = 10_000.0
+# Paper = live (operator's decision 23 Nov 2026): both books run the same trading rules: 2 lots, lot-1 trailing stop,
+# the lot-2 40% giveback stop, the day-direction rule, the loss pause; no trade cap and no profit lock (as paper).
+# The DAY_LOSS_LIMIT day stop and the MONTH_LOSS_LIMIT month stop are live-only safety limits (paper has none).
 EST_CHARGES = 80.0  # a buy and a sell of one ATM lot, for the running day-loss check
 SLIP_PTS = 1.0
 FUNDS_HEADROOM = 1.10
@@ -88,11 +94,22 @@ PAPER_LOTS = 2
 # -Rs 10,095 as traded -> +Rs 3,539 (46 trades); worst day -6,608 -> -3,927; still -Rs 4,958 without 20 Nov.
 DAY_DIRECTION_PCT = 0.25
 DAY_DIRECTION_RULE = True  # tests of other behaviour switch it off ("any" side allowed)
+# Stretch limit (operator's call, 23 Nov 2026): no new entry for the rest of the day once a 1-min candle of today has
+# closed STRETCH_LIMIT_PCT or more away from the 09:15 open (either way; it stays on if NIFTY comes back). Open trades
+# and exits are not affected; the LLM is not asked while flat after it. Tested on the book's real paper trades 11-23
+# Nov (scratchpad stop_rules_test.py): -Rs 12,179 -> +Rs 3,265; only 20 Nov (+1,447) and 23 Nov (+13,998) reached
+# 1.2%, no day worse. Thin evidence (2 days). 0 switches it off.
+STRETCH_LIMIT_PCT = 1.2
 # Pause after a loss (operator's call, 20 Nov 2026): no new entry for LOSS_PAUSE_MIN minutes after a trade (paper or
 # live) closes at a loss; the LLM is not asked while flat in the pause. Tested (scratchpad cooldown_test.py, 46 trades
 # kept by the day-direction rule, 11-20 Nov, lot-2 40% exit): +Rs 2,078 -> +Rs 8,770, worst day -7,697 -> -6,146,
 # 10 trades skipped (8 losers, 2 winners), no day worse (5 min +3,466; 15 min +9,200). 0 switches it off.
 LOSS_PAUSE_MIN = 10
+# Mid-minute exit check (operator's call, 23 Nov 2026): while a trade is open the LLM is also asked at hh:mm:30 (same
+# view, same prompt), so a losing trade can be sold ~30 s sooner. Its decision slot is "HH:MM:30". Tested on 20 Nov
+# (scratchpad check30.py, real Sol calls): +Rs 5,449 -> +Rs 7,039, 10 of 24 trades changed. Doubles the calls while
+# holding. False switches it off. Entries are still asked only once a minute.
+HOLD_CHECK_30S = True
 PARTIAL_ARM_PCT = 0.10
 PARTIAL_TRAIL_PCT = 0.02
 # Lot-2 giveback stop (operator's call, 20 Nov 2026; paper only): once the bid is LOT2_ARM_PCT above the price paid,
@@ -404,6 +421,8 @@ class LlmBuyer:
     prev_day_tried: str = ""
     errors_in_row: int = 0  # LLM answers in a row that failed (reset by any valid answer)
     last_loss_exit_at: str = ""  # ISO time of today's last losing close (starts the LOSS_PAUSE_MIN pause)
+    live_lot1_high: float = 0.0  # live lot-1 trailing stop: highest bid since armed (0 = not armed; memory only)
+    live_lot2_high: float = 0.0  # live 40% giveback: highest bid since armed (0 = not armed; memory only)
     _log: Any = field(default_factory=lambda: get_logger("atlas_lite.llm_buyer"), repr=False)
 
     def __post_init__(self) -> None:
@@ -486,6 +505,7 @@ class LlmBuyer:
             if kind == "close" and ev.get("live") and ev.get("pnl") is not None:
                 m = d[:7]
                 self.month_live_pnl[m] = round(self.month_live_pnl.get(m, 0.0) + float(ev["pnl"]), 2)
+
             if kind == "live_start":
                 live_start, live_events = ev, []
             elif kind in LIVE_EVENTS and live_start is not None:
@@ -611,19 +631,32 @@ class LlmBuyer:
 
     # ---- the LLM's view ----
     def decision_due(self, now: datetime) -> bool:
+        return self.decision_slot(now) is not None
+
+    def decision_slot(self, now: datetime) -> str | None:
+        """The slot to ask the LLM for now ("HH:MM", or "HH:MM:30" for the mid-minute check while holding), else None.
+        A slot is asked once (it goes into `decided` when asked)."""
         hm = now.strftime("%H:%M")
         if not self.paper_enabled():
-            return False
+            return None
         if not _is_nse_trading_day(now.date()) or not (self.first_decision <= hm <= self.last_decision_at):
-            return False
-        if now.minute % self.decide_every_min or hm in self.decided or self.day != now.strftime("%Y-%m-%d"):
-            return False
+            return None
+        if self.day != now.strftime("%Y-%m-%d"):
+            return None
         holding = self.position is not None or self.live is not None
         if holding:
-            return self.live is None or self.live.phase == "holding"
+            if self.live is not None and self.live.phase != "holding":
+                return None
+            if HOLD_CHECK_30S and now.second >= 30:
+                # The second half of a minute uses the :30 slot (a minute slot not asked yet is not asked late as well).
+                return None if f"{hm}:30" in self.decided else f"{hm}:30"
+            return None if (now.minute % self.decide_every_min or hm in self.decided) else hm
+        if now.minute % self.decide_every_min or hm in self.decided:
+            return None
         # While flat the LLM is asked only when the day-direction rule allows a side.
-        return (self._entry_open() and hm <= self.last_entry and self._feed_fresh(now) and self.allowed_side() is not None
-                and not self.in_loss_pause(now))
+        ok = (self._entry_open() and hm <= self.last_entry and self._feed_fresh(now) and self.allowed_side() is not None
+              and not self.in_loss_pause(now) and self.stretch_reached_at() is None)
+        return hm if ok else None
 
     def allowed_side(self) -> str | None:
         """Day-direction rule: "ce" (calls only), "pe" (puts only) or None (no new trade). See DAY_DIRECTION_PCT.
@@ -652,20 +685,34 @@ class LlmBuyer:
             return None
         return round((now_px / open_px - 1) * 100, 3) if open_px > 0 else None
 
+    def stretch_reached_at(self) -> str | None:
+        """The minute ("HH:MM") today's first 1-min candle closed STRETCH_LIMIT_PCT or more from the open, else None."""
+        if not STRETCH_LIMIT_PCT:
+            return None
+        bars = self._today_bars(self.last_feed)
+        if not bars or str(bars[0].get("t") or "")[11:16] > "09:20":
+            return None
+        try:
+            open_px = float(bars[0]["o"])
+            for b in bars:
+                if open_px > 0 and abs(float(b["c"]) / open_px - 1) * 100 >= STRETCH_LIMIT_PCT:
+                    return str(b.get("t") or "")[11:16] or "?"
+        except (KeyError, TypeError, ValueError):
+            return None
+        return None
+
     def _entry_open(self) -> bool:
-        """May a new trade start? Paper: always (until the LLM says DONE_FOR_DAY). Live: the day limits on live trades."""
+        """May a new trade start? No trade cap and no profit lock in either book (23 Nov 2026). Paper: always (until the
+        LLM says DONE_FOR_DAY). Live: also not once the live day stop is hit (the month stop is checked at the buy)."""
         if self.stopped == "done_for_day":
             return False
         if not self.live_enabled():
             return True
-        return not self.stopped and self._can_enter() and self.day_realized - EST_CHARGES > -DAY_LOSS_LIMIT
+        return not self.stopped and self.day_realized - EST_CHARGES > -DAY_LOSS_LIMIT
 
     def _entries_left(self) -> int | None:
-        """Live: entries still allowed today. Paper: None (no limit; left out of the LLM's view)."""
-        if not self.live_enabled():
-            return None
-        cap = self.max_entries_if_positive if self.day_realized > 0 else self.max_entries
-        return max(0, cap - self.entries) if not self.stopped else 0
+        """No trade cap (paper = live, 23 Nov 2026): left out of the LLM's view."""
+        return None
 
     @staticmethod
     def _today_bars(f: dict[str, Any]) -> list[dict[str, Any]]:
@@ -720,16 +767,13 @@ class LlmBuyer:
         return out
 
     def _can_enter(self) -> bool:
-        if self.entries < self.max_entries:
-            return True
-        return self.entries < self.max_entries_if_positive and self.day_realized > 0
+        return True  # no trade cap (paper = live, 23 Nov 2026)
 
     def _in_extra_trade(self) -> bool:
-        return self.entries > self.max_entries and self.live is not None
+        return False
 
     def _profit_floor(self) -> float | None:
-        """Day P&L an extra trade may not fall below: PROFIT_LOCK of today's best closed P&L."""
-        return self.day_peak * PROFIT_LOCK if self._in_extra_trade() and self.day_peak > 0 else None
+        return None  # no profit lock (paper = live, 23 Nov 2026)
 
     def _feed_fresh(self, now: datetime) -> bool:
         """Today's feed, recorded this minute or within the 2 before (a stale feed means stale ATM symbols)."""
@@ -855,6 +899,12 @@ class LlmBuyer:
                 self._append({"event": "entry_blocked", "ts": now.isoformat(), "day": self.day, "hm": hm,
                               "action": act, "why": "loss_pause", "last_loss_exit_at": self.last_loss_exit_at})
                 return None
+            if (stretch_at := self.stretch_reached_at()) is not None:
+                self.last_reject = "stretch_limit"
+                self._append({"event": "entry_blocked", "ts": now.isoformat(), "day": self.day, "hm": hm,
+                              "action": act, "why": "stretch_limit", "stretch_reached_at": stretch_at,
+                              "nifty_vs_open_pct": self.nifty_vs_open_pct()})
+                return None
             want, side = ("ce" if act == "BUY_CE" else "pe"), self.allowed_side()
             if side != "any" and want != side:
                 self.last_reject = "day_direction"
@@ -946,7 +996,8 @@ class LlmBuyer:
             self.last_reject = "month_loss_limit"
             return self._append({"event": "live_skip", "ts": now.isoformat(), "day": self.day, "live": True,
                                  "why": "month_loss_limit"})
-        need = ask * self.qty * FUNDS_HEADROOM
+        qty = self.qty * PAPER_LOTS  # 2 lots, as paper (operator's decision 23 Nov 2026)
+        need = ask * qty * FUNDS_HEADROOM
         try:
             available = float(self.order_client.equity_available())
         except Exception as exc:  # noqa: BLE001 - no funds reading, no order
@@ -958,7 +1009,8 @@ class LlmBuyer:
             return self._append({"event": "live_skip", "ts": now.isoformat(), "day": self.day, "live": True,
                                  "why": self.last_reject})
         start = {"event": "live_start", "ts": now.isoformat(), "day": self.day, "live": True, "atm": strike,
-                 "strike": strike, "legs": [leg], "tag_prefix": self.tag_prefix, "qty": self.qty, "expiry_day": False,
+                 "strike": strike, "legs": [leg], "tag_prefix": self.tag_prefix, "qty": qty, "lot_size": self.qty,
+                 "expiry_day": False,
                  "ce_symbol": symbol if leg == "ce" else "", "pe_symbol": symbol if leg == "pe" else "",
                  "reason": reason, "entry_level": level, "entry_level_kind": kind}
         if self._append(dict(start)) is None:  # no durable record: no real orders
@@ -967,8 +1019,9 @@ class LlmBuyer:
         self.entries += 1
         self.live_meta = start
         self.live = LiveStraddle(day=self.day, strike=strike, ce_symbol=start["ce_symbol"], pe_symbol=start["pe_symbol"],
-                                 qty=self.qty, expiry_day=False, log=self._live_log, legs=(leg,), tag_prefix=self.tag_prefix)
-        if not self.live.place(self.order_client, leg, "BUY", self.qty):
+                                 qty=qty, expiry_day=False, log=self._live_log, legs=(leg,), tag_prefix=self.tag_prefix)
+        self.live_lot1_high = self.live_lot2_high = 0.0
+        if not self.live.place(self.order_client, leg, "BUY", qty):
             # The order intent could not be written, so nothing was sent: drop the trade and give the slot back.
             self.entries -= 1
             self.live, self.live_meta = None, {}
@@ -978,7 +1031,7 @@ class LlmBuyer:
             self._log.warning("LIVE llm_buyer buy NOT sent (ledger write failed) %s", symbol)
             return None
         self.last_reject = None
-        self._log.warning("LIVE llm_buyer bought %s x%d (%s)", symbol, self.qty, reason)
+        self._log.warning("LIVE llm_buyer bought %s x%d (%s)", symbol, qty, reason)
         return start
 
     def _exit(self, now: datetime, book: QuoteSource, why: str) -> dict[str, Any] | None:
@@ -1112,9 +1165,10 @@ class LlmBuyer:
         ls = self.live
         assert ls is not None
         leg = ls.legs[0]
-        avg, q = ls.cost(leg)
+        avg, _bought = ls.cost(leg)
+        q = ls.held(leg)  # what is still held (lot 1 may already be sold)
         stop = None
-        if avg > 0 and q > 0:  # the day-loss budget left, as a fraction of what the open lot cost
+        if avg > 0 and q > 0:  # the day-loss budget left, as a fraction of what the held lots cost
             budget = DAY_LOSS_LIMIT + self.day_realized - EST_CHARGES
             floor = self._profit_floor()
             if floor is not None:  # an extra trade on a winning day may only give back down to the floor
@@ -1134,6 +1188,8 @@ class LlmBuyer:
                               "entry_level": self.live_meta.get("entry_level"),
                               "entry_level_kind": self.live_meta.get("entry_level_kind")})
         if result is None:
+            if ls.phase == "holding":
+                self._live_exits(ls, leg, quote_bid(book.get(ls.symbol(leg))))
             if ls.manual_needed:
                 self.last_reject = "manual_needed"
             return None
@@ -1147,12 +1203,38 @@ class LlmBuyer:
                                          if result["reason"] == "stop" else result["reason"]), "live": True}
         return self._write_pending_close()
 
+    def _live_exits(self, ls: LiveStraddle, leg: str, bid: float | None) -> None:
+        """Paper's two automatic exits on the live position (paper = live, 23 Nov 2026): lot 1's trailing stop (armed at
+        PARTIAL_ARM_PCT over the average buy price, sold PARTIAL_TRAIL_PCT below the highest bid since) and the 40%
+        giveback stop on what is still held (armed at LOT2_ARM_PCT, sold once LOT2_GIVEBACK of the best gain is gone)."""
+        avg, _ = ls.cost(leg)
+        if not bid or bid <= 0 or avg <= 0:
+            return
+        lot = int(self.qty)
+        if ls.held(leg) > lot and not ls.partial_sold(leg) and not ls.working(leg):
+            if not self.live_lot1_high:
+                if bid >= avg * (1 + PARTIAL_ARM_PCT):
+                    self.live_lot1_high = bid
+            else:
+                self.live_lot1_high = max(self.live_lot1_high, bid)
+                if bid <= self.live_lot1_high * (1 - PARTIAL_TRAIL_PCT):
+                    ls.sell_part(self.order_client, leg, lot, "lot_trailing_stop")
+                    return
+        if not self.live_lot2_high:
+            if bid >= avg * (1 + LOT2_ARM_PCT):
+                self.live_lot2_high = bid
+            return
+        self.live_lot2_high = max(self.live_lot2_high, bid)
+        if bid <= avg + (self.live_lot2_high - avg) * (1 - LOT2_GIVEBACK):
+            ls.request_exit("lot2_giveback")
+
     def _write_pending_close(self) -> dict[str, Any] | None:
         ev = self._append(dict(self.pending_close or {}))
         if ev is None:  # keep trying: the day and month totals move only when the line is on disk
             self.last_reject = "ledger_write_failed_close_pending"
             return None
         self.pending_close, self.live, self.live_meta = None, None, {}
+        self.live_lot1_high = self.live_lot2_high = 0.0
         self.day_realized = round(self.day_realized + float(ev["pnl"]), 2)
         self.day_peak = max(self.day_peak, self.day_realized)
         m = str(ev["day"])[:7]
@@ -1177,7 +1259,7 @@ class LlmBuyer:
             "ok": True, "mode": "paper", "enabled": True, "book": self.strategy, "name": self.name,
             "model": MODEL_OPENROUTER, "prompt": PROMPT_VERSION,
             "window": f"entries {self.first_decision}–{self.last_entry} · open trade managed to {self.exit_at} "
-                      f"· every {self.decide_every_min} min",
+                      f"· every {self.decide_every_min} min" + (" (+ :30 while holding)" if HOLD_CHECK_30S else ""),
             "live_orders": self.live is not None, "live": self.live_flag.snapshot() if self.live_flag else None,
             "day": self.day, "entries": self.entries, "max_entries": self.max_entries,
             "max_entries_if_positive": self.max_entries_if_positive, "day_realized": round(self.day_realized),

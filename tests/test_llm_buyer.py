@@ -122,12 +122,12 @@ def test_paper_has_no_day_stop_and_no_entry_cap(tmp_path: Path) -> None:
     frame(b, "10:00", q)
     b.apply(t("10:00"), {"hm": "10:00", "action": "BUY_PE", "reason": "down"}, q)
     assert M.DAY_LOSS_LIMIT == 1_500.0
-    q.px[PE] = 40.0  # -51 x 65 = -3,315: far past the live day stop, but paper has none
+    q.px[PE] = 40.0  # -51 x 130 = -6,630: far past the live day stop, but paper has none
     assert frame(b, "10:01", q) is None and b.position is not None
     b.apply(t("10:02"), {"hm": "10:02", "action": "EXIT"}, q)
     frame(b, "10:04", q)
-    assert b.paper_realized < -3_000 and not b.stopped and b.decision_due(t("10:05"))
-    for i, hm in enumerate(("10:05", "10:10", "10:15", "10:20", "10:25")):  # well past 4 entries
+    assert b.paper_realized < -6_000 and not b.stopped and b.decision_due(t("10:05"))
+    for i, hm in enumerate(("10:05", "10:10", "10:15", "10:20", "10:25")):  # well past the old live cap
         frame(b, hm, q)
         assert b.apply(t(hm), {"hm": hm, "action": "BUY_CE"}, q)["event"] == "open"
         b.apply(t(hm), {"hm": hm, "action": "EXIT"}, q)
@@ -231,10 +231,10 @@ def test_live_single_leg_buy_llm_exit_and_close(tmp_path: Path) -> None:
     b.apply(t("10:45"), {"hm": "10:45", "action": "EXIT", "reason": "bounce"}, q)
     frame(b, "10:45", q)
     sells = [o for o in kite.orders if o["transaction_type"] == "SELL"]
-    assert len(sells) == 1 and sells[0]["quantity"] == 65
+    assert len(sells) == 1 and sells[0]["quantity"] == 130  # 2 lots, as paper
     kite.fill_all(109.0)
     ev = frame(b, "10:46", q)
-    assert ev["event"] == "close" and ev["live"] and ev["pnl_gross"] == round(19.0 * 65, 2)
+    assert ev["event"] == "close" and ev["live"] and ev["pnl_gross"] == round(19.0 * 130, 2)
     assert b.live is None and b.month_live_pnl[DAY[:7]] == ev["pnl"] and b.day_realized == ev["pnl"]
 
 
@@ -291,7 +291,7 @@ def test_unticking_the_box_sells_the_live_position_and_goes_on_in_paper(tmp_path
     flag.on = False  # operator unticks "Live LLM buyer"
     frame(b, "10:42", q)
     sells = [o for o in kite.orders if o["transaction_type"] == "SELL"]
-    assert len(sells) == 1 and sells[0]["quantity"] == 65 and not b.stopped
+    assert len(sells) == 1 and sells[0]["quantity"] == 130 and not b.stopped
     kite.fill_all(101.0)
     ev = frame(b, "10:43", q)
     assert ev["event"] == "close" and ev["live"] and ev["reason"] == "ui_off"
@@ -410,6 +410,9 @@ def test_engine_abandons_a_hung_llm_call_and_asks_again(monkeypatch) -> None:
         def decision_due(self, now):
             return len(asked) < 2
 
+        def decision_slot(self, now):
+            return now.strftime("%H:%M:%S") if len(asked) < 2 else None
+
         def state(self, now, book):
             return {}
 
@@ -429,6 +432,56 @@ def test_engine_abandons_a_hung_llm_call_and_asks_again(monkeypatch) -> None:
     asyncio.run(run())
     assert len(asked) == 2  # asked again after abandoning the hung call
     assert applied[0]["error"] == "llm_hung"
+
+
+def test_mid_minute_check_while_holding(tmp_path: Path, monkeypatch) -> None:
+    b, q = book_at(tmp_path), Book()
+    frame(b, "10:00", q)
+    at = lambda hms: datetime.fromisoformat(f"{DAY}T{hms}+05:30")  # noqa: E731
+    assert b.decision_slot(at("10:00:05")) == "10:00" and b.decision_slot(at("10:00:35")) == "10:00"  # flat: minutes only
+    b.decided.add("10:00")
+    assert b.decision_slot(at("10:00:35")) is None
+    b.apply(at("10:00:06"), {"hm": "10:00", "action": "BUY_CE"}, q)
+    assert b.decision_slot(at("10:00:20")) is None  # this minute already asked
+    assert b.decision_slot(at("10:00:30")) == "10:00:30"  # holding: the mid-minute check
+    b.decided.add("10:00:30")
+    assert b.decision_slot(at("10:00:45")) is None and b.decision_slot(at("10:05:00")) == "10:05"
+    assert b.decision_slot(at("10:01:31")) == "10:01:30"  # the :30 check runs every minute while holding
+    q.px[CE] = 95.0
+    ev = b.apply(at("10:00:32"), {"hm": "10:00:30", "action": "EXIT", "reason": "failed"}, q)
+    assert ev["event"] == "close" and ev["reason"] == "llm_exit" and b.position is None
+    frame(b, "10:05", q)
+    assert b.decision_slot(at("10:05:40")) == "10:05" and b.decision_slot(at("10:06:40")) is None  # flat: minute slots
+    monkeypatch.setattr(M, "HOLD_CHECK_30S", False)
+    b2 = book_at(tmp_path / "off")
+    frame(b2, "10:00", q)
+    b2.apply(at("10:00:06"), {"hm": "10:00", "action": "BUY_CE"}, q)
+    assert b2.decision_slot(at("10:00:30")) is None  # switched off: once a minute
+
+
+def test_stretch_limit_blocks_new_entries_for_the_day(tmp_path: Path) -> None:
+    b, q = book_at(tmp_path), Book()
+    bar = lambda hm, o, c: {"t": f"{DAY} {hm}", "o": o, "h": max(o, c), "l": min(o, c), "c": c}  # noqa: E731
+    bars = [bar("09:15", 24000.0, 24010.0), bar("09:16", 24010.0, 24200.0)]
+    b.on_frame(now=t("10:00"), feed={**feed(), "bars_today": bars}, book=q)
+    assert b.stretch_reached_at() is None and b.decision_due(t("10:00"))  # +0.83%: still open
+    ev = b.apply(t("10:00"), {"hm": "10:00", "action": "BUY_CE"}, q)
+    assert ev["event"] == "open"
+    bars.append(bar("09:17", 24200.0, 24300.0))  # +1.25% from the open
+    b.on_frame(now=t("10:05"), feed={**feed(), "bars_today": bars}, book=q)
+    assert b.stretch_reached_at() == "09:17"
+    assert b.decision_due(t("10:05")) and b.position is not None  # an open trade is still managed
+    q.px[CE] = 101.0
+    b.apply(t("10:05"), {"hm": "10:05", "action": "EXIT"}, q)
+    bars.append(bar("09:18", 24300.0, 24100.0))  # back inside 1.2%: the limit stays on for the day
+    b.on_frame(now=t("10:10"), feed={**feed(), "bars_today": bars}, book=q)
+    assert not b.decision_due(t("10:10"))
+    assert b.apply(t("10:10"), {"hm": "10:10", "action": "BUY_CE"}, q) is None and b.position is None
+    blocked = [e for e in ledger(b) if e.get("event") == "entry_blocked"]
+    assert blocked[-1]["why"] == "stretch_limit" and blocked[-1]["stretch_reached_at"] == "09:17"
+    bars[:] = [bar("09:15", 24000.0, 23700.0)]  # -1.25%: either way
+    b.on_frame(now=t("10:15"), feed={**feed(), "bars_today": bars}, book=q)
+    assert b.stretch_reached_at() == "09:15"
 
 
 def test_llm_errors_in_a_row_while_holding_sell(tmp_path: Path) -> None:
@@ -611,42 +664,53 @@ def _live_round_trip(b: LlmBuyer, kite: "FakeKite", q: Book, m0: int, buy: float
     assert b.live is None
 
 
-def test_live_extra_trades_only_while_positive(tmp_path: Path) -> None:
+def test_live_has_no_trade_cap_and_no_profit_lock(tmp_path: Path) -> None:
     kite, q = FakeKite(), Book()
     b = hour_book(tmp_path, order_client=kite, live_flag=Flag())
-    _live_round_trip(b, kite, q, 20, 100.0, 120.0)
-    _live_round_trip(b, kite, q, 25, 100.0, 120.0)  # two live winners
+    _live_round_trip(b, kite, q, 20, 100.0, 101.0)
+    _live_round_trip(b, kite, q, 25, 100.0, 101.0)
     frame(b, "09:30", q)
-    assert b.entries == 2 and b.day_realized > 0 and b.decision_due(t("09:30"))  # a 3rd is allowed
+    assert b.entries == 2 and b.decision_due(t("09:30"))  # a 3rd is allowed whatever the day's P&L
+    _live_round_trip(b, kite, q, 30, 100.0, 101.0)
+    frame(b, "09:35", q)
+    assert b.entries == 3 and b.decision_due(t("09:35")) and b._profit_floor() is None and not b.stopped
     kite2, q2 = FakeKite(), Book()
     b2 = hour_book(tmp_path / "loss", order_client=kite2, live_flag=Flag())
-    _live_round_trip(b2, kite2, q2, 20, 100.0, 95.0)
-    _live_round_trip(b2, kite2, q2, 25, 100.0, 95.0)  # two live losers
-    frame(b2, "09:30", q2)
-    assert b2.entries == 2 and b2.day_realized < 0 and not b2.decision_due(t("09:30"))
-    assert b2.apply(t("09:30"), {"hm": "09:30", "action": "BUY_PE"}, q2) is None
-    assert M.MAX_ENTRIES == 2 and M.MAX_ENTRIES_IF_POSITIVE == 4
+    _live_round_trip(b2, kite2, q2, 20, 100.0, 88.0)  # -12 x 130 = -1,560: past the -1,500 day stop
+    frame(b2, "09:33", q2)  # past the 10-minute loss pause, so only the day stop blocks
+    assert b2.day_realized - M.EST_CHARGES <= -M.DAY_LOSS_LIMIT and not b2.decision_due(t("09:33"))
+    assert b2.apply(t("09:33"), {"hm": "09:33", "action": "BUY_PE"}, q2) is None
 
 
-def test_live_profit_lock_sells_an_extra_trade_at_half_the_days_best(tmp_path: Path, monkeypatch) -> None:
+def test_live_buys_two_lots_and_runs_papers_two_exits(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("atlas_lite.live_straddle.STOP_CONFIRM_S", 0.0)
     kite, q = FakeKite(), Book()
     b = hour_book(tmp_path, order_client=kite, live_flag=Flag())
-    frame(b, "09:29", q)
-    b.entries, b.day_realized, b.day_peak = 2, 1_200.0, 1_200.0  # two live winners closed earlier today
-    best = b.day_realized
-    frame(b, "09:30", q)
-    b.apply(t("09:30"), {"hm": "09:30", "action": "BUY_CE"}, q)  # the 3rd, extra live trade
+    frame(b, "09:40", q)
+    b.apply(t("09:40"), {"hm": "09:40", "action": "BUY_CE", "reason": "up"}, q)
+    assert [(o["transaction_type"], o["quantity"]) for o in kite.orders] == [("BUY", 130)]  # 2 lots, as paper
+    assert any(e["event"] == "live_start" and e["qty"] == 130 and e["lot_size"] == 65 for e in ledger(b))
     kite.fill_all(100.0)
-    frame(b, "09:31", q)
+    frame(b, "09:41", q)
     assert b.live.phase == "holding"
-    q.px[CE] = 100.0 + 0.5 - (best * 0.6 / 65)  # gives back more than half of the day's best
-    frame(b, "09:32", q)
-    frame(b, "09:33", q)
-    assert [o["transaction_type"] for o in kite.orders][-1] == "SELL"  # sold by the profit lock
-    kite.fill_all(q.px[CE] - 0.5)
-    ev = frame(b, "09:34", q)
-    assert ev["event"] == "close" and b.stopped == "profit_lock" and b.day_realized > 0
+    q.px[CE] = 115.5  # bid 115: +15% -> both trails armed, high 115
+    frame(b, "09:42", q)
+    assert b.live_lot1_high == 115.0 and b.live_lot2_high == 115.0 and len(kite.orders) == 1
+    q.px[CE] = 113.0  # bid 112.5 <= 115 x 0.98: lot 1 sold by its trailing stop
+    frame(b, "09:43", q)
+    assert [(o["transaction_type"], o["quantity"]) for o in kite.orders][-1] == ("SELL", 65)
+    assert any(e["event"] == "live_partial" and e["reason"] == "lot_trailing_stop" for e in ledger(b))
+    kite.fill_all(112.5)
+    frame(b, "09:44", q)
+    assert b.live.held("ce") == 65 and b.live.phase == "holding" and len(kite.orders) == 2  # only once
+    q.px[CE] = 109.5  # bid 109 <= 100 + 15 x 0.6 = 109: 40% of the best gain given back
+    frame(b, "09:45", q)
+    frame(b, "09:46", q)
+    assert [(o["transaction_type"], o["quantity"]) for o in kite.orders][-1] == ("SELL", 65)
+    kite.fill_all(109.0)
+    ev = frame(b, "09:47", q)
+    assert ev["event"] == "close" and ev["live"] and ev["reason"] == "lot2_giveback"
+    assert ev["pnl_gross"] == round(12.5 * 65 + 9.0 * 65, 2)
 
 
 def test_previous_session_ohlc_reaches_the_llm(tmp_path: Path) -> None:
@@ -716,9 +780,7 @@ def test_prompt_v2_view_has_chart_inputs_and_no_day_pnl(tmp_path: Path) -> None:
     assert "realised_pnl_today_rs" not in b.state(t("09:44"), q)  # a loss never reaches the LLM's view
     live = hour_book(tmp_path / "live", order_client=FakeKite(), live_flag=Flag())
     live.on_frame(now=t("09:44"), feed={**feed(spot=24046.0), "bars_today": bars}, book=q)
-    assert live.state(t("09:44"), q)["entries_left_today"] == 2
-    live.day_realized, live.entries = 500.0, 2
-    assert live.state(t("09:44"), q)["entries_left_today"] == 2  # winning live day: up to 4 in all
+    assert "entries_left_today" not in live.state(t("09:44"), q)  # no trade cap (paper = live, 23 Nov 2026)
     b2 = hour_book(tmp_path / "nobars")
     b2.on_frame(now=t("09:44"), feed=feed(), book=q)
     st2 = b2.state(t("09:44"), q)

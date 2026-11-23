@@ -78,6 +78,7 @@ class Intent:
     seen: bool = False
     cancel_at: float = 0.0  # last cancel request (re-sent every CANCEL_AFTER_S while still working)
     logged: tuple = ()  # last (status, filled, avg) written to the ledger (the order book only lists today)
+    partial: bool = False  # a sale of part of the holding while the rest stays held (not an exit sell)
 
     @property
     def final(self) -> bool:
@@ -140,13 +141,15 @@ class LiveStraddle:
         return (v / q if q else 0.0), q
 
     # ---- orders ----
-    def place(self, client: Any, leg: str, side: str, qty: int) -> bool:
+    def place(self, client: Any, leg: str, side: str, qty: int, partial: bool = False) -> bool:
         """Durable intent first, then send. Returns False if the intent could not be written (nothing sent)."""
         self.seq += 1
         tag = f"{self.tag_prefix}{self.day[5:7]}{self.day[8:10]}{self.seq:02d}{leg}{'b' if side == 'BUY' else 's'}"
-        it = Intent(tag=tag, leg=leg, side=side, qty=int(qty), symbol=self.symbol(leg), sent_at=time.time())
+        it = Intent(tag=tag, leg=leg, side=side, qty=int(qty), symbol=self.symbol(leg), sent_at=time.time(),
+                    partial=bool(partial))
         if self.log({"event": "order_intent", "tag": tag, "leg": leg, "side": side, "qty": it.qty,
-                     "symbol": it.symbol, "sent_at": it.sent_at, "seq": self.seq}) is None:
+                     "symbol": it.symbol, "sent_at": it.sent_at, "seq": self.seq,
+                     **({"partial": True} if partial else {})}) is None:
             self.seq -= 1
             return False
         self.intents.append(it)
@@ -314,6 +317,22 @@ class LiveStraddle:
             return self._exit_step(client)
         return None
 
+    def partial_sold(self, leg: str) -> bool:
+        """A part-sale of this leg has been sent (working or done) and not written off."""
+        return any(i.partial and i.leg == leg and i.status != "NOT_PLACED" and (not i.final or i.filled > 0)
+                   for i in self.intents)
+
+    def sell_part(self, client: Any, leg: str, qty: int, reason: str) -> bool:
+        """Sell part of what is held while the rest stays held (the LLM buyer's lot-1 trailing stop). Only while
+        holding, with nothing of ours working on the leg, and for less than what is held. True if sent."""
+        q = int(qty)
+        if self.phase != "holding" or self.working(leg) or q <= 0 or q >= self.held(leg):
+            return False
+        if not self.place(client, leg, "SELL", q, partial=True):
+            return False
+        self.log({"event": "live_partial", "leg": leg, "qty": q, "reason": reason})
+        return True
+
     def request_exit(self, reason: str) -> None:
         """Sell what is held at the next frame (an exit decided by the book, e.g. the LLM buyer's EXIT).
         Buys still working finish first; the entering phase then moves straight to exiting."""
@@ -403,10 +422,11 @@ class LiveStraddle:
             if kind == "order_intent":
                 it = Intent(tag=str(ev["tag"]), leg=str(ev["leg"]), side=str(ev["side"]), qty=int(ev["qty"]),
                             symbol=str(ev["symbol"]), sent_at=float(ev.get("sent_at") or 0.0))
+                it.partial = bool(ev.get("partial"))
                 ls.intents.append(it)
                 by_tag[it.tag] = it
                 ls.seq = max(ls.seq, int(ev.get("seq") or 0))
-                if it.side == "SELL":
+                if it.side == "SELL" and not it.partial:  # a part-sale is not an exit sell (backoff / alarms)
                     ls.sells[it.leg] += 1
             elif kind == "order_sent" and ev.get("tag") in by_tag:
                 it = by_tag[ev["tag"]]
@@ -436,7 +456,7 @@ class LiveStraddle:
             if it.status == "NOT_PLACED" and it.send != "refused":
                 it.status, it.seen = "SENT", False  # a later listing may still show it: look again
         for leg in ls.legs:  # the sell backoff continues from the last sell sent before the restart
-            sent = [i.sent_at for i in ls.intents if i.leg == leg and i.side == "SELL"]
+            sent = [i.sent_at for i in ls.intents if i.leg == leg and i.side == "SELL" and not i.partial]
             n = ls.sells[leg]
             if sent and n:
                 ls.next_sell_at[leg] = max(sent) + (SELL_BACKOFF_S[n] if n < len(SELL_BACKOFF_S) else MANUAL_RETRY_S)

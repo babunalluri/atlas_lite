@@ -7080,8 +7080,7 @@
         ? `${pos.live ? "LIVE" : "paper"} ${pos.option} ${pos.symbol} x${pos.qty} @ ${pos.entry} · open PnL ${pos.open_pnl ?? "—"}`
           + (pos.manual_needed ? " · MANUAL CHECK NEEDED" : "")
         : `FLAT${lb.stopped ? ` (${{ day_loss: "day loss stop hit", done_for_day: "done for today", profit_lock: "profit lock: kept half the day's best" }[lb.stopped] || lb.stopped})` : ""}`;
-      const cap = lb.max_entries_if_positive > lb.max_entries ? ` (up to ${lb.max_entries_if_positive} while positive)` : "";
-      const liveTxt = lb.live ? ` · live today: ${lb.entries ?? 0}/${lb.max_entries ?? 2}${cap} trades, PnL ${lb.day_realized ?? 0} (stop −${lb.day_loss_limit ?? 1500})` : " · paper only";
+      const liveTxt = lb.live ? ` · live today: ${lb.entries ?? 0} trades, PnL ${lb.day_realized ?? 0} (day stop −${lb.day_loss_limit ?? 1500})` : " · paper only";
       const model = String(lb.model || "").replace(/^[^/]+\//, "");
       line.textContent = `${lb.name || "LLM buyer"} · ${model} · ${head} · paper today: ${lb.paper_entries ?? 0} trades, PnL ${lb.paper_realized ?? 0} (no limits)`
         + `${liveTxt}${said}`

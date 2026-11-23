@@ -3321,10 +3321,11 @@ class FeedEngine:
                     pending = None
                     allow = self._agent_gates.entries_allowed(book.strategy, now) if self._agent_gates else True
                     await asyncio.to_thread(book.apply, now, out, self.book, allow_entry=allow)
-                if pending is None and book.decider is not None and book.decision_due(now):
-                    pending_hm, pending_at = hm, time.monotonic()
+                slot = book.decision_slot(now) if pending is None and book.decider is not None else None
+                if slot is not None:  # "HH:MM", or "HH:MM:30" for the mid-minute check while holding
+                    pending_hm, pending_at = slot, time.monotonic()
                     pending_state = book.state(now, self.book)
-                    book.decided.add(hm)  # one question per minute slot, however long the reply takes (a hung one: next free minute)
+                    book.decided.add(slot)  # one question per slot, however long the reply takes (a hung one: next free slot)
                     pending = asyncio.create_task(asyncio.to_thread(book.decider.decide, pending_state))
                 if book.live_flag is not None and self._llm_buyer_live is not None and hm >= "15:30":
                     if self._llm_buyer_live.turn_off_if_on(source="day_end"):
