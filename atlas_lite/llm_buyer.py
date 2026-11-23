@@ -13,7 +13,8 @@ this all-day, 1-minute setup has not been replayed.
 Code, not the LLM, owns the risk. Paper and live run the same trading rules (operator's decision 23 Nov 2026):
 - 2 lots a trade; lot 1's trailing stop (armed +10%, sold 2% off its best bid) and the 40% giveback stop on the
   rest; the day-direction entry rule; the 10-minute pause after a loss; the stretch limit (no new entry once NIFTY
-  has been 1.2% from the open); no trade cap, no profit lock.
+  has been 1.2% from the open); the NIFTY stop (a trade not yet in profit is sold once NIFTY is 15 pts against it);
+  no trade cap, no profit lock.
 - Live only (safety limits; paper has none): day loss stop DAY_LOSS_LIMIT (today's closed live P&L plus the open
   position at bids, after estimated charges; the budget left is a stop on the open trade; hit -> sold and no more
   live entries today) and the month stop MONTH_LOSS_LIMIT. No new entry after the last entry time; everything is
@@ -100,6 +101,12 @@ DAY_DIRECTION_RULE = True  # tests of other behaviour switch it off ("any" side 
 # Nov (scratchpad stop_rules_test.py): -Rs 12,179 -> +Rs 3,265; only 20 Nov (+1,447) and 23 Nov (+13,998) reached
 # 1.2%, no day worse. Thin evidence (2 days). 0 switches it off.
 STRETCH_LIMIT_PCT = 1.2
+# NIFTY stop (operator's call, 23 Nov 2026): a trade whose lot 1 has not been sold yet is sold once a closed 1-min
+# NIFTY candle is NIFTY_STOP_PTS or more against it from the last closed candle at entry (nifty_ref). Paper and live.
+# Tested on the real paper trades 11-23 Nov (scratchpad early_exit_test.py, depth-tape bids): -Rs 12,179 -> -Rs 9,865,
+# better on 6 days, worse on none (15 trades cut); option-price stops (-5/-8/-10%) and time stops were mixed (they
+# also sold winners that dipped first). 0 switches it off.
+NIFTY_STOP_PTS = 15.0
 # Pause after a loss (operator's call, 20 Nov 2026): no new entry for LOSS_PAUSE_MIN minutes after a trade (paper or
 # live) closes at a loss; the LLM is not asked while flat in the pause. Tested (scratchpad cooldown_test.py, 46 trades
 # kept by the day-direction rule, 11-20 Nov, lot-2 40% exit): +Rs 2,078 -> +Rs 8,770, worst day -7,697 -> -6,146,
@@ -365,6 +372,7 @@ class Position:
     banked_charges: float = 0.0
     lot1_high: float = 0.0  # highest bid since lot 1's trailing stop armed (0 = not armed; memory only)
     lot2_high: float = 0.0  # highest bid since the lot-2 giveback stop armed (0 = not armed; memory only)
+    nifty_ref: float | None = None  # NIFTY's last closed 1-min candle at entry (the NIFTY stop's reference)
 
 
 @dataclass
@@ -537,7 +545,8 @@ class LlmBuyer:
                                              qty=int(ev["qty"]), fill=float(ev["fill"]), opened_at=str(ev.get("ts")),
                                              reason=str(ev.get("reason") or ""), entry_level=_f(ev.get("entry_level")),
                                              entry_level_kind=str(ev.get("entry_level_kind") or ""),
-                                             lot_size=int(ev.get("lot_size") or ev["qty"]))
+                                             lot_size=int(ev.get("lot_size") or ev["qty"]),
+                                             nifty_ref=_f(ev.get("nifty_ref")))
             elif kind == "partial_close" and self.position is not None:
                 self.position.qty -= int(ev.get("qty") or 0)
                 self.position.banked_gross += float(ev.get("pnl_gross") or 0.0)
@@ -684,6 +693,18 @@ class LlmBuyer:
         except (KeyError, TypeError, ValueError):
             return None
         return round((now_px / open_px - 1) * 100, 3) if open_px > 0 else None
+
+    def last_close(self) -> float | None:
+        """NIFTY's last closed 1-min candle today (None if none)."""
+        bars = self._today_bars(self.last_feed)
+        return _f(bars[-1].get("c")) if bars else None
+
+    def nifty_stop_hit(self, leg: str, ref: float | None) -> bool:
+        """The NIFTY stop: the last closed candle is NIFTY_STOP_PTS or more against a `leg` trade from `ref`."""
+        now = self.last_close()
+        if not NIFTY_STOP_PTS or ref is None or now is None:
+            return False
+        return (ref - now if leg == "ce" else now - ref) >= NIFTY_STOP_PTS
 
     def stretch_reached_at(self) -> str | None:
         """The minute ("HH:MM") today's first 1-min candle closed STRETCH_LIMIT_PCT or more from the open, else None."""
@@ -951,18 +972,21 @@ class LlmBuyer:
             self.last_reject = "no_quote"
             return None
         level, kind = self._traded_level(leg, now)
+        ref = self.last_close()
         if self.live_enabled():
-            return self._open_live(now, leg, str(symbol), strike, px, reason, level, kind)
+            return self._open_live(now, leg, str(symbol), strike, px, reason, level, kind, ref)
         qty = self.qty * PAPER_LOTS
         ev = self._append({"event": "open", "ts": now.isoformat(), "day": self.day, "leg": leg, "symbol": symbol,
                            "strike": strike, "qty": qty, "lot_size": self.qty, "fill": round(px, 2), "entry": round(px, 2),
-                           "side": "long", "reason": reason, "entry_level": level, "entry_level_kind": kind})
+                           "side": "long", "reason": reason, "entry_level": level, "entry_level_kind": kind,
+                           "nifty_ref": ref})
         if ev is None:  # no ledger line, no position (a restart could not know about it)
             self.last_reject = "ledger_write_failed"
             return None
         self.paper_entries += 1
         self.position = Position(day=self.day, leg=leg, symbol=str(symbol), strike=strike, qty=qty, lot_size=self.qty, fill=round(px, 2),
-                                 opened_at=now.isoformat(), reason=reason, entry_level=level, entry_level_kind=kind)
+                                 opened_at=now.isoformat(), reason=reason, entry_level=level, entry_level_kind=kind,
+                                 nifty_ref=ref)
         self.last_reject = None
         return ev
 
@@ -990,7 +1014,7 @@ class LlmBuyer:
         return (best[0], best[1]) if best else (round(float(spot), 1), "nifty_at_entry")
 
     def _open_live(self, now: datetime, leg: str, symbol: str, strike: int, ask: float, reason: str,
-                   level: float | None = None, kind: str = "") -> dict[str, Any] | None:
+                   level: float | None = None, kind: str = "", nifty_ref: float | None = None) -> dict[str, Any] | None:
         m = self.day[:7]
         if self.month_live_pnl.get(m, 0.0) <= -MONTH_LOSS_LIMIT:
             self.last_reject = "month_loss_limit"
@@ -1012,7 +1036,7 @@ class LlmBuyer:
                  "strike": strike, "legs": [leg], "tag_prefix": self.tag_prefix, "qty": qty, "lot_size": self.qty,
                  "expiry_day": False,
                  "ce_symbol": symbol if leg == "ce" else "", "pe_symbol": symbol if leg == "pe" else "",
-                 "reason": reason, "entry_level": level, "entry_level_kind": kind}
+                 "reason": reason, "entry_level": level, "entry_level_kind": kind, "nifty_ref": nifty_ref}
         if self._append(dict(start)) is None:  # no durable record: no real orders
             self.last_reject = "ledger_write_failed"
             return None
@@ -1085,7 +1109,10 @@ class LlmBuyer:
             return ev
         if hm >= self.exit_at:
             return self._exit(now, book, "square_off")
-        # Otherwise the lot-1 trail, the lot-2 giveback stop and the LLM's exit (or the forced exit) close a paper trade.
+        # Otherwise the NIFTY stop (lot 1 not sold yet), the lot-1 trail, the lot-2 giveback stop and the LLM's exit (or
+        # the forced exit) close a paper trade.
+        if not self.position.banked_gross and self.nifty_stop_hit(self.position.leg, self.position.nifty_ref):
+            return self._exit(now, book, "nifty_stop")
         return self._partial_take(now, book) or self._lot2_giveback(now, book)
 
     def _lot2_giveback(self, now: datetime, book: QuoteSource) -> dict[str, Any] | None:
@@ -1207,6 +1234,9 @@ class LlmBuyer:
         """Paper's two automatic exits on the live position (paper = live, 23 Nov 2026): lot 1's trailing stop (armed at
         PARTIAL_ARM_PCT over the average buy price, sold PARTIAL_TRAIL_PCT below the highest bid since) and the 40%
         giveback stop on what is still held (armed at LOT2_ARM_PCT, sold once LOT2_GIVEBACK of the best gain is gone)."""
+        if not ls.partial_sold(leg) and self.nifty_stop_hit(leg, _f(self.live_meta.get("nifty_ref"))):
+            ls.request_exit("nifty_stop")
+            return
         avg, _ = ls.cost(leg)
         if not bid or bid <= 0 or avg <= 0:
             return

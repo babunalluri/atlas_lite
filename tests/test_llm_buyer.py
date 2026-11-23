@@ -713,6 +713,68 @@ def test_live_buys_two_lots_and_runs_papers_two_exits(tmp_path: Path, monkeypatc
     assert ev["pnl_gross"] == round(12.5 * 65 + 9.0 * 65, 2)
 
 
+def _close_bars(*closes, day=DAY):
+    out = []
+    for i, c in enumerate(closes):
+        m = 15 + i
+        out.append({"t": f"{day} {9 + m // 60:02d}:{m % 60:02d}", "o": c, "h": c, "l": c, "c": c})
+    return out
+
+
+def test_nifty_stop_sells_a_trade_not_yet_in_profit(tmp_path: Path) -> None:
+    b, q = book_at(tmp_path), Book()
+    closes = [24000.0, 24010.0, 24020.0]
+    b.on_frame(now=t("10:00"), feed={**feed(), "bars_today": _close_bars(*closes)}, book=q)
+    ev = b.apply(t("10:00"), {"hm": "10:00", "action": "BUY_CE"}, q)
+    assert ev["nifty_ref"] == 24020.0 and b.position.nifty_ref == 24020.0
+    closes.append(24006.0)  # 14 pts against: kept
+    assert b.on_frame(now=t("10:01"), feed={**feed(), "bars_today": _close_bars(*closes)}, book=q) is None
+    closes.append(24005.0)  # 15 against: sold
+    q.px[CE] = 96.0
+    ev = b.on_frame(now=t("10:02"), feed={**feed(), "bars_today": _close_bars(*closes)}, book=q)
+    assert ev["event"] == "close" and ev["reason"] == "nifty_stop" and b.position is None
+
+
+def test_nifty_stop_put_side_and_not_after_lot_one_is_sold(tmp_path: Path) -> None:
+    b, q = book_at(tmp_path), Book()
+    closes = [24000.0]
+    b.on_frame(now=t("10:00"), feed={**feed(), "bars_today": _close_bars(*closes)}, book=q)
+    b.apply(t("10:00"), {"hm": "10:00", "action": "BUY_PE"}, q)
+    b.position.banked_gross = 500.0  # lot 1 already sold by its trail: the giveback stop owns the rest
+    b.position.qty = 65
+    closes.append(24030.0)  # 30 pts against a put
+    ev = b.on_frame(now=t("10:01"), feed={**feed(), "bars_today": _close_bars(*closes)}, book=q)
+    assert ev is None and b.position is not None
+    b2, q2 = book_at(tmp_path / "b2"), Book()
+    closes2 = [24000.0]
+    b2.on_frame(now=t("10:00"), feed={**feed(), "bars_today": _close_bars(*closes2)}, book=q2)
+    b2.apply(t("10:00"), {"hm": "10:00", "action": "BUY_PE"}, q2)
+    closes2.append(24015.0)
+    ev = b2.on_frame(now=t("10:01"), feed={**feed(), "bars_today": _close_bars(*closes2)}, book=q2)
+    assert ev["reason"] == "nifty_stop"
+
+
+def test_live_nifty_stop_sells_both_lots(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("atlas_lite.live_straddle.STOP_CONFIRM_S", 0.0)
+    kite, q = FakeKite(), Book()
+    b = hour_book(tmp_path, order_client=kite, live_flag=Flag())
+    closes = [24000.0]
+    b.on_frame(now=t("09:40"), feed={**feed(), "bars_today": _close_bars(*closes)}, book=q)
+    b.apply(t("09:40"), {"hm": "09:40", "action": "BUY_CE", "reason": "up"}, q)
+    assert any(e["event"] == "live_start" and e["nifty_ref"] == 24000.0 for e in ledger(b))
+    kite.fill_all(100.0)
+    b.on_frame(now=t("09:41"), feed={**feed(), "bars_today": _close_bars(*closes)}, book=q)
+    assert b.live.phase == "holding"
+    closes.append(23985.0)
+    q.px[CE] = 98.0
+    b.on_frame(now=t("09:42"), feed={**feed(), "bars_today": _close_bars(*closes)}, book=q)
+    b.on_frame(now=t("09:43"), feed={**feed(), "bars_today": _close_bars(*closes)}, book=q)
+    assert [(o["transaction_type"], o["quantity"]) for o in kite.orders][-1] == ("SELL", 130)
+    kite.fill_all(97.5)
+    ev = b.on_frame(now=t("09:44"), feed={**feed(), "bars_today": _close_bars(*closes)}, book=q)
+    assert ev["event"] == "close" and ev["live"] and ev["reason"] == "nifty_stop"
+
+
 def test_previous_session_ohlc_reaches_the_llm(tmp_path: Path) -> None:
     bars = [{"t": "2026-11-06 09:15", "o": 24900.0, "h": 24950.0, "l": 24880.0, "c": 24940.0},
             {"t": "2026-11-06 15:29", "o": 25010.0, "h": 25040.0, "l": 25000.0, "c": 25030.4},
