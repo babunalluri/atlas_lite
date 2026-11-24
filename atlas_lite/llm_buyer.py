@@ -1,11 +1,11 @@
 """LLM option buyer (OpenAI GPT-6.2 Sol from 20 Nov 2026; Claude Sonnet 5.5 11-18 Nov, Mistral Nemo 19 Nov): ATM NIFTY CE or PE. Paper by default.
 
 Every minute from 09:16 the LLM sees what a discretionary trader would see at that minute (new trades until
-15:00; a trade still open is managed every minute, plus a check at hh:mm:30 (HOLD_CHECK_30S), until it closes, at the
-latest 15:08) (NIFTY
-path and range, % change, VIX and its change, ATM IV against today's high/low, IV percentile, PCR, futures OI
-vs day high, ATM call/put prices and the straddle path, days to expiry, its own position and P&L) and answers
-BUY_CE / BUY_PE / WAIT / DONE_FOR_DAY when flat, HOLD / EXIT when holding. It also sees the previous session's
+15:00; a trade still open is managed every minute, plus a check at hh:mm:30 while it is red (HOLD_CHECK_30S),
+until it closes, at the latest 15:08) (NIFTY path and range, % change, VIX and its change, ATM IV against today's
+high/low, IV percentile, PCR, futures OI vs day high, ATM call/put prices and the straddle path, days to expiry,
+its own position and P&L) and answers BUY_CE / BUY_PE / WAIT / DONE_FOR_DAY when flat, HOLD / EXIT when
+holding. It also sees the previous session's
 open, high, low and close (from the engine's 1-minute bars). Evidence is thin: the 8 Nov 2026 replays (gpt-4.1,
 dates hidden) were 5-minute, full-day, on four hand-picked days (+Rs 6,581 / -Rs 1,296 / +Rs 3,449 / -Rs 2,444);
 this all-day, 1-minute setup has not been replayed.
@@ -117,6 +117,11 @@ LOSS_PAUSE_MIN = 10
 # (scratchpad check30.py, real Sol calls): +Rs 5,449 -> +Rs 7,039, 10 of 24 trades changed. Doubles the calls while
 # holding. False switches it off. Entries are still asked only once a minute.
 HOLD_CHECK_30S = True
+# Red only (operator's call, 24 Nov 2026): the :30 check runs only while the lots still held are below the price paid
+# (bid < fill; no quote counts as red). A green trade is asked once a minute (its trail / giveback stops guard the
+# profit). 20 Nov re-scored from the same replay: always +Rs 7,040, red only +Rs 6,967 (actual +Rs 5,449); red only
+# keeps 10:37's +1,251 winner that the extra check cut to +192, and saves calls.
+HOLD_CHECK_30S_RED_ONLY = True
 PARTIAL_ARM_PCT = 0.10
 PARTIAL_TRAIL_PCT = 0.02
 # Lot-2 giveback stop (operator's call, 20 Nov 2026; paper only): once the bid is LOT2_ARM_PCT above the price paid,
@@ -431,6 +436,7 @@ class LlmBuyer:
     last_loss_exit_at: str = ""  # ISO time of today's last losing close (starts the LOSS_PAUSE_MIN pause)
     live_lot1_high: float = 0.0  # live lot-1 trailing stop: highest bid since armed (0 = not armed; memory only)
     live_lot2_high: float = 0.0  # live 40% giveback: highest bid since armed (0 = not armed; memory only)
+    hold_red: bool = True  # the held lots are below the price paid (updated every frame; see HOLD_CHECK_30S_RED_ONLY)
     _log: Any = field(default_factory=lambda: get_logger("atlas_lite.llm_buyer"), repr=False)
 
     def __post_init__(self) -> None:
@@ -633,6 +639,18 @@ class LlmBuyer:
             return None
         return (bid - self.position.fill) * self.position.qty + self.position.banked_gross  # the whole trade, both lots
 
+    def _held_red(self, book: QuoteSource) -> bool:
+        """Are the lots still held below the price paid? (no quote: True, so the :30 check still runs)"""
+        if self.live is not None:
+            leg = self.live.legs[0]
+            avg, _ = self.live.cost(leg)
+            bid = quote_bid(book.get(self.live.symbol(leg))) or quote_ltp(book.get(self.live.symbol(leg)))
+            return not (avg and bid) or bid < avg
+        if self.position is None:
+            return True
+        bid = self._sell_px(book, self.position.symbol)
+        return bid is None or bid < self.position.fill
+
     def day_pnl(self, book: QuoteSource) -> float | None:
         o = self._open_pnl(book)
         held = self.position is not None or self.live is not None
@@ -656,7 +674,7 @@ class LlmBuyer:
         if holding:
             if self.live is not None and self.live.phase != "holding":
                 return None
-            if HOLD_CHECK_30S and now.second >= 30:
+            if HOLD_CHECK_30S and now.second >= 30 and (self.hold_red or not HOLD_CHECK_30S_RED_ONLY):
                 # The second half of a minute uses the :30 slot (a minute slot not asked yet is not asked late as well).
                 return None if f"{hm}:30" in self.decided else f"{hm}:30"
             return None if (now.minute % self.decide_every_min or hm in self.decided) else hm
@@ -1090,6 +1108,10 @@ class LlmBuyer:
         if feed and not feed.get("error") and "09:15" <= hm <= "15:30":
             self._record(hm, feed)
         self._track_peak(now, book)
+        try:  # never let the :30 bookkeeping stop the exits below
+            self.hold_red = self._held_red(book)
+        except Exception:  # noqa: BLE001
+            self.hold_red = True
         if not self.paper_enabled():  # "Paper" box off: close whatever is open, then stay idle (no LLM calls)
             if self.live is not None and self.live.phase in ("entering", "holding"):
                 self.live.request_exit("paper_off")
@@ -1289,7 +1311,7 @@ class LlmBuyer:
             "ok": True, "mode": "paper", "enabled": True, "book": self.strategy, "name": self.name,
             "model": MODEL_OPENROUTER, "prompt": PROMPT_VERSION,
             "window": f"entries {self.first_decision}–{self.last_entry} · open trade managed to {self.exit_at} "
-                      f"· every {self.decide_every_min} min" + (" (+ :30 while holding)" if HOLD_CHECK_30S else ""),
+                      f"· every {self.decide_every_min} min" + ((" (+ :30 while holding and red)" if HOLD_CHECK_30S_RED_ONLY else " (+ :30 while holding)") if HOLD_CHECK_30S else ""),
             "live_orders": self.live is not None, "live": self.live_flag.snapshot() if self.live_flag else None,
             "day": self.day, "entries": self.entries, "max_entries": self.max_entries,
             "max_entries_if_positive": self.max_entries_if_positive, "day_realized": round(self.day_realized),

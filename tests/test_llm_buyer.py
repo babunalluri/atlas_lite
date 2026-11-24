@@ -459,6 +459,23 @@ def test_mid_minute_check_while_holding(tmp_path: Path, monkeypatch) -> None:
     assert b2.decision_slot(at("10:00:30")) is None  # switched off: once a minute
 
 
+def test_mid_minute_check_only_while_red(tmp_path: Path, monkeypatch) -> None:
+    b, q = book_at(tmp_path), Book()
+    at = lambda hms: datetime.fromisoformat(f"{DAY}T{hms}+05:30")  # noqa: E731
+    frame(b, "10:00", q)
+    b.apply(at("10:00:06"), {"hm": "10:00", "action": "BUY_CE"}, q)  # bought at the ask 100.5
+    q.px[CE] = 110.0  # bid 109.5: green
+    b.on_frame(now=at("10:01:31"), feed=feed(), book=q)
+    assert not b.hold_red and b.decision_slot(at("10:01:31")) is None  # green: once a minute only
+    q.px[CE] = 99.0  # bid 98.5: red
+    b.on_frame(now=at("10:01:32"), feed=feed(), book=q)
+    assert b.hold_red and b.decision_slot(at("10:01:32")) == "10:01:30"
+    monkeypatch.setattr(M, "HOLD_CHECK_30S_RED_ONLY", False)
+    q.px[CE] = 110.0
+    b.on_frame(now=at("10:02:31"), feed=feed(), book=q)
+    assert b.decision_slot(at("10:02:31")) == "10:02:30"  # switched off: every :30 while holding
+
+
 def test_stretch_limit_blocks_new_entries_for_the_day(tmp_path: Path) -> None:
     b, q = book_at(tmp_path), Book()
     bar = lambda hm, o, c: {"t": f"{DAY} {hm}", "o": o, "h": max(o, c), "l": min(o, c), "c": c}  # noqa: E731
