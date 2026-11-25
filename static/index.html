@@ -2509,8 +2509,8 @@
               <dl class="book-inputs-list" id="llmBuyerInputsList"></dl>
             </details>
           </article>
-          <article class="book-card" data-src="coinBuyerLine" data-title="Coin buyer · LLM control">
-            <div class="history-detail book-src" id="coinBuyerLine">Coin buyer · LLM control: —</div>
+          <article class="book-card" data-src="coinBuyerLine" data-title="Coin buyer · random, no LLM">
+            <div class="history-detail book-src" id="coinBuyerLine">Coin buyer · random, no LLM: —</div>
           </article>
           <article class="book-card" data-src="g2t10Line" data-title="G2T10 · coded baseline">
             <div class="history-detail book-src" id="g2t10Line">G2T10 · coded baseline: —</div>
@@ -7095,14 +7095,16 @@
     function renderCoinBuyer(c) {
       const line = document.getElementById("coinBuyerLine");
       if (!line) return;
-      const name = c.name || "Coin buyer · LLM control";
+      const name = c.name || "Coin buyer · random, no LLM";
       if (!c.enabled) {
         line.textContent = `${name} · off (ATLAS_LITE_PAPER_COIN_BUYER=0)`;
         return;
       }
       const p = c.position;
       const head = p ? `holding ${p.option} ${p.symbol} x${p.qty} @ ${p.entry} · open PnL ${p.open_pnl ?? "—"}` : "FLAT";
-      line.textContent = `${name} · ${head} · today: ${c.paper_entries ?? 0} trades, PnL ${c.paper_realized ?? 0}`
+      const d = c.last_decision;
+      const said = d ? ` · ${d.hm} ${d.action}${d.reason ? ` (${d.reason})` : ""}` : "";
+      line.textContent = `${name} · ${head} · today: ${c.paper_entries ?? 0} trades, PnL ${c.paper_realized ?? 0}${said}`
         + (c.last_reject && !p ? ` · ${c.last_reject}` : "");
     }
 

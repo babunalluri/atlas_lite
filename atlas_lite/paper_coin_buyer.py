@@ -25,7 +25,7 @@ from atlas_lite.llm_buyer import LlmBuyer, QuoteSource
 
 STRATEGY = "coin_buyer"
 LEDGER_NAME = "paper_coin_buyer.jsonl"
-NAME = "Coin buyer · LLM control"
+NAME = "Coin buyer · random, no LLM"
 P_ENTRY = 0.10
 P_EXIT = 0.10
 
