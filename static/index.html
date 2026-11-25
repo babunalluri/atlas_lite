@@ -2509,6 +2509,9 @@
               <dl class="book-inputs-list" id="llmBuyerInputsList"></dl>
             </details>
           </article>
+          <article class="book-card" data-src="coinBuyerLine" data-title="Coin buyer · LLM control">
+            <div class="history-detail book-src" id="coinBuyerLine">Coin buyer · LLM control: —</div>
+          </article>
           <article class="book-card" data-src="g2t10Line" data-title="G2T10 · coded baseline">
             <div class="history-detail book-src" id="g2t10Line">G2T10 · coded baseline: —</div>
           </article>
@@ -7088,6 +7091,21 @@
       renderLlmBuyerInputs(d);
     }
 
+    // Coin buyer: the LLM buyer's engine and rules with a coin deciding (control; paper only, no LLM).
+    function renderCoinBuyer(c) {
+      const line = document.getElementById("coinBuyerLine");
+      if (!line) return;
+      const name = c.name || "Coin buyer · LLM control";
+      if (!c.enabled) {
+        line.textContent = `${name} · off (ATLAS_LITE_PAPER_COIN_BUYER=0)`;
+        return;
+      }
+      const p = c.position;
+      const head = p ? `holding ${p.option} ${p.symbol} x${p.qty} @ ${p.entry} · open PnL ${p.open_pnl ?? "—"}` : "FLAT";
+      line.textContent = `${name} · ${head} · today: ${c.paper_entries ?? 0} trades, PnL ${c.paper_realized ?? 0}`
+        + (c.last_reject && !p ? ` · ${c.last_reject}` : "");
+    }
+
     // G2T10: the LLM buyer's coded yardstick (same feed, no LLM, paper only).
     function renderG2t10(g) {
       const line = document.getElementById("g2t10Line");
@@ -7382,6 +7400,7 @@
         if (meta) meta.textContent = "Paper books · real Kite orders only where a live switch is on";
         renderLlmBuyer(paper.llm_buyer || {});
         renderG2t10(paper.g2t10 || {});
+        renderCoinBuyer(paper.coin_buyer || {});
         loadLlmBuyerPaper();
         loadLlmBuyerLive();
         renderExpirySell("expiryEveStrangleLine", paper.expiry_eve_strangle || {});
@@ -7857,7 +7876,7 @@
     // ---- paper positions on the option chain and the chart (display only) ----
     // One selector filters both: "off", "all" or a single book. Kept light: small triangles, P&L only on exits.
     const PAPER_SHORT = {
-      llm_buyer: "LLM", g2t10: "G2T10", expiry_eve_strangle_1pct: "Eve1%", expiry_eve_strangle: "Eve0.5%",
+      llm_buyer: "LLM", coin_buyer: "Coin", g2t10: "G2T10", expiry_eve_strangle_1pct: "Eve1%", expiry_eve_strangle: "Eve0.5%",
       expiry_day_straddle: "ExpDay", sensex_expiry_day_strangle: "SX", sensex_expiry_day_straddle: "SXstr",
       daily_strangle_05: "D0.5%", daily_premium50: "D₹50",
     };

@@ -96,6 +96,14 @@ from atlas_lite.paper_expiry_sell import (
     paper_expiry_sell_enabled,
 )
 from atlas_lite.paper_g2t10 import LEDGER_NAME as G2T10_LEDGER, PaperG2T10, paper_g2t10_enabled
+from atlas_lite.paper_coin_buyer import (
+    LEDGER_NAME as COIN_BUYER_LEDGER,
+    NAME as COIN_BUYER_NAME,
+    STRATEGY as COIN_BUYER_STRATEGY,
+    CoinBuyer,
+    CoinDecider,
+    paper_coin_buyer_enabled,
+)
 from atlas_lite.paper_factor import (
     LEDGER_NAME as FACTOR_LEDGER,
     STRATEGY as FACTOR_STRATEGY,
@@ -267,7 +275,7 @@ def _num(v: Any) -> float | None:
 
 # Short labels for the chain tags and chart markers (paper books that hold options).
 MARK_LABELS: dict[str, str] = {
-    "llm_buyer": "LLM", "g2t10": "G2T10", "expiry_eve_strangle_1pct": "Eve ±1%", "expiry_eve_strangle": "Eve ±0.5%",
+    "llm_buyer": "LLM", "coin_buyer": "Coin", "g2t10": "G2T10", "expiry_eve_strangle_1pct": "Eve ±1%", "expiry_eve_strangle": "Eve ±0.5%",
     "expiry_day_straddle": "Exp-day straddle", "sensex_expiry_day_strangle": "SX exp-day ±0.5%",
     "sensex_expiry_day_straddle": "SX exp-day straddle", "daily_strangle_05": "Daily ±0.5%",
     "daily_premium50": "Daily ₹50",
@@ -488,6 +496,12 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
         f"live only: −₹{LLM_BUYER_DAY_LOSS:,.0f} day stop · "
         f"last exit {LLM_BUYER_EXIT_AT}",
     ),
+    "coin_buyer": (
+        "the LLM buyer's rules and engine with a coin instead of the LLM (control; paper only, no LLM calls): "
+        "where the LLM would be asked, flat → 10% chance to buy the allowed side, holding → 10% chance to exit",
+        "same direction rule, stretch limit, pause, NIFTY stop, :30 while red, 15:08 · profit stops arm at +5% "
+        "(LLM buyer +10%) · lot 1 trails 2%, rest 40% giveback",
+    ),
     "g2t10": (
         "10:00–15:00 · coded baseline for the LLM buyer (no LLM): 1-min close beyond the opening range / day high-low, "
         "5-min move agrees, 0.25% no-chase then pullback · 1 lot ATM CE or PE · paper only",
@@ -576,6 +590,7 @@ class FeedEngine:
     _llm_buyer: LlmBuyer | None = field(default=None, repr=False)
     _llm_buyer_live: Any = field(default=None, repr=False)
     _paper_g2t10: PaperG2T10 | None = field(default=None, repr=False)
+    _coin_buyer: CoinBuyer | None = field(default=None, repr=False)
     # Previous day's NIFTY open interest, for the dealer-gamma reading Scalper v3 logs.
     _gamma_oi: GammaOi | None = field(default=None, repr=False)
     _gamma_oi_tried_at: float = field(default=0.0, repr=False)
@@ -891,6 +906,11 @@ class FeedEngine:
             )
             self._log.info("llm_buyer book: all day, 1 min (live when ticked, allowed=%s)",
                            self._llm_buyer_live.allowed())
+        if paper_coin_buyer_enabled():  # the LLM buyer's control: same engine and rules, a coin decides; paper only
+            self._coin_buyer = CoinBuyer(path=self.data_dir / COIN_BUYER_LEDGER, lot_size=self._nifty_option_lot(),
+                                         decider=CoinDecider(), strategy=COIN_BUYER_STRATEGY, name=COIN_BUYER_NAME,
+                                         tag_prefix="coin")
+            self._log.info("coin_buyer control book (paper, no LLM)")
         if paper_g2t10_enabled():  # the LLM buyer's coded yardstick: same feed, no LLM, paper only
             self._paper_g2t10 = PaperG2T10(path=self.data_dir / G2T10_LEDGER, lot_size=self._nifty_option_lot())
             self._log.info("g2t10 baseline book (paper, qty %d)", self._paper_g2t10.lot_size)
@@ -1008,6 +1028,8 @@ class FeedEngine:
             self._tasks.append(asyncio.create_task(self._llm_buyer_loop(self._llm_buyer)))
         if self._paper_g2t10 is not None:
             self._tasks.append(asyncio.create_task(self._paper_g2t10_loop(self._paper_g2t10)))
+        if self._coin_buyer is not None:
+            self._tasks.append(asyncio.create_task(self._llm_buyer_loop(self._coin_buyer)))
         if self._agent is not None:
             self._tasks.append(asyncio.create_task(self._agent_loop()))
 
@@ -2066,6 +2088,9 @@ class FeedEngine:
         llm = self._llm_buyer
         if llm is not None and llm.position is not None:
             out.append((llm.position.symbol, int(llm.position.strike or 0)))
+        coin = self._coin_buyer
+        if coin is not None and coin.position is not None:
+            out.append((coin.position.symbol, int(coin.position.strike or 0)))
         g2 = self._paper_g2t10
         if g2 is not None and isinstance(g2.position, dict) and g2.position.get("symbol"):
             out.append((str(g2.position["symbol"]), int(g2.position.get("strike") or 0)))
@@ -3963,6 +3988,11 @@ class FeedEngine:
             pos = self._llm_buyer.position
             if nb == "nifty" and pos is not None:
                 add_leg("llm_buyer", pos.symbol, pos.strike, pos.leg.upper(), "B", pos.fill)
+        if self._coin_buyer is not None:
+            books["coin_buyer"] = "nifty"
+            cpos = self._coin_buyer.position
+            if nb == "nifty" and cpos is not None:
+                add_leg("coin_buyer", cpos.symbol, cpos.strike, cpos.leg.upper(), "B", cpos.fill)
         if self._paper_g2t10 is not None:
             books["g2t10"] = "nifty"
             gp = self._paper_g2t10.position
@@ -3977,6 +4007,8 @@ class FeedEngine:
                  if name in EXPIRY_SELL_BOOKS}
         if self._llm_buyer is not None:
             files["llm_buyer"] = self._llm_buyer.path
+        if self._coin_buyer is not None:
+            files["coin_buyer"] = self._coin_buyer.path
         if self._paper_g2t10 is not None:
             files["g2t10"] = self._paper_g2t10.path
         for name, path in files.items():
@@ -4224,6 +4256,12 @@ class FeedEngine:
             if self._llm_buyer is not None
             else {"ok": True, "mode": "paper", "enabled": False, "live_orders": False, "book": "llm_buyer",
                   "name": "LLM buyer"}
+        )
+        body["coin_buyer"] = (
+            self._coin_buyer.snapshot(self.book)
+            if self._coin_buyer is not None
+            else {"ok": True, "mode": "paper", "enabled": False, "live_orders": False, "book": "coin_buyer",
+                  "name": COIN_BUYER_NAME}
         )
         body["g2t10"] = (
             self._paper_g2t10.snapshot(self.book)
