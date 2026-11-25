@@ -96,7 +96,7 @@ from atlas_lite.paper_expiry_sell import (
     PaperExpirySell,
     paper_expiry_sell_enabled,
 )
-from atlas_lite.paper_g2t10 import LEDGER_NAME as G2T10_LEDGER, PaperG2T10, paper_g2t10_enabled
+from atlas_lite.paper_g2t10 import PaperG2T10  # retired 25 Nov 2026; the type stays for the dead-safe paths
 from atlas_lite.paper_factor import (
     LEDGER_NAME as FACTOR_LEDGER,
     STRATEGY as FACTOR_STRATEGY,
@@ -321,6 +321,7 @@ HEALTH_TICK_MAX_AGE_S = 90.0
 # them out unless asked (retired=1), so the UI shows only books still running.
 RETIRED_PAPER_STRATEGIES = frozenset(
     {
+        "g2t10",  # the LLM buyer's coded yardstick, retired 25 Nov 2026 (operator's call)
         "coin_buyer",  # LLM buyer's coin-flip control, 25 Nov 2026 only (removed the same day, operator's call)
         "short_atm_straddle",
         "theta_cliff_fence",
@@ -491,7 +492,7 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
         f"last exit {LLM_BUYER_EXIT_AT}",
     ),
     "g2t10": (
-        "10:00–15:00 · coded baseline for the LLM buyer (no LLM): 1-min close beyond the opening range / day high-low, "
+        "RETIRED 25 Nov 2026 · was: 10:00–15:00 · coded baseline for the LLM buyer (no LLM): 1-min close beyond the opening range / day high-low, "
         "5-min move agrees, 0.25% no-chase then pullback · 1 lot ATM CE or PE · paper only",
         "exit on a close back through the traded level or 15:08 · no new entries after 2 losing trades",
     ),
@@ -894,9 +895,8 @@ class FeedEngine:
             )
             self._log.info("llm_buyer book: all day, 1 min (live when ticked, allowed=%s)",
                            self._llm_buyer_live.allowed())
-        if paper_g2t10_enabled():  # the LLM buyer's coded yardstick: same feed, no LLM, paper only
-            self._paper_g2t10 = PaperG2T10(path=self.data_dir / G2T10_LEDGER, lot_size=self._nifty_option_lot())
-            self._log.info("g2t10 baseline book (paper, qty %d)", self._paper_g2t10.lot_size)
+        # G2T10 (the LLM buyer's coded yardstick) retired 25 Nov 2026 (operator's call; paper −₹9,361 over 7 days, none up).
+        # Not built any more, so it never trades; its code and ledger stay for history (paper_g2t10_enabled is ignored).
         if paper_long_straddle_tp20_enabled():
             self._paper_long_str_tp20 = PaperLongStraddle(
                 path=self.data_dir / LONG_STRADDLE_TP20_LEDGER, lot_size=self._nifty_option_lot(),

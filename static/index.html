@@ -2509,9 +2509,6 @@
               <dl class="book-inputs-list" id="llmBuyerInputsList"></dl>
             </details>
           </article>
-          <article class="book-card" data-src="g2t10Line" data-title="G2T10 · coded baseline">
-            <div class="history-detail book-src" id="g2t10Line">G2T10 · coded baseline: —</div>
-          </article>
         </div>
       </section>
       <section class="book-group" aria-label="Expiry-week selling">
@@ -7090,23 +7087,6 @@
       renderLlmBuyerInputs(d);
     }
 
-    // G2T10: the LLM buyer's coded yardstick (same feed, no LLM, paper only).
-    function renderG2t10(g) {
-      const line = document.getElementById("g2t10Line");
-      if (!line) return;
-      const name = g.name || "G2T10 · coded baseline";
-      if (!g.enabled) {
-        line.textContent = `${name} · off (ATLAS_LITE_PAPER_G2T10=0)`;
-        return;
-      }
-      const p = g.position;
-      const head = p
-        ? `holding ${String(p.leg || "").toUpperCase()} ${p.strike} @ ${p.fill} (level ${p.entry_level_kind} ${p.entry_level}) · open PnL ${p.open_pnl ?? "—"}`
-        : (g.entries_stopped ? "FLAT (2 losing trades: no new entries today)" : "FLAT");
-      line.textContent = `${name} · ${head} · today: ${g.trades_today ?? 0} trades, PnL ${g.realized_today ?? 0}`
-        + (g.last_reject && !p ? ` · ${g.last_reject}` : "");
-    }
-
     // The factors the LLM named and every input it was given at its last decision.
     function renderLlmBuyerInputs(d) {
       const box = document.getElementById("llmBuyerInputs");
@@ -7383,7 +7363,6 @@
         ]);
         if (meta) meta.textContent = "Paper books · real Kite orders only where a live switch is on";
         renderLlmBuyer(paper.llm_buyer || {});
-        renderG2t10(paper.g2t10 || {});
         loadLlmBuyerPaper();
         loadLlmBuyerLive();
         renderExpirySell("expiryEveStrangleLine", paper.expiry_eve_strangle || {});

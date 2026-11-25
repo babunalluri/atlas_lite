@@ -78,7 +78,8 @@ KNOWN_BOOKS = (
 RETIRED_BOOKS = frozenset(
     {"vwap_long", "short_straddle", "skew_fade", "long_iron_condor", "theta_cliff", "impulse_fade", "combo", "ict",
      "ai_agent", "short_iron_condor", "iron_fly", "agent",  # agent: retired 15 Nov 2026
-     "expiry_eve_strangle", "sensex_expiry_day_straddle"}  # retired 21 Nov 2026 (unproven / superseded)
+     "expiry_eve_strangle", "sensex_expiry_day_straddle",  # retired 21 Nov 2026 (unproven / superseded)
+     "g2t10"}  # retired 25 Nov 2026 (operator's call)
 )
 
 BOOK_ALIASES = {
