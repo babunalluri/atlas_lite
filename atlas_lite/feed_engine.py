@@ -267,7 +267,7 @@ def _num(v: Any) -> float | None:
 
 # Short labels for the chain tags and chart markers (paper books that hold options).
 MARK_LABELS: dict[str, str] = {
-    "llm_buyer": "Sol", "g2t10": "G2T10", "expiry_eve_strangle_1pct": "Eve ±1%", "expiry_eve_strangle": "Eve ±0.5%",
+    "llm_buyer": "LLM", "g2t10": "G2T10", "expiry_eve_strangle_1pct": "Eve ±1%", "expiry_eve_strangle": "Eve ±0.5%",
     "expiry_day_straddle": "Exp-day straddle", "sensex_expiry_day_strangle": "SX exp-day ±0.5%",
     "sensex_expiry_day_straddle": "SX exp-day straddle", "daily_strangle_05": "Daily ±0.5%",
     "daily_premium50": "Daily ₹50",
@@ -482,9 +482,10 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
         "per-leg stop at +30% · whole position closed at −₹2,000 · else close 15:14 the same day",
     ),
     "llm_buyer": (
-        f"09:16–{LLM_BUYER_LAST_ENTRY} · GPT-6.2 Sol from 20 Nov (prompt v7: freehand + peak P&L, giveback figures, opening fact; paper 2 lots: lot 1 trailing stop armed at +10%, sold 2% below its high): buy 1 lot ATM CE or PE · "
-        "paper: no limits; live: 2 entries, up to 4 while positive",
-        f"an open trade is managed every minute until the LLM exits · −₹{LLM_BUYER_DAY_LOSS:,.0f} day stop · profit lock · "
+        f"09:16–{LLM_BUYER_LAST_ENTRY} · Claude Sonnet 5.5 from 25 Nov (Sol 20–25 Nov), prompt v8 · buy 2 lots ATM CE or PE "
+        "only in the day's direction (±0.25% from the open) · no new trade after a 1.2% move or for 10 min after a loss",
+        f"managed every minute (+ :30 while red) · NIFTY stop 15 pts · lot 1 trails from +10%, rest 40% giveback · "
+        f"live only: −₹{LLM_BUYER_DAY_LOSS:,.0f} day stop · "
         f"last exit {LLM_BUYER_EXIT_AT}",
     ),
     "g2t10": (

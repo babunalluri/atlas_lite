@@ -2501,8 +2501,8 @@
       <section class="book-group" aria-label="Directional">
         <h4 class="book-group-title">Directional</h4>
         <div class="book-grid">
-          <article class="book-card" data-src="llmBuyerLine" data-title="LLM buyer · GPT-6.2 Sol">
-            <div class="history-detail book-src" id="llmBuyerLine">LLM buyer · GPT-6.2 Sol: —</div>
+          <article class="book-card" data-src="llmBuyerLine" data-title="LLM buyer · Sonnet 5.5">
+            <div class="history-detail book-src" id="llmBuyerLine">LLM buyer · Sonnet 5.5: —</div>
             <details class="book-inputs" id="llmBuyerInputs" hidden>
               <summary id="llmBuyerInputsTitle">What it saw</summary>
               <div class="book-chips" id="llmBuyerFactors"></div>
@@ -7065,7 +7065,7 @@
       }).join("");
     }
 
-    // LLM buyer (one model, GPT-6.2 Sol from 20 Nov): status line + Paper/Live switches.
+    // LLM buyer (one model, Claude Sonnet 5.5 from 25 Nov; Sol 20-25 Nov): status line + Paper/Live switches.
     function renderLlmBuyer(lb) {
       const line = document.getElementById("llmBuyerLine");
       if (!line) return;
@@ -7857,7 +7857,7 @@
     // ---- paper positions on the option chain and the chart (display only) ----
     // One selector filters both: "off", "all" or a single book. Kept light: small triangles, P&L only on exits.
     const PAPER_SHORT = {
-      llm_buyer: "Sol", g2t10: "G2T10", expiry_eve_strangle_1pct: "Eve1%", expiry_eve_strangle: "Eve0.5%",
+      llm_buyer: "LLM", g2t10: "G2T10", expiry_eve_strangle_1pct: "Eve1%", expiry_eve_strangle: "Eve0.5%",
       expiry_day_straddle: "ExpDay", sensex_expiry_day_strangle: "SX", sensex_expiry_day_straddle: "SXstr",
       daily_strangle_05: "D0.5%", daily_premium50: "D₹50",
     };

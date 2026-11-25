@@ -1,4 +1,4 @@
-"""LLM option buyer (OpenAI GPT-6.2 Sol from 20 Nov 2026; Claude Sonnet 5.5 11-18 Nov, Mistral Nemo 19 Nov): ATM NIFTY CE or PE. Paper by default.
+"""LLM option buyer (Claude Sonnet 5.5 from 25 Nov 2026 09:4x and 11-18 Nov; OpenAI GPT-6.2 Sol 20-25 Nov, Mistral Nemo 19 Nov): ATM NIFTY CE or PE. Paper by default.
 
 Every minute from 09:16 the LLM sees what a discretionary trader would see at that minute (new trades until
 15:00; a trade still open is managed every minute, plus a check at hh:mm:30 while it is red (HOLD_CHECK_30S),
@@ -139,7 +139,9 @@ LOT2_GIVEBACK = 0.40
 # -Rs 6,608). A different model is a different trader: Sol's record starts 20 Nov.
 # No OpenAI fallback; if OpenRouter fails the book waits / holds (and sells after MAX_ERRORS_HOLDING failures while
 # holding). Replay can still pass --model for off-box studies.
-MODEL_OPENROUTER = "openai/gpt-6.2-sol"
+# Back to Claude Sonnet 5.5 from 25 Nov 2026 (operator's call, mid-session after Sol's two losses that morning; same
+# OpenRouter price as Sol, $2 / $10 per M tokens). Same prompt (v8) and rules; Sonnet's new record starts 25 Nov.
+MODEL_OPENROUTER = "anthropic/claude-sonnet-5.5"
 MODEL_OPENAI: str | None = None  # unused; left so tests can flip it on for the dual-target path
 LLM_TIMEOUT_S = 25.0  # a whole call, start to answer (OpenRouter's keep-alive padding defeats httpx's per-read timeout)
 LLM_MAX_TOKENS = 1000  # headroom for reasoning at low effort; billed as used
