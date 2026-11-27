@@ -130,6 +130,7 @@ def test_shipped_models_load_and_vote_in_pure_python() -> None:
         assert set(v["scores"]) == {"lightgbm", "catboost", "logistic"}
         assert all(0.0 < s < 1.0 for s in v["scores"].values())
         assert v["leg"] in (None, "ce", "pe")
+    assert vm.conf_cut == 0.0370  # top 10% of 2025 (operator's call 27 Nov 2026; the file's top-20% cut is 0.0288)
     early = features(bars_until("09:20"))  # 5 candles: the 15/60-minute inputs use what there is
     assert early is not None and early[10] == 0.0  # opening range still forming: no break
     assert features([]) is None

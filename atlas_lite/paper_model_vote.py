@@ -15,8 +15,9 @@ Every minute, on the candles closed at 09:15, 09:16 ... 14:59 (decided in the ne
 call, 27 Nov 2026: the models were trained on 5-minute samples; voting every minute did worse offline (2026: 4.4 trades
 a day, +0.2 NIFTY points a trade, t 0.2, vs 3.6 a day, +1.7 points every 5 minutes; scratchpad vote_1min_check.py):
 - each model votes UP if its score is above its own 2025 median, else DOWN;
-- all three UP and the average score lead over the medians in the top 20% of 2025 -> buy the ATM CE at the ask;
-  all three DOWN and as confident -> buy the ATM PE; otherwise no trade.
+- all three UP and the average score lead over the medians at least ENTRY_CONF_CUT (top 10% of 2025's readings;
+  top 20% = 0.0288 until 27 Nov 2026) -> buy the ATM CE at the ask; all three DOWN and as confident -> buy the ATM PE;
+  otherwise no trade. The same cut makes a confident opposite vote (the reverse).
 - Exits by vote too (operator's call, 27 Nov 2026, "vote for all decisions"): while holding, the vote keeps running on
   every candle to 15:13; a confident vote for the other side sells the trade at the bid and buys the other side in the
   same minute (a reverse; no new trades after the 14:59 candle). Anything else holds. Square-off 15:14.
@@ -56,6 +57,10 @@ TRAIL_GIVEBACK = 0.5  # ... and sells after giving back this share of the best m
 TRAIL_RULE = "NIFTY trail: armed at +80 pts, sells after giving back 50% of the best move, then flat for the day"
 OR_BARS = 15  # 09:15-09:29
 MODEL_FILE = Path(__file__).with_name("model_vote_buyer.json")
+# Entry / reverse confidence (operator's call, 27 Nov 2026 evening): top 10% of 2025's readings, was the model file's
+# top 20% (0.0288). Option-priced 2025 / 2026: -Rs 167 / -205 a day vs -340 / -289; 46 recorded days with real bid/ask
+# and the trailing SL: +Rs 29,563 vs -Rs 7,248 (t 0.9, not significant; scratchpad vote_aggr.py, replays_c10).
+ENTRY_CONF_CUT = 0.0370
 
 
 def paper_model_vote_enabled() -> bool:
@@ -102,7 +107,7 @@ class VoteModels:
         self.version = str(m.get("version") or "")
         self.lgb, self.cb, self.lr = m["lightgbm"], m["catboost"], m["logistic"]
         self.median = {k: float(v) for k, v in m["median"].items()}
-        self.conf_cut = float(m["conf_cut"])
+        self.conf_cut = ENTRY_CONF_CUT if ENTRY_CONF_CUT else float(m["conf_cut"])
         self.n_features = len(m["features"])
 
     def scores(self, x: list[float]) -> dict[str, float]:
@@ -330,7 +335,7 @@ class PaperModelVote(PaperG2T10):
                                   if self.trail_done else None)}
         snap["models"] = self.models.version if self.models else None
         snap["window"] = (f"votes every minute on the {FIRST_BAR}-{LAST_BAR} candles · 1 lot ATM CE/PE when all 3 models "
-                          f"agree and are confident · sold (and reversed) on a confident opposite vote · trailing SL from "
+                          f"agree and are confident (top 10%, ±{ENTRY_CONF_CUT}) · sold (and reversed) on a confident opposite vote · trailing SL from "
                           f"+{TRAIL_ARM_PTS:.0f} NIFTY pts, sold after giving back half, then flat for the day · else {EXIT_AT}")
         return snap
 
