@@ -24,11 +24,11 @@ a day, +0.2 NIFTY points a trade, t 0.2, vs 3.6 a day, +1.7 points every 5 minut
   -7 / -19 points a day after costs, against -47 / -57 for the 30-minute exit it replaced.
 - Every vote is written to the ledger as a 'vote' line (candle, NIFTY, scores, confidence, decision). One trade at a
   time. No stop, no day limit (paper).
-- Shadow trailing SL (tracked only, never trades; operator's call 27 Nov 2026, to compare on real prices before any
-  switch): once NIFTY has moved TRAIL_ARM_PTS the trade's way, it "would sell" when NIFTY gives back TRAIL_GIVEBACK of
-  the best move, and then stay flat for the day. The would-be sale is logged as a 'shadow_exit' line at the bid with
-  its P&L; after it, the shadow is flat and tracking stops for the day. Offline (scratchpad vote_trail2.py) this was
-  the only trail no worse in both 2025 and 2026 (Rs -304 / -327 a day vs -314 / -540).
+- Trailing SL (operator's call 27 Nov 2026: a shadow in the morning, switched to real for this paper book the same
+  evening): once NIFTY has moved TRAIL_ARM_PTS the trade's way (1-minute closes), the trade is sold at the bid when
+  NIFTY gives back TRAIL_GIVEBACK of its best move (close reason 'trail_stop'), and the book stays flat for the rest of
+  the day. Offline (scratchpad vote_trail2.py) the only trail no worse in both 2025 and 2026 (Rs -304 / -327 a day vs
+  -314 / -540); on the 46 recorded days 24 Sep-26 Nov (replay_summary.py) -Rs 7,248 vs -Rs 17,233 without it.
 """
 
 from __future__ import annotations
@@ -41,7 +41,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from atlas_lite.kite_charges import kite_nfo_charges
 from atlas_lite.paper_g2t10 import PaperG2T10, QuoteSource, _mins
 
 STRATEGY = "model_vote"
@@ -52,8 +51,8 @@ NAME = "Model vote buyer · no LLM"
 FIRST_BAR, LAST_BAR, EXIT_AT = "09:15", "14:59", "15:14"  # square-off 15:14: operator's call
 LAST_VOTE = "15:13"  # votes keep running for exits after the last entry candle
 STEP_MIN = 1  # operator's call 27 Nov 2026: every minute (trained on 5-minute samples)
-TRAIL_ARM_PTS = 80.0  # shadow trailing SL: armed after this NIFTY move the trade's way
-TRAIL_GIVEBACK = 0.5  # ... and "sells" after giving back this share of the best move
+TRAIL_ARM_PTS = 80.0  # trailing SL: armed after this NIFTY move the trade's way
+TRAIL_GIVEBACK = 0.5  # ... and sells after giving back this share of the best move
 TRAIL_RULE = "NIFTY trail: armed at +80 pts, sells after giving back 50% of the best move, then flat for the day"
 OR_BARS = 15  # 09:15-09:29
 MODEL_FILE = Path(__file__).with_name("model_vote_buyer.json")
@@ -144,8 +143,8 @@ class PaperModelVote(PaperG2T10):
     name: str = NAME
     models: VoteModels | None = None
     last_vote: dict[str, Any] | None = None
-    trail: dict[str, Any] | None = None  # shadow trailing SL of the open trade
-    trail_done: dict[str, Any] | None = None  # today's shadow sale (the shadow is flat after it)
+    trail: dict[str, Any] | None = None  # trailing SL of the open trade
+    trail_done: dict[str, Any] | None = None  # today's trailing-SL sale (the book is flat for the rest of the day)
     trail_day: str = ""
 
     def __post_init__(self) -> None:
@@ -187,7 +186,7 @@ class PaperModelVote(PaperG2T10):
         self.last_vote = {"at": hm, "candle": last, **v}
         nifty = float(bars[-1]["c"])
         trail_note = self._trail_step(now, book, last, nifty)
-        closed = None
+        closed = trail_note.get("sold") if trail_note else None
         if self.position is not None and v["leg"] is not None and v["leg"] != self.position.get("leg"):
             closed = self._close(now, book, "vote_reverse")
             if self.position is not None:  # no quote to sell: try again on the next second of this minute
@@ -195,15 +194,16 @@ class PaperModelVote(PaperG2T10):
                 return None
             self.trail = None
         opened = None
-        if v["leg"] is not None and self.position is None and last <= LAST_BAR:
+        if v["leg"] is not None and self.position is None and last <= LAST_BAR and self.trail_done is None:
             opened = self._open_vote(now, feed, book, v, nifty)
-        self._log_vote(now, last, nifty, v, opened, closed, trail_note)
+        self._log_vote(now, last, nifty, v, opened, closed,
+                       {k: x for k, x in trail_note.items() if k != "sold"} if trail_note else None)
         return opened or closed
 
-    # ---- shadow trailing SL (logged only, never trades) ----
+    # ---- trailing SL ----
 
     def _trail_step(self, now: datetime, book: QuoteSource, candle: str, nifty: float) -> dict[str, Any] | None:
-        """Update the open trade's shadow trail on this candle; log a 'shadow_exit' when it would sell."""
+        """Update the open trade's trailing SL on this candle; sell the trade when it triggers (then flat for the day)."""
         tr, pos = self.trail, self.position
         if tr is None or pos is None or self.trail_done is not None or tr.get("opened_at") != pos.get("opened_at"):
             return None
@@ -212,26 +212,17 @@ class PaperModelVote(PaperG2T10):
         note: dict[str, Any] = {"move": round(move, 2), "best": round(tr["best"], 2), "armed": tr["best"] >= TRAIL_ARM_PTS}
         if not note["armed"] or move > tr["best"] * (1 - TRAIL_GIVEBACK):
             return note
-        bid = self._sell_px(book, str(pos["symbol"]))
-        if bid is None:
-            return note  # no quote: try again next candle
-        qty, fill = int(pos["qty"]), float(pos["fill"])
-        charges = round(float(kite_nfo_charges([(fill, qty, "buy"), (bid, qty, "sell")])["total"]), 2)
-        gross = round((bid - fill) * qty, 2)
-        last_event = self.last_event
-        ev = self._append({"event": "shadow_exit", "ts": now.isoformat(), "day": self.day, "candle": candle,
-                           "trade_opened_at": pos.get("opened_at"), "leg": pos["leg"], "symbol": pos["symbol"],
-                           "qty": qty, "fill": fill, "exit": round(bid, 2), "pnl_gross": gross, "charges": charges,
-                           "pnl": round(gross - charges, 2), "nifty": round(nifty, 2), "entry_nifty": tr["c0"],
-                           "best_move": round(tr["best"], 2), "move": round(move, 2), "rule": TRAIL_RULE})
-        self.last_event = last_event
-        if ev is not None:
-            self.trail_done = ev
-            note["would_sell"] = True
+        ev = self._close(now, book, "trail_stop")
+        if ev is None:  # no quote to sell: try again next candle
+            return note
+        self.trail_done = {**ev, "best_move": round(tr["best"], 2), "move": round(move, 2)}
+        self.trail = None
+        note["trail_stop"] = True
+        note["sold"] = ev
         return note
 
     def _rebuild_trail(self, today: str) -> None:
-        """After a restart (or on a new day): today's shadow sale, and the open trade's trail rebuilt from its open
+        """After a restart (or on a new day): today's trailing-SL sale, and the open trade's trail rebuilt from its open
         line and the NIFTY closes in the vote lines since."""
         self.trail_day, self.trail, self.trail_done = today, None, None
         try:
@@ -247,8 +238,9 @@ class PaperModelVote(PaperG2T10):
             if ev.get("day") != today:
                 continue
             kind = ev.get("event")
-            if kind == "shadow_exit":
+            if kind == "close" and ev.get("reason") == "trail_stop":
                 self.trail_done = ev
+                tr = None
             elif kind == "open":
                 c0 = ev.get("nifty")  # older open lines lack it: taken from the buy's own vote line below
                 tr = {"opened_at": ev.get("ts"), "leg": ev.get("leg"), "c0": float(c0) if c0 is not None else None,
@@ -272,11 +264,15 @@ class PaperModelVote(PaperG2T10):
         held = (self.position or {}).get("leg")
         if opened is not None:
             action = (f"sell {str(closed.get('leg') or '').upper()}, " if closed else "") + f"buy {v['leg'].upper()}"
+        elif closed is not None and closed.get("reason") == "trail_stop":
+            action = f"sell {str(closed.get('leg') or '').upper()} (trailing SL), flat for the rest of the day"
         elif closed is not None:
             why = f"no new entries after {LAST_BAR}" if candle > LAST_BAR else f"{v['leg'].upper()} not filled: {self.last_reject}"
             action = f"sell {str(closed.get('leg') or '').upper()} ({why})"
         elif held:
             action = f"hold {str(held).upper()}" + (": vote agrees" if v["leg"] == held else ": no opposite signal")
+        elif self.trail_done is not None:
+            action = "no trade: trailing SL hit today"
         elif v["leg"] is not None and candle > LAST_BAR:
             action = f"no trade: after {LAST_BAR}"
         elif v["leg"] is not None:
@@ -334,6 +330,7 @@ class PaperModelVote(PaperG2T10):
                                   if self.trail_done else None)}
         snap["models"] = self.models.version if self.models else None
         snap["window"] = (f"votes every minute on the {FIRST_BAR}-{LAST_BAR} candles · 1 lot ATM CE/PE when all 3 models "
-                          f"agree and are confident · sold (and reversed) on a confident opposite vote, else {EXIT_AT}")
+                          f"agree and are confident · sold (and reversed) on a confident opposite vote · trailing SL from "
+                          f"+{TRAIL_ARM_PTS:.0f} NIFTY pts, sold after giving back half, then flat for the day · else {EXIT_AT}")
         return snap
 

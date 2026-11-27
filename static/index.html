@@ -7109,8 +7109,8 @@
         : "";
       const tr = g.trail || {};
       const trail = tr.done
-        ? ` · trail SL (shadow, not traded): would have sold ${String(tr.done.leg || "").toUpperCase()} @ ${tr.done.exit} (PnL ${tr.done.pnl}), then flat`
-        : (tr.open ? ` · trail SL (shadow): best +${tr.open.best} pts${tr.open.armed ? ", armed: would sell after giving back half" : ` (arms at +${tr.arm_pts})`}` : "");
+        ? ` · trailing SL sold ${String(tr.done.leg || "").toUpperCase()} @ ${tr.done.exit} (PnL ${tr.done.pnl}): flat for the rest of the day`
+        : (tr.open ? ` · trailing SL: best +${tr.open.best} pts${tr.open.armed ? ", armed: sells after giving back half" : ` (arms at +${tr.arm_pts})`}` : "");
       line.textContent = `${name} · ${head} · today: ${g.trades_today ?? 0} trades, PnL ${g.realized_today ?? 0}${vote}${trail}`
         + (g.last_reject && !p ? ` · ${g.last_reject}` : "");
     }

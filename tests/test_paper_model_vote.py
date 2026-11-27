@@ -166,7 +166,7 @@ def feed_at(hm: str, close: float) -> dict:
     return f
 
 
-def test_shadow_trail_logs_a_would_be_sale_and_never_trades(tmp_path: Path) -> None:
+def test_trailing_sl_sells_then_the_book_stays_flat_for_the_day(tmp_path: Path) -> None:
     fv = FixedVote("ce")
     b = PaperModelVote(path=tmp_path / "v.jsonl", models=fv)  # type: ignore[arg-type]
     b.on_frame(now=t("10:16"), feed=feed_at("10:16", 25000.0), book=Book())  # buy CE with NIFTY at 25000
@@ -174,21 +174,22 @@ def test_shadow_trail_logs_a_would_be_sale_and_never_trades(tmp_path: Path) -> N
     b.on_frame(now=t("10:17"), feed=feed_at("10:17", 25070.0), book=Book())  # +70: not armed
     b.on_frame(now=t("10:18"), feed=feed_at("10:18", 25100.0), book=Book())  # +100: armed, best 100
     b.on_frame(now=t("10:19"), feed=feed_at("10:19", 25060.0), book=Book())  # +60: gave back 40%, keep
-    assert not [r for r in ledger(b, votes=True) if r["event"] == "shadow_exit"]
-    b.on_frame(now=t("10:20"), feed=feed_at("10:20", 25050.0), book=Book(ce=130.0))  # +50: gave back 50% -> would sell
-    sh = [r for r in ledger(b, votes=True) if r["event"] == "shadow_exit"]
-    assert len(sh) == 1 and sh[0]["exit"] == 129.5 and sh[0]["best_move"] == 100.0 and sh[0]["move"] == 50.0
-    assert sh[0]["pnl_gross"] == round((129.5 - 100.5) * 65, 2)
-    assert b.position is not None  # the real trade goes on
-    assert [r["event"] for r in ledger(b)] == ["open", "shadow_exit"]
+    assert b.position is not None
+    fv.leg = "ce"  # a fresh CE signal in the same minute must not buy again after the stop
+    ev = b.on_frame(now=t("10:20"), feed=feed_at("10:20", 25050.0), book=Book(ce=130.0))  # +50: gave back 50% -> sell
+    assert ev and ev["event"] == "close" and ev["reason"] == "trail_stop" and ev["exit"] == 129.5
+    assert ev["pnl_gross"] == round((129.5 - 100.5) * 65, 2) and b.position is None
     votes = [r for r in ledger(b, votes=True) if r["event"] == "vote"]
-    assert votes[2]["trail"]["armed"] is True and votes[-1]["trail"].get("would_sell") is True
-    b.on_frame(now=t("10:21"), feed=feed_at("10:21", 25000.0), book=Book())  # the shadow is flat: no second sale
-    assert len([r for r in ledger(b, votes=True) if r["event"] == "shadow_exit"]) == 1
+    assert votes[2]["trail"]["armed"] is True and votes[-1]["trail"]["trail_stop"] is True
+    assert votes[-1]["action"] == "sell CE (trailing SL), flat for the rest of the day"
+    fv.leg = "pe"
+    assert b.on_frame(now=t("10:21"), feed=feed_at("10:21", 25000.0), book=Book()) is None  # flat for the day
+    assert [r["event"] for r in ledger(b)] == ["open", "close"]
+    assert ledger(b, votes=True)[-1]["action"] == "no trade: trailing SL hit today"
     assert b.snapshot(Book())["trail"]["done"]["exit"] == 129.5
 
 
-def test_shadow_trail_survives_a_restart(tmp_path: Path) -> None:
+def test_trailing_sl_survives_a_restart(tmp_path: Path) -> None:
     fv = FixedVote("pe")
     b = PaperModelVote(path=tmp_path / "v.jsonl", models=fv)  # type: ignore[arg-type]
     b.on_frame(now=t("10:16"), feed=feed_at("10:16", 25000.0), book=Book())  # buy PE at 25000
@@ -197,8 +198,8 @@ def test_shadow_trail_survives_a_restart(tmp_path: Path) -> None:
     again = PaperModelVote(path=tmp_path / "v.jsonl", models=FixedVote(None))  # type: ignore[arg-type]
     again.on_frame(now=t("10:18"), feed=feed_at("10:18", 24940.0), book=Book())  # rebuilt: best 100, now +60
     assert again.trail is not None and again.trail["best"] == 100.0
-    again.on_frame(now=t("10:19"), feed=feed_at("10:19", 24955.0), book=Book())  # +45: would sell
-    assert again.trail_done is not None and again.trail_done["leg"] == "pe"
-    third = PaperModelVote(path=tmp_path / "v.jsonl", models=FixedVote(None))  # type: ignore[arg-type]
-    third.on_frame(now=t("10:20"), feed=feed_at("10:20", 25000.0), book=Book())
-    assert third.trail_done is not None and third.trail is None  # today's shadow sale remembered: no second one
+    ev = again.on_frame(now=t("10:19"), feed=feed_at("10:19", 24955.0), book=Book())  # +45: sold
+    assert ev and ev["reason"] == "trail_stop" and again.position is None
+    third = PaperModelVote(path=tmp_path / "v.jsonl", models=FixedVote("ce"))  # type: ignore[arg-type]
+    assert third.on_frame(now=t("10:20"), feed=feed_at("10:20", 25000.0), book=Book()) is None  # still flat today
+    assert third.trail_done is not None and third.position is None
