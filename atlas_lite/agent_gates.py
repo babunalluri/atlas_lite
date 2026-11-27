@@ -69,6 +69,7 @@ KNOWN_BOOKS = (
     "sensex_expiry_day_straddle",
     "llm_buyer",
     "g2t10",
+    "model_vote",
     "daily_strangle_05",
     "daily_premium50",
 )

@@ -97,6 +97,7 @@ from atlas_lite.paper_expiry_sell import (
     paper_expiry_sell_enabled,
 )
 from atlas_lite.paper_g2t10 import PaperG2T10  # retired 25 Nov 2026; the type stays for the dead-safe paths
+from atlas_lite.paper_model_vote import LEDGER_NAME as MODEL_VOTE_LEDGER, PaperModelVote, paper_model_vote_enabled
 from atlas_lite.paper_factor import (
     LEDGER_NAME as FACTOR_LEDGER,
     STRATEGY as FACTOR_STRATEGY,
@@ -268,7 +269,7 @@ def _num(v: Any) -> float | None:
 
 # Short labels for the chain tags and chart markers (paper books that hold options).
 MARK_LABELS: dict[str, str] = {
-    "llm_buyer": "LLM", "g2t10": "G2T10", "expiry_eve_strangle_1pct": "Eve ±1%", "expiry_eve_strangle": "Eve ±0.5%",
+    "llm_buyer": "LLM", "g2t10": "G2T10", "model_vote": "Vote", "expiry_eve_strangle_1pct": "Eve ±1%", "expiry_eve_strangle": "Eve ±0.5%",
     "expiry_day_straddle": "Exp-day straddle", "sensex_expiry_day_strangle": "SX exp-day ±0.5%",
     "sensex_expiry_day_straddle": "SX exp-day straddle", "daily_strangle_05": "Daily ±0.5%",
     "daily_premium50": "Daily ₹50",
@@ -496,6 +497,11 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
         "5-min move agrees, 0.25% no-chase then pullback · 1 lot ATM CE or PE · paper only",
         "exit on a close back through the traded level or 15:08 · no new entries after 2 losing trades",
     ),
+    "model_vote": (
+        "09:16–15:00 every minute · no LLM · LightGBM, CatBoost and logistic (NIFTY 1-min bars, trained 2019–2024) vote on "
+        "the next 30 min · all 3 agree and confident → 1 lot ATM CE or PE · paper only (offline test FAILED: built to watch)",
+        "exit 30 min after entry or 15:14 · one trade at a time · no stop, no day limit",
+    ),
     "sensex_expiry_day_strangle": (
         "SENSEX (Thu expiry) · 09:16 on expiry day · sell CE/PE nearest F ± 0.5% · no wings · 1 lot",
         "per-leg stop at +50% · else close 15:14",
@@ -579,6 +585,7 @@ class FeedEngine:
     _llm_buyer: LlmBuyer | None = field(default=None, repr=False)
     _llm_buyer_live: Any = field(default=None, repr=False)
     _paper_g2t10: PaperG2T10 | None = field(default=None, repr=False)
+    _paper_model_vote: PaperModelVote | None = field(default=None, repr=False)
     # Previous day's NIFTY open interest, for the dealer-gamma reading Scalper v3 logs.
     _gamma_oi: GammaOi | None = field(default=None, repr=False)
     _gamma_oi_tried_at: float = field(default=0.0, repr=False)
@@ -897,6 +904,9 @@ class FeedEngine:
                            self._llm_buyer_live.allowed())
         # G2T10 (the LLM buyer's coded yardstick) retired 25 Nov 2026 (operator's call; paper −₹9,361 over 7 days, none up).
         # Not built any more, so it never trades; its code and ledger stay for history (paper_g2t10_enabled is ignored).
+        if paper_model_vote_enabled():  # operator's call 27 Nov 2026: paper only, never live
+            self._paper_model_vote = PaperModelVote(path=self.data_dir / MODEL_VOTE_LEDGER, lot_size=self._nifty_option_lot())
+            self._log.info("model_vote book: paper, models %s", self._paper_model_vote.models.version)
         if paper_long_straddle_tp20_enabled():
             self._paper_long_str_tp20 = PaperLongStraddle(
                 path=self.data_dir / LONG_STRADDLE_TP20_LEDGER, lot_size=self._nifty_option_lot(),
@@ -1011,6 +1021,8 @@ class FeedEngine:
             self._tasks.append(asyncio.create_task(self._llm_buyer_loop(self._llm_buyer)))
         if self._paper_g2t10 is not None:
             self._tasks.append(asyncio.create_task(self._paper_g2t10_loop(self._paper_g2t10)))
+        if self._paper_model_vote is not None:  # same loop and feed as G2T10 (today's 1-minute bars, ATM symbols)
+            self._tasks.append(asyncio.create_task(self._paper_g2t10_loop(self._paper_model_vote)))
         if self._agent is not None:
             self._tasks.append(asyncio.create_task(self._agent_loop()))
 
@@ -2087,14 +2099,14 @@ class FeedEngine:
         return None
 
     def _held_option_symbols(self) -> list[tuple[str, int]]:
-        """(symbol, strike) of options the LLM buyer and G2T10 paper books hold right now."""
+        """(symbol, strike) of options the LLM buyer, G2T10 and model-vote paper books hold right now."""
         out: list[tuple[str, int]] = []
         llm = self._llm_buyer
         if llm is not None and llm.position is not None:
             out.append((llm.position.symbol, int(llm.position.strike or 0)))
-        g2 = self._paper_g2t10
-        if g2 is not None and isinstance(g2.position, dict) and g2.position.get("symbol"):
-            out.append((str(g2.position["symbol"]), int(g2.position.get("strike") or 0)))
+        for g2 in (self._paper_g2t10, self._paper_model_vote):
+            if g2 is not None and isinstance(g2.position, dict) and g2.position.get("symbol"):
+                out.append((str(g2.position["symbol"]), int(g2.position.get("strike") or 0)))
         return out
 
     def _enqueue_depth_tick(self, symbol: str, row: dict[str, Any]) -> None:
@@ -3412,7 +3424,7 @@ class FeedEngine:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
-                self._log.warning("g2t10 book failed: %s", exc)
+                self._log.warning("%s book failed: %s", book.strategy, exc)
                 await asyncio.sleep(1.0)
 
     async def _refresh_gamma_oi(self, now: datetime) -> None:
@@ -3989,11 +4001,13 @@ class FeedEngine:
             pos = self._llm_buyer.position
             if nb == "nifty" and pos is not None:
                 add_leg("llm_buyer", pos.symbol, pos.strike, pos.leg.upper(), "B", pos.fill)
-        if self._paper_g2t10 is not None:
-            books["g2t10"] = "nifty"
-            gp = self._paper_g2t10.position
+        for key, g2 in (("g2t10", self._paper_g2t10), ("model_vote", self._paper_model_vote)):
+            if g2 is None:
+                continue
+            books[key] = "nifty"
+            gp = g2.position
             if nb == "nifty" and isinstance(gp, dict) and gp.get("symbol"):
-                add_leg("g2t10", str(gp["symbol"]), int(gp.get("strike") or 0), str(gp.get("leg") or "")[-2:].upper(),
+                add_leg(key, str(gp["symbol"]), int(gp.get("strike") or 0), str(gp.get("leg") or "")[-2:].upper(),
                         "B", _num(gp.get("fill")))
 
         bars = list(runtime.bar_builder.bars) if runtime and runtime.bar_builder else []
@@ -4005,6 +4019,8 @@ class FeedEngine:
             files["llm_buyer"] = self._llm_buyer.path
         if self._paper_g2t10 is not None:
             files["g2t10"] = self._paper_g2t10.path
+        if self._paper_model_vote is not None:
+            files["model_vote"] = self._paper_model_vote.path
         for name, path in files.items():
             if books.get(name) != nb:
                 continue
@@ -4256,6 +4272,12 @@ class FeedEngine:
             if self._paper_g2t10 is not None
             else {"ok": True, "mode": "paper", "enabled": False, "live_orders": False, "book": "g2t10",
                   "name": "G2T10 · coded baseline"}
+        )
+        body["model_vote"] = (
+            self._paper_model_vote.snapshot(self.book)
+            if self._paper_model_vote is not None
+            else {"ok": True, "mode": "paper", "enabled": False, "live_orders": False, "book": "model_vote",
+                  "name": "Model vote buyer · no LLM"}
         )
         if self._paper_factor is None:
             body["factor_paper"] = {

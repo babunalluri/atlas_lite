@@ -2509,6 +2509,9 @@
               <dl class="book-inputs-list" id="llmBuyerInputsList"></dl>
             </details>
           </article>
+          <article class="book-card" data-src="modelVoteLine" data-title="Model vote buyer · no LLM">
+            <div class="history-detail book-src" id="modelVoteLine">Model vote buyer · no LLM: —</div>
+          </article>
         </div>
       </section>
       <section class="book-group" aria-label="Expiry-week selling">
@@ -7087,6 +7090,27 @@
       renderLlmBuyerInputs(d);
     }
 
+    // Model vote buyer: LightGBM, CatBoost and logistic vote every minute (paper only, no LLM).
+    function renderModelVote(g) {
+      const line = document.getElementById("modelVoteLine");
+      if (!line) return;
+      const name = g.name || "Model vote buyer · no LLM";
+      if (!g.enabled) {
+        line.textContent = `${name} · off (ATLAS_LITE_PAPER_MODEL_VOTE=0)`;
+        return;
+      }
+      const p = g.position;
+      const head = p
+        ? `holding ${String(p.leg || "").toUpperCase()} ${p.strike} @ ${p.fill} · exit ${p.exit_by || "—"} · open PnL ${p.open_pnl ?? "—"}`
+        : "FLAT";
+      const v = g.last_vote;
+      const vote = v
+        ? ` · last vote ${v.candle}: ${Object.values(v.up || {}).filter(Boolean).length}/3 up, confidence ${v.confidence} (needs ±${v.needed})${v.leg ? " → " + v.leg.toUpperCase() : ""}`
+        : "";
+      line.textContent = `${name} · ${head} · today: ${g.trades_today ?? 0} trades, PnL ${g.realized_today ?? 0}${vote}`
+        + (g.last_reject && !p ? ` · ${g.last_reject}` : "");
+    }
+
     // The factors the LLM named and every input it was given at its last decision.
     function renderLlmBuyerInputs(d) {
       const box = document.getElementById("llmBuyerInputs");
@@ -7363,6 +7387,7 @@
         ]);
         if (meta) meta.textContent = "Paper books · real Kite orders only where a live switch is on";
         renderLlmBuyer(paper.llm_buyer || {});
+        renderModelVote(paper.model_vote || {});
         loadLlmBuyerPaper();
         loadLlmBuyerLive();
         renderExpirySell("expiryEveStrangleLine", paper.expiry_eve_strangle || {});
@@ -7838,7 +7863,7 @@
     // ---- paper positions on the option chain and the chart (display only) ----
     // One selector filters both: "off", "all" or a single book. Kept light: small triangles, P&L only on exits.
     const PAPER_SHORT = {
-      llm_buyer: "LLM", g2t10: "G2T10", expiry_eve_strangle_1pct: "Eve1%", expiry_eve_strangle: "Eve0.5%",
+      llm_buyer: "LLM", g2t10: "G2T10", model_vote: "Vote", expiry_eve_strangle_1pct: "Eve1%", expiry_eve_strangle: "Eve0.5%",
       expiry_day_straddle: "ExpDay", sensex_expiry_day_strangle: "SX", sensex_expiry_day_straddle: "SXstr",
       daily_strangle_05: "D0.5%", daily_premium50: "D₹50",
     };
