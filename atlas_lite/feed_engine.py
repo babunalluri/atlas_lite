@@ -277,6 +277,8 @@ MARK_LABELS: dict[str, str] = {
 MARK_EVENTS = frozenset({"open", "close", "partial_close", "leg_stop"})
 _MARKS_LOCK = threading.Lock()  # /api/paper/marks runs in worker threads: one ledger reader at a time
 MAINTENANCE_LOOP_S = 60.0
+STRUCTURE_CHAIN_PCT = 0.03  # the structure tape's "chain": every strike within 3% of spot, each minute (from 30 Nov 2026)
+STRUCTURE_CHAIN_COLS = ["strike", "ce", "ce_bid", "ce_ask", "pe", "pe_bid", "pe_ask"]
 IV_GREEKS_REFRESH_S = 2.0
 CHAIN_GREEKS_REFRESH_S = 5.0
 CHAIN_GREEKS_WINGS = 12
@@ -1988,7 +1990,10 @@ class FeedEngine:
 
     def _structure_snapshot(self, now: datetime, nb_id: str = "nifty") -> dict[str, Any] | None:
         """Once-a-minute ATM wings + next-week ATM for later strategy research.
-        Wings at 1, 2 and 5 strike steps (NIFTY 50/100/250, SENSEX 100/200/500)."""
+        Wings at 1, 2 and 5 strike steps (NIFTY 50/100/250, SENSEX 100/200/500). From 30 Nov 2026 (operator's call)
+        also "chain": every strike within STRUCTURE_CHAIN_PCT of spot, as [strike, ce ltp, ce bid, ce ask, pe ltp,
+        pe bid, pe ask] (columns in "chain_cols"), so replays never lose a held strike 150-200 pts from ATM (the
+        9 Nov expiry-day replay missed a stop that way)."""
         nb = self.notebooks.get(nb_id)
         if not nb or not nb.enabled or not nb.universe or not nb.atm:
             return None
@@ -2019,6 +2024,8 @@ class FeedEngine:
             "ce": quote_ltp(self.book.get(nb.atm.ce_symbol)),
             "pe": quote_ltp(self.book.get(nb.atm.pe_symbol)),
             "wings": wings,
+            "chain_cols": STRUCTURE_CHAIN_COLS,
+            "chain": self._structure_chain(nb, atm, step),
         }
         nxt = nb.next_universe
         if nxt is not None:
@@ -2034,6 +2041,27 @@ class FeedEngine:
                 "pe": quote_ltp(self.book.get(n_pe)),
             }
         return body
+
+    def _structure_chain(self, nb: Any, atm: int, step: int) -> list[list[Any]]:
+        """[strike, ce ltp, ce bid, ce ask, pe ltp, pe bid, pe ask] for every strike within STRUCTURE_CHAIN_PCT of
+        spot (listed strikes when the chain is known, else every strike step)."""
+        try:
+            ref = float(self._spot(nb) or atm)
+        except (TypeError, ValueError):
+            ref = float(atm)
+        lo, hi = ref * (1 - STRUCTURE_CHAIN_PCT), ref * (1 + STRUCTURE_CHAIN_PCT)
+        cache = getattr(nb, "chain_cache", None)
+        listed = cache[0] if cache and cache[0] else range((int(lo) // step) * step, int(hi) + step, step)
+        out: list[list[Any]] = []
+        for k in listed:
+            if not lo <= k <= hi:
+                continue
+            row: list[Any] = [int(k)]
+            for opt in ("CE", "PE"):
+                q = self.book.get(nb.universe.option_symbol(int(k), opt))
+                row += [quote_ltp(q), quote_bid(q), quote_ask(q)]
+            out.append(row)
+        return out
 
     def _sync_depth_watch(self) -> None:
         """Track NIFTY and SENSEX ATM±1 option symbols for per-tick depth recording."""

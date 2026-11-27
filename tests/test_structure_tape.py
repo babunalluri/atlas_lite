@@ -127,6 +127,37 @@ def test_engine_structure_snapshot_uses_strike_steps(tmp_path: Path) -> None:
                          pe_symbol="BFO:SENSEX26N1280000PE"), next_universe=None)
     rows = {"BFO:SENSEX26N1280000CE": {"last_price": 300.0}, "BFO:SENSEX26N1280500PE": {"last_price": 500.0}}
     eng = SimpleNamespace(notebooks={"sensex": nb}, book=SimpleNamespace(get=rows.get), _spot=lambda _nb: 80010.0)
+    eng._structure_chain = lambda nb_, atm, step: FeedEngine._structure_chain(eng, nb_, atm, step)
     snap = FeedEngine._structure_snapshot(eng, datetime(2026, 11, 10, 9, 16, tzinfo=IST), "sensex")
+    assert [r[0] for r in snap["chain"]][:2] == [77700, 77800] and len(snap["chain"]) == 48  # 80,010 +- 3% = 77,610 .. 82,410
     assert sorted(snap["wings"]) == ["+100", "+200", "+500", "-100", "-200", "-500"]
     assert snap["ce"] == 300.0 and snap["wings"]["+500"]["pe"] == 500.0 and snap["atm"] == 80000
+
+
+def test_engine_structure_snapshot_records_the_chain_within_3pct(tmp_path: Path) -> None:
+    from datetime import date
+    from types import SimpleNamespace
+
+    from atlas_lite.feed_engine import FeedEngine
+
+    class Uni:
+        strike_step = 50
+        expiry = date(2026, 12, 1)
+
+        def option_symbol(self, k: int, opt: str) -> str:
+            return f"NFO:NIFTY26D01{k}{opt}"
+
+    listed = list(range(23000, 28050, 50))
+    nb = SimpleNamespace(enabled=True, universe=Uni(), atm=SimpleNamespace(strike=25600, ce_symbol="NFO:NIFTY26D0125600CE",
+                         pe_symbol="NFO:NIFTY26D0125600PE"), next_universe=None, chain_cache=(listed, [], []))
+    rows = {"NFO:NIFTY26D0125600CE": {"last_price": 120.0, "depth": {"buy": [{"price": 119.5}], "sell": [{"price": 120.5}]}},
+            "NFO:NIFTY26D0124850PE": {"last_price": 9.0}}
+    eng = SimpleNamespace(notebooks={"nifty": nb}, book=SimpleNamespace(get=rows.get), _spot=lambda _nb: 25607.0)
+    eng._structure_chain = lambda nb_, atm, step: FeedEngine._structure_chain(eng, nb_, atm, step)
+    snap = FeedEngine._structure_snapshot(eng, datetime(2026, 11, 30, 9, 16, tzinfo=IST), "nifty")
+    strikes = [r[0] for r in snap["chain"]]
+    assert strikes[0] == 24850 and strikes[-1] == 26350 and len(strikes) == 31  # 25,607 +- 3% = 24,839 .. 26,375
+    assert snap["chain_cols"] == ["strike", "ce", "ce_bid", "ce_ask", "pe", "pe_bid", "pe_ask"]
+    atm_row = snap["chain"][strikes.index(25600)]
+    assert atm_row[1] == 120.0 and snap["chain"][0][4] == 9.0
+    assert sorted(snap["wings"]) == ["+100", "+250", "+50", "-100", "-250", "-50"]  # the old fields are unchanged
