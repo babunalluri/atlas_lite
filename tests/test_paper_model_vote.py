@@ -33,7 +33,8 @@ class FixedVote:
 
     def vote(self, x: list[float]) -> dict[str, Any]:
         self.calls += 1
-        return {"scores": {}, "up": {}, "confidence": 0.05, "needed": 0.03, "leg": self.leg}
+        up = {"a": self.leg != "pe", "b": self.leg == "ce"}  # no leg: the two disagree
+        return {"scores": {}, "up": up, "confidence": 0.05, "needed": 0.03, "leg": self.leg}
 
 
 def t(hm: str, sec: int = 5) -> datetime:
@@ -57,8 +58,9 @@ def feed(until: str, drift: float = 0.0) -> dict:
     return {"atm": 25000, "ce_symbol": CE, "pe_symbol": PE, "bars_today": bars_until(until, drift)}
 
 
-def ledger(b: PaperModelVote) -> list[dict]:
-    return [json.loads(x) for x in b.path.read_text().splitlines() if x.strip()]
+def ledger(b: PaperModelVote, votes: bool = False) -> list[dict]:
+    rows = [json.loads(x) for x in b.path.read_text().splitlines() if x.strip()]
+    return rows if votes else [r for r in rows if r["event"] != "vote"]
 
 
 def test_votes_every_minute_then_exits_after_30_min(tmp_path: Path) -> None:
@@ -124,3 +126,19 @@ def test_snapshot_shows_the_last_vote_and_exit_time(tmp_path: Path) -> None:
     snap = b.snapshot(Book())
     assert snap["book"] == "model_vote" and snap["live_orders"] is False
     assert snap["position"]["exit_by"] == "10:46" and snap["last_vote"]["candle"] == "10:15"
+
+
+def test_every_vote_is_logged_with_its_decision(tmp_path: Path) -> None:
+    fv = FixedVote(None)
+    b = PaperModelVote(path=tmp_path / "v.jsonl", models=fv)  # type: ignore[arg-type]
+    b.on_frame(now=t("09:16"), feed=feed("09:16"), book=Book())
+    fv.leg = "ce"
+    b.on_frame(now=t("09:17"), feed=feed("09:17"), book=Book())
+    b.on_frame(now=t("09:18"), feed=feed("09:18"), book=Book())
+    votes = [r for r in ledger(b, votes=True) if r["event"] == "vote"]
+    assert [v["candle"] for v in votes] == ["09:15", "09:16", "09:17"]
+    assert [v["action"] for v in votes] == ["no trade: models split", "buy CE", "signal, already holding"]
+    assert votes[0]["nifty"] == 25000.0 and votes[0]["day"] == DAY
+    again = PaperModelVote(path=tmp_path / "v.jsonl", models=FixedVote(None))  # type: ignore[arg-type]
+    again._new_day(DAY)  # vote lines do not disturb the restart
+    assert again.position is not None and again.trades == 1

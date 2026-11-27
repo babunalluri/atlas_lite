@@ -17,7 +17,8 @@ a day, +0.2 NIFTY points a trade, t 0.2, vs 3.6 a day, +1.7 points every 5 minut
 - each model votes UP if its score is above its own 2025 median, else DOWN;
 - all three UP and the average score lead over the medians in the top 20% of 2025 -> buy the ATM CE at the ask;
   all three DOWN and as confident -> buy the ATM PE; otherwise no trade.
-- Exit 30 minutes after the entry (sold at the bid), or 15:14. One trade at a time; a trade may open in the same
+- Exit 30 minutes after the entry (sold at the bid), or 15:14. Every vote is written to the ledger as a 'vote' line
+  (candle, NIFTY, scores, confidence, decision). One trade at a time; a trade may open in the same
   minute the previous one closes. No stop, no day limit (paper).
 """
 
@@ -173,9 +174,30 @@ class PaperModelVote(PaperG2T10):
         assert self.models is not None
         v = self.models.vote(x)
         self.last_vote = {"at": hm, "candle": last, **v}
-        if v["leg"] is None or self.position is not None:
-            return ev
-        return self._open_vote(now, feed, book, v) or ev
+        opened = None
+        if v["leg"] is not None and self.position is None:
+            opened = self._open_vote(now, feed, book, v)
+        self._log_vote(now, last, float(bars[-1]["c"]), v, opened)
+        return opened or ev
+
+    def _log_vote(self, now: datetime, candle: str, nifty: float, v: dict[str, Any], opened: dict[str, Any] | None) -> None:
+        """One 'vote' line per minute in the ledger (operator's call, 27 Nov 2026), so every decision can be reviewed."""
+        n_up = sum(1 for u in v["up"].values() if u)
+        if opened is not None:
+            action = f"buy {v['leg'].upper()}"
+        elif v["leg"] is not None and self.position is not None:
+            action = "signal, already holding"
+        elif v["leg"] is not None:
+            action = f"signal, not filled ({self.last_reject})"
+        elif n_up in (0, len(v["up"])):
+            action = "no trade: not confident"
+        else:
+            action = "no trade: models split"
+        last_event = self.last_event
+        self._append({"event": "vote", "ts": now.isoformat(), "day": self.day, "candle": candle, "nifty": round(nifty, 2),
+                      "scores": v["scores"], "up": n_up, "confidence": v["confidence"], "needed": v["needed"],
+                      "leg": v["leg"], "action": action})
+        self.last_event = last_event  # the card's last event stays the last trade
 
     def _open_vote(self, now: datetime, feed: dict[str, Any], book: QuoteSource, v: dict[str, Any]) -> dict[str, Any] | None:
         leg = v["leg"]
