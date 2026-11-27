@@ -63,20 +63,35 @@ def ledger(b: PaperModelVote, votes: bool = False) -> list[dict]:
     return rows if votes else [r for r in rows if r["event"] != "vote"]
 
 
-def test_votes_every_minute_then_exits_after_30_min(tmp_path: Path) -> None:
+def test_holds_while_the_vote_agrees_or_is_unsure_and_reverses_on_an_opposite_vote(tmp_path: Path) -> None:
     fv = FixedVote("ce")
     b = PaperModelVote(path=tmp_path / "v.jsonl", models=fv)  # type: ignore[arg-type]
     ev = b.on_frame(now=t("10:16"), feed=feed("10:16"), book=Book())  # candle 10:15 closed
     assert ev and ev["event"] == "open" and ev["leg"] == "ce" and ev["fill"] == 100.5 and ev["qty"] == 65
-    for hm in ("10:17", "10:21", "10:33", "10:45"):
-        assert b.on_frame(now=t(hm), feed=feed(hm), book=Book()) is None  # holding: no second trade
-    assert fv.calls == 5  # voted every minute it was asked
-    ev = b.on_frame(now=t("10:46"), feed=feed("10:46"), book=Book(ce=110.0))
-    # 30 minutes after the entry the trade is sold and, the vote still agreeing, a new one opens in the same minute
+    for hm, leg in (("10:17", "ce"), ("10:50", None), ("11:30", "ce")):  # agrees / unsure: hold, no time limit
+        fv.leg = leg
+        assert b.on_frame(now=t(hm), feed=feed(hm), book=Book()) is None
+    assert fv.calls == 4  # voted every minute it was asked
+    fv.leg = "pe"  # confident vote for the other side: sell the CE, buy the PE in the same minute
+    ev = b.on_frame(now=t("11:31"), feed=feed("11:31"), book=Book(ce=110.0, pe=90.0))
     rows = ledger(b)
     assert [r["event"] for r in rows] == ["open", "close", "open"]
-    assert rows[1]["reason"] == "hold_30m" and rows[1]["exit"] == 109.5 and rows[1]["pnl_gross"] == round(9.0 * 65, 2)
-    assert ev and ev["event"] == "open"
+    assert rows[1]["reason"] == "vote_reverse" and rows[1]["exit"] == 109.5 and rows[1]["pnl_gross"] == round(9.0 * 65, 2)
+    assert ev and ev["event"] == "open" and ev["leg"] == "pe" and ev["fill"] == 90.5
+    actions = [r["action"] for r in ledger(b, votes=True) if r["event"] == "vote"]
+    assert actions == ["buy CE", "hold CE: vote agrees", "hold CE: no opposite signal", "hold CE: vote agrees",
+                       "sell CE, buy PE"]
+
+
+def test_after_the_last_entry_candle_an_opposite_vote_only_sells(tmp_path: Path) -> None:
+    fv = FixedVote("ce")
+    b = PaperModelVote(path=tmp_path / "v.jsonl", models=fv)  # type: ignore[arg-type]
+    b.on_frame(now=t("14:56"), feed=feed("14:56"), book=Book())
+    fv.leg = "pe"
+    ev = b.on_frame(now=t("15:06"), feed=feed("15:06"), book=Book())  # candle 15:05: votes still run for exits
+    assert ev and ev["event"] == "close" and ev["reason"] == "vote_reverse" and b.position is None
+    assert ledger(b, votes=True)[-1]["action"] == "sell CE (no new entries after 14:59)"
+    assert b.on_frame(now=t("15:07"), feed=feed("15:07"), book=Book()) is None  # flat after 14:59: no new trade
 
 
 def test_no_trade_without_a_vote_and_votes_from_0916_to_1500(tmp_path: Path) -> None:
@@ -85,9 +100,9 @@ def test_no_trade_without_a_vote_and_votes_from_0916_to_1500(tmp_path: Path) -> 
     assert b.on_frame(now=t("10:16"), feed=feed("10:16"), book=Book()) is None and fv.calls == 1
     fv2 = FixedVote("pe")
     b2 = PaperModelVote(path=tmp_path / "w.jsonl", models=fv2)  # type: ignore[arg-type]
-    for hm in ("09:15", "15:01"):  # no closed candle yet / candle 15:00: outside the window
+    for hm in ("09:15", "15:01"):  # no closed candle yet / candle 15:00: after the last entry candle
         assert b2.on_frame(now=t(hm), feed=feed(hm), book=Book()) is None
-    assert fv2.calls == 0
+    assert fv2.calls == 1  # 15:00 is voted (exits) but opens nothing
     ev = b2.on_frame(now=t("09:16"), feed=feed("09:16"), book=Book())  # candle 09:15: the first vote
     assert ev and ev["leg"] == "pe"
     b3 = PaperModelVote(path=tmp_path / "x.jsonl", models=FixedVote("ce"))  # type: ignore[arg-type]
@@ -125,7 +140,7 @@ def test_snapshot_shows_the_last_vote_and_exit_time(tmp_path: Path) -> None:
     b.on_frame(now=t("10:16"), feed=feed("10:16"), book=Book())
     snap = b.snapshot(Book())
     assert snap["book"] == "model_vote" and snap["live_orders"] is False
-    assert snap["position"]["exit_by"] == "10:46" and snap["last_vote"]["candle"] == "10:15"
+    assert snap["position"]["exit_by"] == "PE vote or 15:14" and snap["last_vote"]["candle"] == "10:15"
 
 
 def test_every_vote_is_logged_with_its_decision(tmp_path: Path) -> None:
@@ -137,7 +152,7 @@ def test_every_vote_is_logged_with_its_decision(tmp_path: Path) -> None:
     b.on_frame(now=t("09:18"), feed=feed("09:18"), book=Book())
     votes = [r for r in ledger(b, votes=True) if r["event"] == "vote"]
     assert [v["candle"] for v in votes] == ["09:15", "09:16", "09:17"]
-    assert [v["action"] for v in votes] == ["no trade: models split", "buy CE", "signal, already holding"]
+    assert [v["action"] for v in votes] == ["no trade: models split", "buy CE", "hold CE: vote agrees"]
     assert votes[0]["nifty"] == 25000.0 and votes[0]["day"] == DAY
     again = PaperModelVote(path=tmp_path / "v.jsonl", models=FixedVote(None))  # type: ignore[arg-type]
     again._new_day(DAY)  # vote lines do not disturb the restart

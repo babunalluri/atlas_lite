@@ -500,7 +500,7 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
     "model_vote": (
         "09:16–15:00 every minute · no LLM · LightGBM, CatBoost and logistic (NIFTY 1-min bars, trained 2019–2024) vote on "
         "the next 30 min · all 3 agree and confident → 1 lot ATM CE or PE · paper only (offline test FAILED: built to watch)",
-        "exit 30 min after entry or 15:14 · one trade at a time · no stop, no day limit",
+        "exit by vote: a confident vote for the other side sells and buys that side · else 15:14 · one trade at a time · no stop",
     ),
     "sensex_expiry_day_strangle": (
         "SENSEX (Thu expiry) · 09:16 on expiry day · sell CE/PE nearest F ± 0.5% · no wings · 1 lot",

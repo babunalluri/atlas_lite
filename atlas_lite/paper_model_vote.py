@@ -17,9 +17,13 @@ a day, +0.2 NIFTY points a trade, t 0.2, vs 3.6 a day, +1.7 points every 5 minut
 - each model votes UP if its score is above its own 2025 median, else DOWN;
 - all three UP and the average score lead over the medians in the top 20% of 2025 -> buy the ATM CE at the ask;
   all three DOWN and as confident -> buy the ATM PE; otherwise no trade.
-- Exit 30 minutes after the entry (sold at the bid), or 15:14. Every vote is written to the ledger as a 'vote' line
-  (candle, NIFTY, scores, confidence, decision). One trade at a time; a trade may open in the same
-  minute the previous one closes. No stop, no day limit (paper).
+- Exits by vote too (operator's call, 27 Nov 2026, "vote for all decisions"): while holding, the vote keeps running on
+  every candle to 15:13; a confident vote for the other side sells the trade at the bid and buys the other side in the
+  same minute (a reverse; no new trades after the 14:59 candle). Anything else holds. Square-off 15:14.
+  Offline (scratchpad vote_exit_test.py, 2025 / 2026): 1.7 / 1.9 trades a day, +6.1 / -0.3 NIFTY points a trade, about
+  -7 / -19 points a day after costs, against -47 / -57 for the 30-minute exit it replaced.
+- Every vote is written to the ledger as a 'vote' line (candle, NIFTY, scores, confidence, decision). One trade at a
+  time. No stop, no day limit (paper).
 """
 
 from __future__ import annotations
@@ -40,8 +44,8 @@ NAME = "Model vote buyer · no LLM"
 # Operator's call, 27 Nov 2026: entries 09:16-15:00 (candles 09:15-14:59). Training covered only the 10:15-14:30
 # candles; before 10:14 the 60-minute inputs use the candles there are so far (outside what the models saw).
 FIRST_BAR, LAST_BAR, EXIT_AT = "09:15", "14:59", "15:14"  # square-off 15:14: operator's call
+LAST_VOTE = "15:13"  # votes keep running for exits after the last entry candle
 STEP_MIN = 1  # operator's call 27 Nov 2026: every minute (trained on 5-minute samples)
-HOLD_MIN = 30
 OR_BARS = 15  # 09:15-09:29
 MODEL_FILE = Path(__file__).with_name("model_vote_buyer.json")
 
@@ -150,43 +154,48 @@ class PaperModelVote(PaperG2T10):
         if not self.decision_due(now) or not feed or feed.get("error"):
             return None
         self.done_minute = hm
-        ev = None
-        if self.position is not None:
-            opened = str(self.position.get("opened_at") or "")[11:16]
-            if opened and _mins(hm) - _mins(opened) >= HOLD_MIN:
-                ev = self._close(now, book, "hold_30m")
-                if self.position is not None:  # no quote to sell: retry next minute
-                    self.done_minute = ""
-                    return None
         bars = [b for b in (feed.get("bars_today") or [])
                 if isinstance(b, dict) and b.get("c") is not None and str(b.get("t") or "").startswith(today)
                 and str(b["t"])[11:16] < hm]  # closed candles only
         if not bars:
-            return ev
+            return None
         last = str(bars[-1]["t"])[11:16]
         m = _mins(last)
-        if not (FIRST_BAR <= last <= LAST_BAR and (m - _mins(FIRST_BAR)) % STEP_MIN == 0 and _mins(hm) - m == 1):
-            return ev
+        if not (FIRST_BAR <= last <= LAST_VOTE and (m - _mins(FIRST_BAR)) % STEP_MIN == 0 and _mins(hm) - m == 1):
+            return None
         x = features(bars)
         if x is None:
             self.last_reject = "too_few_candles"
-            return ev
+            return None
         assert self.models is not None
         v = self.models.vote(x)
         self.last_vote = {"at": hm, "candle": last, **v}
+        closed = None
+        if self.position is not None and v["leg"] is not None and v["leg"] != self.position.get("leg"):
+            closed = self._close(now, book, "vote_reverse")
+            if self.position is not None:  # no quote to sell: try again on the next second of this minute
+                self.done_minute = ""
+                return None
         opened = None
-        if v["leg"] is not None and self.position is None:
+        if v["leg"] is not None and self.position is None and last <= LAST_BAR:
             opened = self._open_vote(now, feed, book, v)
-        self._log_vote(now, last, float(bars[-1]["c"]), v, opened)
-        return opened or ev
+        self._log_vote(now, last, float(bars[-1]["c"]), v, opened, closed)
+        return opened or closed
 
-    def _log_vote(self, now: datetime, candle: str, nifty: float, v: dict[str, Any], opened: dict[str, Any] | None) -> None:
+    def _log_vote(self, now: datetime, candle: str, nifty: float, v: dict[str, Any], opened: dict[str, Any] | None,
+                  closed: dict[str, Any] | None = None) -> None:
         """One 'vote' line per minute in the ledger (operator's call, 27 Nov 2026), so every decision can be reviewed."""
         n_up = sum(1 for u in v["up"].values() if u)
+        held = (self.position or {}).get("leg")
         if opened is not None:
-            action = f"buy {v['leg'].upper()}"
-        elif v["leg"] is not None and self.position is not None:
-            action = "signal, already holding"
+            action = (f"sell {str(closed.get('leg') or '').upper()}, " if closed else "") + f"buy {v['leg'].upper()}"
+        elif closed is not None:
+            why = f"no new entries after {LAST_BAR}" if candle > LAST_BAR else f"{v['leg'].upper()} not filled: {self.last_reject}"
+            action = f"sell {str(closed.get('leg') or '').upper()} ({why})"
+        elif held:
+            action = f"hold {str(held).upper()}" + (": vote agrees" if v["leg"] == held else ": no opposite signal")
+        elif v["leg"] is not None and candle > LAST_BAR:
+            action = f"no trade: after {LAST_BAR}"
         elif v["leg"] is not None:
             action = f"signal, not filled ({self.last_reject})"
         elif n_up in (0, len(v["up"])):
@@ -228,16 +237,11 @@ class PaperModelVote(PaperG2T10):
         snap.pop("entries_stopped", None)
         snap.pop("losses_today", None)
         if snap.get("position"):
-            snap["position"]["exit_by"] = _hm_plus(str(snap["position"].get("opened_at") or "")[11:16], HOLD_MIN)
+            other = "PE" if snap["position"].get("leg") == "ce" else "CE"
+            snap["position"]["exit_by"] = f"{other} vote or {EXIT_AT}"
         snap["last_vote"] = self.last_vote
         snap["models"] = self.models.version if self.models else None
         snap["window"] = (f"votes every minute on the {FIRST_BAR}-{LAST_BAR} candles · 1 lot ATM CE/PE when all 3 models "
-                          f"agree and are confident · exit after {HOLD_MIN} min or {EXIT_AT}")
+                          f"agree and are confident · sold (and reversed) on a confident opposite vote, else {EXIT_AT}")
         return snap
 
-
-def _hm_plus(hm: str, minutes: int) -> str | None:
-    if len(hm) != 5:
-        return None
-    m = _mins(hm) + minutes
-    return f"{m // 60:02d}:{m % 60:02d}"
