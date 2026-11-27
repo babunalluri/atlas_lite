@@ -486,7 +486,7 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
         "per-leg stop at +30% · whole position closed at −₹2,000 · else close 15:14 the same day",
     ),
     "llm_buyer": (
-        f"09:16–{LLM_BUYER_LAST_ENTRY} · Claude Sonnet 5.5 from 25 Nov (Sol 20–25 Nov), prompt v8 · buy 2 lots ATM CE or PE "
+        f"09:16–{LLM_BUYER_LAST_ENTRY} · Claude Sonnet 5.5 from 25 Nov (Sol 20–25 Nov), prompt v9 from 27 Nov · buy 2 lots ATM CE or PE "
         "only in the day's direction (±0.25% from the open) · no new trade after a 1.2% move or for 10 min after a loss",
         f"managed every minute (+ :30 while red) · NIFTY stop 15 pts · lot 1 trails from +10%, rest 40% giveback · "
         f"live only: −₹{LLM_BUYER_DAY_LOSS:,.0f} day stop · "

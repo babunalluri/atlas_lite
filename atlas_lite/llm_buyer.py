@@ -249,8 +249,22 @@ above what you paid, the lots still held are also sold for you if the trade give
 After a trade closes at a loss there is no new trade for 10 minutes (you are not asked then).
 Reply with JSON only:""")
 PROMPTS["v8"] = SYSTEM_PROMPT_V8
-# Live/paper book uses v8 (from 20 Nov evening; v7 19-20 Nov, v6 and v5 18-19 Nov, v4 before). Older versions stay for replays.
-PROMPT_VERSION = "v8"
+# v9 (26 Nov 2026 improvise — operator: right entry/exit by the LLM, not more code gates). Paper ledger pattern:
+# winners were almost all code trail/giveback; losers were almost all Sol's own EXIT after 1–11 min; many days churned
+# 20–40 trades. Teach: WAIT by default; buy only a forward thesis; cut dead trades fast; HOLD winners for code stops.
+SYSTEM_PROMPT_V9 = SYSTEM_PROMPT_V8.replace("Reply with JSON only:", """Entry and exit (your job — code does not pick the setup):
+When flat: WAIT is the default. Most minutes have no trade. Buy only when you can say in one short sentence why NIFTY
+should continue your way over the next 10–30 minutes enough to beat costs. move_3m_pts is the last three closed
+minutes; a burst already done your way is usually in the price — prefer a pullback that holds, or WAIT, rather than
+chasing it. Do not buy just to be in a trade.
+When holding: code sells winners for you once armed (lot-1 trail and 40% giveback). HOLD a green trade that is still
+working through flat candles; do not EXIT it because of one quiet minute. EXIT as soon as the reason is gone — open
+P&L red with NIFTY against the trade, or a close back through the structure you bought. A loser that sits for many
+minutes (minutes_held) costs more than a small early exit.
+Reply with JSON only:""")
+PROMPTS["v9"] = SYSTEM_PROMPT_V9
+# Live/paper book uses v9 (from 26 Nov; v8 20-26 Nov, v7 19-20 Nov, v6 and v5 18-19 Nov, v4 before). Older versions stay for replays.
+PROMPT_VERSION = "v9"
 
 
 def render_prompt(version: str) -> str:
@@ -682,7 +696,7 @@ class LlmBuyer:
             return None if (now.minute % self.decide_every_min or hm in self.decided) else hm
         if now.minute % self.decide_every_min or hm in self.decided:
             return None
-        # While flat the LLM is asked only when the day-direction rule allows a side.
+        # While flat the LLM is asked only when a side is allowed and the stretch / pause gates pass.
         ok = (self._entry_open() and hm <= self.last_entry and self._feed_fresh(now) and self.allowed_side() is not None
               and not self.in_loss_pause(now) and self.stretch_reached_at() is None)
         return hm if ok else None
@@ -743,8 +757,8 @@ class LlmBuyer:
         return None
 
     def _entry_open(self) -> bool:
-        """May a new trade start? No trade cap and no profit lock in either book (23 Nov 2026). Paper: always (until the
-        LLM says DONE_FOR_DAY). Live: also not once the live day stop is hit (the month stop is checked at the buy)."""
+        """May a new trade start? No trade cap / profit lock (23 Nov 2026). Blocked after DONE_FOR_DAY (paper + live).
+        Live: also once the live day stop is hit (the month stop is checked at the buy)."""
         if self.stopped == "done_for_day":
             return False
         if not self.live_enabled():
@@ -789,6 +803,8 @@ class LlmBuyer:
                 if spots:
                     out["nifty_vs_vwap_pts"] = round(spots[-1] - vwap, 1)
             closes = [float(b["c"]) for b in bars]
+            if len(closes) > 3:
+                out["move_3m_pts"] = round(closes[-1] - closes[-4], 1)
             if len(closes) > 5:
                 out["move_5m_pts"] = round(closes[-1] - closes[-6], 1)
             if len(closes) > 15:
@@ -877,6 +893,11 @@ class LlmBuyer:
                              "entry_reason": str(why or "")[:300],
                              "entry_level": round(float(lvl), 1) if lvl is not None else None,  # fixed at entry
                              "entry_level_kind": kind or None}
+            try:  # ready-made hold time (v9): no clock arithmetic left to the model
+                s["position"]["minutes_held"] = max(
+                    0, (int(hm[:2]) * 60 + int(hm[3:])) - (int(opened[:2]) * 60 + int(opened[3:])))
+            except (TypeError, ValueError):
+                pass
             self._track_peak(now, book)
             if self.trade_peak is not None and self.trade_peak[0] == self._trade_key():
                 peak = max(self.trade_peak[1], o if o is not None else self.trade_peak[1])

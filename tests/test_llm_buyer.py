@@ -932,10 +932,10 @@ def test_sparse_padding_is_cut_within_the_total_budget() -> None:
     srv.close()
 
 
-def test_live_prompt_is_v5_and_v3_keeps_the_book_contract() -> None:
-    assert M.PROMPT_VERSION == "v8" and M.SYSTEM_PROMPT == M.render_prompt("v8")
+def test_live_prompt_is_v9_and_v3_keeps_the_book_contract() -> None:
+    assert M.PROMPT_VERSION == "v9" and M.SYSTEM_PROMPT == M.render_prompt("v9")
     assert M.MODEL_OPENROUTER == "anthropic/claude-sonnet-5.5"  # from 25 Nov (Sol 20-25 Nov, Sonnet 11-18 Nov, Nemo 19 Nov)
-    assert M.LlmDecider(None).prompt == M.SYSTEM_PROMPT  # the book's decider sends v5 (freehand + information)
+    assert M.LlmDecider(None).prompt == M.SYSTEM_PROMPT  # the book's decider sends the live prompt
     v3 = M.render_prompt("v3")
     assert "New trades only until 15:00" in v3 and "held until 15:08" in v3 and "{" not in v3.split("Reply with")[0]
     assert "entries_left_today" in v3 and "realised" not in v3
@@ -1104,7 +1104,7 @@ def test_freehand_prompt_v4_has_no_trading_rules_and_keeps_the_book_contract() -
     assert "BUY_CE, BUY_PE, WAIT, DONE_FOR_DAY" in v4 and "HOLD, EXIT" in v4 and "{" not in v4.split("Reply with")[0]
     for rule_word in ("chasing", "0.25%", "opening-range", "entry_level", "careful", "not obliged"):
         assert rule_word not in v4  # freehand: no rules, no caution bias
-    assert M.PROMPT_VERSION == "v8"  # v4 13-18 Nov, v5/v6 18-19 Nov, v7 19-20 Nov, v8 = v7 + day-direction rule
+    assert M.PROMPT_VERSION == "v9"  # v8 20-26 Nov; v9 = entry/exit judgement (26 Nov)
 
 
 def test_prompt_v5_is_v4_plus_information_and_still_has_no_rules() -> None:
@@ -1243,6 +1243,28 @@ def test_day_direction_allows_only_the_side_of_the_days_move(tmp_path: Path) -> 
     assert "allowed_entry" in M.SYSTEM_PROMPT and "0.25%" in M.SYSTEM_PROMPT
 
 
+def test_prompt_v9_teaches_selective_entry_and_fast_loser_exit() -> None:
+    v8, v9 = M.render_prompt("v8"), M.render_prompt("v9")
+    assert v9.startswith(v8.split("Reply with JSON only:")[0])  # v8 body kept
+    for phrase in ("WAIT is the default", "move_3m_pts", "minutes_held", "EXIT as soon as the reason is gone",
+                   "HOLD a green trade"):
+        assert phrase in v9 and phrase not in v8
+    assert M.PROMPT_VERSION == "v9" and "BUY_CE, BUY_PE, WAIT, DONE_FOR_DAY" in v9
+
+
+def test_state_includes_move_3m_and_minutes_held(tmp_path: Path) -> None:
+    b, q = book_at(tmp_path, first_decision="09:16", decide_every_min=1), Book()
+    bars = [{"t": f"{DAY} 09:{m:02d}", "o": 24000.0, "h": 24000.0 + m, "l": 24000.0, "c": 24000.0 + m}
+            for m in range(15, 25)]
+    b.on_frame(now=t("09:24"), feed={**feed(spot=24024.0), "bars_today": bars}, book=q)
+    st = b.state(t("09:24"), q)
+    assert st["move_3m_pts"] == 3.0  # 24024 - 24021
+    b.apply(t("09:24"), {"hm": "09:24", "action": "BUY_CE", "reason": "break"}, q)
+    assert b.position is not None
+    held = b.state(t("09:27"), q)["position"]
+    assert held["minutes_held"] == 3 and held["entered_at"] == "09:24"
+
+
 def test_day_direction_refuses_the_other_side_and_logs_it(tmp_path: Path) -> None:
     b, q = book_at(tmp_path), Book()
     b.on_frame(now=t("09:41"), feed={**feed(spot=24060.0), "bars_today": _dir_bars(24060.0)}, book=q)
@@ -1325,3 +1347,4 @@ def test_loss_pause_not_started_by_a_winning_close(tmp_path: Path) -> None:
     q.px[CE] = 106.0  # bid 105.5 > 100.5: a win after charges
     close = b.apply(t("10:42"), {"hm": "10:42", "action": "EXIT", "reason": "target"}, q)
     assert close["pnl"] > 0 and not b.in_loss_pause(t("10:43"))
+

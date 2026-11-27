@@ -29,3 +29,4 @@ def test_dashboard_says_why_a_flat_buyer_is_not_asked(tmp_path: Path, monkeypatc
     b.last_feed = {"bars_today": [bar("09:15", 24000.0), bar("09:34", 24300.0)]}  # +1.25%
     assert FeedEngine._buyer_waiting(b, t("10:03:00")).startswith("no new trades today: NIFTY moved 1.2%")
     assert FeedEngine._buyer_waiting(b, t("15:05:00")) == "no new trades after 15:00"
+
