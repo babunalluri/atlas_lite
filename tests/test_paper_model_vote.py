@@ -157,3 +157,48 @@ def test_every_vote_is_logged_with_its_decision(tmp_path: Path) -> None:
     again = PaperModelVote(path=tmp_path / "v.jsonl", models=FixedVote(None))  # type: ignore[arg-type]
     again._new_day(DAY)  # vote lines do not disturb the restart
     assert again.position is not None and again.trades == 1
+
+
+def feed_at(hm: str, close: float) -> dict:
+    """Flat 25000 candles to `hm`, the last closed candle at `close`."""
+    f = feed(hm)
+    f["bars_today"][-1] = {**f["bars_today"][-1], "c": close}
+    return f
+
+
+def test_shadow_trail_logs_a_would_be_sale_and_never_trades(tmp_path: Path) -> None:
+    fv = FixedVote("ce")
+    b = PaperModelVote(path=tmp_path / "v.jsonl", models=fv)  # type: ignore[arg-type]
+    b.on_frame(now=t("10:16"), feed=feed_at("10:16", 25000.0), book=Book())  # buy CE with NIFTY at 25000
+    fv.leg = None
+    b.on_frame(now=t("10:17"), feed=feed_at("10:17", 25070.0), book=Book())  # +70: not armed
+    b.on_frame(now=t("10:18"), feed=feed_at("10:18", 25100.0), book=Book())  # +100: armed, best 100
+    b.on_frame(now=t("10:19"), feed=feed_at("10:19", 25060.0), book=Book())  # +60: gave back 40%, keep
+    assert not [r for r in ledger(b, votes=True) if r["event"] == "shadow_exit"]
+    b.on_frame(now=t("10:20"), feed=feed_at("10:20", 25050.0), book=Book(ce=130.0))  # +50: gave back 50% -> would sell
+    sh = [r for r in ledger(b, votes=True) if r["event"] == "shadow_exit"]
+    assert len(sh) == 1 and sh[0]["exit"] == 129.5 and sh[0]["best_move"] == 100.0 and sh[0]["move"] == 50.0
+    assert sh[0]["pnl_gross"] == round((129.5 - 100.5) * 65, 2)
+    assert b.position is not None  # the real trade goes on
+    assert [r["event"] for r in ledger(b)] == ["open", "shadow_exit"]
+    votes = [r for r in ledger(b, votes=True) if r["event"] == "vote"]
+    assert votes[2]["trail"]["armed"] is True and votes[-1]["trail"].get("would_sell") is True
+    b.on_frame(now=t("10:21"), feed=feed_at("10:21", 25000.0), book=Book())  # the shadow is flat: no second sale
+    assert len([r for r in ledger(b, votes=True) if r["event"] == "shadow_exit"]) == 1
+    assert b.snapshot(Book())["trail"]["done"]["exit"] == 129.5
+
+
+def test_shadow_trail_survives_a_restart(tmp_path: Path) -> None:
+    fv = FixedVote("pe")
+    b = PaperModelVote(path=tmp_path / "v.jsonl", models=fv)  # type: ignore[arg-type]
+    b.on_frame(now=t("10:16"), feed=feed_at("10:16", 25000.0), book=Book())  # buy PE at 25000
+    fv.leg = None
+    b.on_frame(now=t("10:17"), feed=feed_at("10:17", 24900.0), book=Book())  # +100 the PE's way
+    again = PaperModelVote(path=tmp_path / "v.jsonl", models=FixedVote(None))  # type: ignore[arg-type]
+    again.on_frame(now=t("10:18"), feed=feed_at("10:18", 24940.0), book=Book())  # rebuilt: best 100, now +60
+    assert again.trail is not None and again.trail["best"] == 100.0
+    again.on_frame(now=t("10:19"), feed=feed_at("10:19", 24955.0), book=Book())  # +45: would sell
+    assert again.trail_done is not None and again.trail_done["leg"] == "pe"
+    third = PaperModelVote(path=tmp_path / "v.jsonl", models=FixedVote(None))  # type: ignore[arg-type]
+    third.on_frame(now=t("10:20"), feed=feed_at("10:20", 25000.0), book=Book())
+    assert third.trail_done is not None and third.trail is None  # today's shadow sale remembered: no second one

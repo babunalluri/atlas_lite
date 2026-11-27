@@ -7107,7 +7107,11 @@
       const vote = v
         ? ` · last vote ${v.candle}: ${Object.values(v.up || {}).filter(Boolean).length}/3 up, confidence ${v.confidence} (needs ±${v.needed})${v.leg ? " → " + v.leg.toUpperCase() : ""}`
         : "";
-      line.textContent = `${name} · ${head} · today: ${g.trades_today ?? 0} trades, PnL ${g.realized_today ?? 0}${vote}`
+      const tr = g.trail || {};
+      const trail = tr.done
+        ? ` · trail SL (shadow, not traded): would have sold ${String(tr.done.leg || "").toUpperCase()} @ ${tr.done.exit} (PnL ${tr.done.pnl}), then flat`
+        : (tr.open ? ` · trail SL (shadow): best +${tr.open.best} pts${tr.open.armed ? ", armed: would sell after giving back half" : ` (arms at +${tr.arm_pts})`}` : "");
+      line.textContent = `${name} · ${head} · today: ${g.trades_today ?? 0} trades, PnL ${g.realized_today ?? 0}${vote}${trail}`
         + (g.last_reject && !p ? ` · ${g.last_reject}` : "");
     }
 

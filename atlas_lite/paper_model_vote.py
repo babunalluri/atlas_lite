@@ -24,6 +24,11 @@ a day, +0.2 NIFTY points a trade, t 0.2, vs 3.6 a day, +1.7 points every 5 minut
   -7 / -19 points a day after costs, against -47 / -57 for the 30-minute exit it replaced.
 - Every vote is written to the ledger as a 'vote' line (candle, NIFTY, scores, confidence, decision). One trade at a
   time. No stop, no day limit (paper).
+- Shadow trailing SL (tracked only, never trades; operator's call 27 Nov 2026, to compare on real prices before any
+  switch): once NIFTY has moved TRAIL_ARM_PTS the trade's way, it "would sell" when NIFTY gives back TRAIL_GIVEBACK of
+  the best move, and then stay flat for the day. The would-be sale is logged as a 'shadow_exit' line at the bid with
+  its P&L; after it, the shadow is flat and tracking stops for the day. Offline (scratchpad vote_trail2.py) this was
+  the only trail no worse in both 2025 and 2026 (Rs -304 / -327 a day vs -314 / -540).
 """
 
 from __future__ import annotations
@@ -36,6 +41,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from atlas_lite.kite_charges import kite_nfo_charges
 from atlas_lite.paper_g2t10 import PaperG2T10, QuoteSource, _mins
 
 STRATEGY = "model_vote"
@@ -46,6 +52,9 @@ NAME = "Model vote buyer · no LLM"
 FIRST_BAR, LAST_BAR, EXIT_AT = "09:15", "14:59", "15:14"  # square-off 15:14: operator's call
 LAST_VOTE = "15:13"  # votes keep running for exits after the last entry candle
 STEP_MIN = 1  # operator's call 27 Nov 2026: every minute (trained on 5-minute samples)
+TRAIL_ARM_PTS = 80.0  # shadow trailing SL: armed after this NIFTY move the trade's way
+TRAIL_GIVEBACK = 0.5  # ... and "sells" after giving back this share of the best move
+TRAIL_RULE = "NIFTY trail: armed at +80 pts, sells after giving back 50% of the best move, then flat for the day"
 OR_BARS = 15  # 09:15-09:29
 MODEL_FILE = Path(__file__).with_name("model_vote_buyer.json")
 
@@ -135,6 +144,9 @@ class PaperModelVote(PaperG2T10):
     name: str = NAME
     models: VoteModels | None = None
     last_vote: dict[str, Any] | None = None
+    trail: dict[str, Any] | None = None  # shadow trailing SL of the open trade
+    trail_done: dict[str, Any] | None = None  # today's shadow sale (the shadow is flat after it)
+    trail_day: str = ""
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -149,7 +161,10 @@ class PaperModelVote(PaperG2T10):
     def on_frame(self, *, now: datetime, feed: dict[str, Any], book: QuoteSource) -> dict[str, Any] | None:
         today, hm = now.strftime("%Y-%m-%d"), now.strftime("%H:%M")
         self._new_day(today)
+        if self.trail_day != today:
+            self._rebuild_trail(today)
         if self.position is not None and hm >= EXIT_AT:
+            self.trail = None
             return self._close(now, book, "square_off")
         if not self.decision_due(now) or not feed or feed.get("error"):
             return None
@@ -170,20 +185,88 @@ class PaperModelVote(PaperG2T10):
         assert self.models is not None
         v = self.models.vote(x)
         self.last_vote = {"at": hm, "candle": last, **v}
+        nifty = float(bars[-1]["c"])
+        trail_note = self._trail_step(now, book, last, nifty)
         closed = None
         if self.position is not None and v["leg"] is not None and v["leg"] != self.position.get("leg"):
             closed = self._close(now, book, "vote_reverse")
             if self.position is not None:  # no quote to sell: try again on the next second of this minute
                 self.done_minute = ""
                 return None
+            self.trail = None
         opened = None
         if v["leg"] is not None and self.position is None and last <= LAST_BAR:
-            opened = self._open_vote(now, feed, book, v)
-        self._log_vote(now, last, float(bars[-1]["c"]), v, opened, closed)
+            opened = self._open_vote(now, feed, book, v, nifty)
+        self._log_vote(now, last, nifty, v, opened, closed, trail_note)
         return opened or closed
 
+    # ---- shadow trailing SL (logged only, never trades) ----
+
+    def _trail_step(self, now: datetime, book: QuoteSource, candle: str, nifty: float) -> dict[str, Any] | None:
+        """Update the open trade's shadow trail on this candle; log a 'shadow_exit' when it would sell."""
+        tr, pos = self.trail, self.position
+        if tr is None or pos is None or self.trail_done is not None or tr.get("opened_at") != pos.get("opened_at"):
+            return None
+        move = (nifty - tr["c0"]) * (1 if tr["leg"] == "ce" else -1)
+        tr["best"] = max(tr["best"], move)
+        note: dict[str, Any] = {"move": round(move, 2), "best": round(tr["best"], 2), "armed": tr["best"] >= TRAIL_ARM_PTS}
+        if not note["armed"] or move > tr["best"] * (1 - TRAIL_GIVEBACK):
+            return note
+        bid = self._sell_px(book, str(pos["symbol"]))
+        if bid is None:
+            return note  # no quote: try again next candle
+        qty, fill = int(pos["qty"]), float(pos["fill"])
+        charges = round(float(kite_nfo_charges([(fill, qty, "buy"), (bid, qty, "sell")])["total"]), 2)
+        gross = round((bid - fill) * qty, 2)
+        last_event = self.last_event
+        ev = self._append({"event": "shadow_exit", "ts": now.isoformat(), "day": self.day, "candle": candle,
+                           "trade_opened_at": pos.get("opened_at"), "leg": pos["leg"], "symbol": pos["symbol"],
+                           "qty": qty, "fill": fill, "exit": round(bid, 2), "pnl_gross": gross, "charges": charges,
+                           "pnl": round(gross - charges, 2), "nifty": round(nifty, 2), "entry_nifty": tr["c0"],
+                           "best_move": round(tr["best"], 2), "move": round(move, 2), "rule": TRAIL_RULE})
+        self.last_event = last_event
+        if ev is not None:
+            self.trail_done = ev
+            note["would_sell"] = True
+        return note
+
+    def _rebuild_trail(self, today: str) -> None:
+        """After a restart (or on a new day): today's shadow sale, and the open trade's trail rebuilt from its open
+        line and the NIFTY closes in the vote lines since."""
+        self.trail_day, self.trail, self.trail_done = today, None, None
+        try:
+            lines = self.path.read_text(encoding="utf-8").splitlines() if self.path.is_file() else []
+        except OSError:
+            return
+        tr: dict[str, Any] | None = None
+        for line in lines:
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if ev.get("day") != today:
+                continue
+            kind = ev.get("event")
+            if kind == "shadow_exit":
+                self.trail_done = ev
+            elif kind == "open":
+                c0 = ev.get("nifty")  # older open lines lack it: taken from the buy's own vote line below
+                tr = {"opened_at": ev.get("ts"), "leg": ev.get("leg"), "c0": float(c0) if c0 is not None else None,
+                      "best": 0.0}
+            elif kind == "close":
+                tr = None
+            elif kind == "vote" and tr is not None and ev.get("nifty") is not None:
+                ts = str(ev.get("ts") or "")
+                if tr["c0"] is None and ts[:16] == str(tr["opened_at"])[:16] and "buy" in str(ev.get("action") or ""):
+                    tr["c0"] = float(ev["nifty"])
+                elif tr["c0"] is not None and ts > str(tr["opened_at"]):
+                    tr["best"] = max(tr["best"], (float(ev["nifty"]) - tr["c0"]) * (1 if tr["leg"] == "ce" else -1))
+        if (self.position is not None and tr is not None and tr["c0"] is not None and self.trail_done is None
+                and tr["opened_at"] == self.position.get("opened_at")):
+            self.trail = tr
+
     def _log_vote(self, now: datetime, candle: str, nifty: float, v: dict[str, Any], opened: dict[str, Any] | None,
-                  closed: dict[str, Any] | None = None) -> None:
+                  closed: dict[str, Any] | None = None, trail: dict[str, Any] | None = None) -> None:
         """One 'vote' line per minute in the ledger (operator's call, 27 Nov 2026), so every decision can be reviewed."""
         n_up = sum(1 for u in v["up"].values() if u)
         held = (self.position or {}).get("leg")
@@ -205,10 +288,11 @@ class PaperModelVote(PaperG2T10):
         last_event = self.last_event
         self._append({"event": "vote", "ts": now.isoformat(), "day": self.day, "candle": candle, "nifty": round(nifty, 2),
                       "scores": v["scores"], "up": n_up, "confidence": v["confidence"], "needed": v["needed"],
-                      "leg": v["leg"], "action": action})
+                      "leg": v["leg"], "action": action, **({"trail": trail} if trail else {})})
         self.last_event = last_event  # the card's last event stays the last trade
 
-    def _open_vote(self, now: datetime, feed: dict[str, Any], book: QuoteSource, v: dict[str, Any]) -> dict[str, Any] | None:
+    def _open_vote(self, now: datetime, feed: dict[str, Any], book: QuoteSource, v: dict[str, Any],
+                   nifty: float | None = None) -> dict[str, Any] | None:
         leg = v["leg"]
         symbol, strike = feed.get(f"{leg}_symbol"), int(feed.get("atm") or 0)
         if not symbol or not strike:
@@ -223,12 +307,15 @@ class PaperModelVote(PaperG2T10):
         ev = self._append({"event": "open", "ts": now.isoformat(), "day": self.day, "leg": leg, "symbol": symbol,
                            "strike": strike, "qty": qty, "fill": round(px, 2), "entry": round(px, 2), "side": "long",
                            "scores": v["scores"], "confidence": v["confidence"],
+                           "nifty": round(nifty, 2) if nifty is not None else None,
                            "reason": f"3 models agree {side}, confidence {v['confidence']:+.4f} (needs ±{v['needed']:.4f})"})
         if ev is None:
             return None
         self.trades += 1
         self.position = {"leg": leg, "symbol": symbol, "strike": strike, "qty": qty, "fill": round(px, 2),
                          "opened_at": now.isoformat()}
+        self.trail = ({"opened_at": now.isoformat(), "leg": leg, "c0": round(nifty, 2), "best": 0.0}
+                      if nifty is not None and self.trail_done is None else None)
         self.last_reject = None
         return ev
 
@@ -240,6 +327,11 @@ class PaperModelVote(PaperG2T10):
             other = "PE" if snap["position"].get("leg") == "ce" else "CE"
             snap["position"]["exit_by"] = f"{other} vote or {EXIT_AT}"
         snap["last_vote"] = self.last_vote
+        snap["trail"] = {"rule": TRAIL_RULE, "arm_pts": TRAIL_ARM_PTS,
+                         "open": ({"best": round(self.trail["best"], 2), "armed": self.trail["best"] >= TRAIL_ARM_PTS}
+                                  if self.trail is not None and self.trail_done is None else None),
+                         "done": ({k: self.trail_done.get(k) for k in ("ts", "leg", "exit", "pnl", "best_move", "move")}
+                                  if self.trail_done else None)}
         snap["models"] = self.models.version if self.models else None
         snap["window"] = (f"votes every minute on the {FIRST_BAR}-{LAST_BAR} candles · 1 lot ATM CE/PE when all 3 models "
                           f"agree and are confident · sold (and reversed) on a confident opposite vote, else {EXIT_AT}")
