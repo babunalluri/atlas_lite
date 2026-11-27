@@ -7424,7 +7424,34 @@
         loadAgentTokenField();
         await loadAgentPanel();
         if (booksTab === "trades") await loadPaperTrades();
+        startBooksPoll();
+      } else {
+        stopBooksPoll();
       }
+    }
+
+    // While the Books window is open and the page is visible, the cards refresh by themselves (Books tab only; the
+    // Trades table keeps its Refresh button so a filter or scroll is not reset under the reader).
+    const BOOKS_POLL_MS = 5000;
+    let booksPollTimer = null;
+    let booksPollBusy = false;
+    function stopBooksPoll() {
+      if (booksPollTimer != null) {
+        clearInterval(booksPollTimer);
+        booksPollTimer = null;
+      }
+    }
+    function startBooksPoll() {
+      stopBooksPoll();
+      booksPollTimer = setInterval(async () => {
+        if (booksPollBusy || booksTab !== "books" || document.visibilityState === "hidden") return;
+        const modal = document.getElementById("agentModal");
+        if (!modal?.classList.contains("open")) { stopBooksPoll(); return; }
+        const el = document.activeElement;  // someone is editing a gate or the API token: do not redraw under them
+        if (el && modal.contains(el) && ["INPUT", "SELECT", "TEXTAREA"].includes(el.tagName)) return;
+        booksPollBusy = true;
+        try { await loadAgentPanel(); } finally { booksPollBusy = false; }
+      }, BOOKS_POLL_MS);
     }
 
     document.getElementById("agentToggle")?.addEventListener("click", () => {
