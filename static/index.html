@@ -2512,6 +2512,12 @@
           <article class="book-card" data-src="modelVoteLine" data-title="Model vote buyer · no LLM">
             <div class="history-detail book-src" id="modelVoteLine">Model vote buyer · no LLM: —</div>
           </article>
+          <article class="book-card" data-src="usFadeLine" data-title="US-fade watch · no LLM">
+            <div class="history-detail book-src" id="usFadeLine">US-fade watch · no LLM: —</div>
+          </article>
+          <article class="book-card" data-src="stretchLine" data-title="14:00 stretch watch · no LLM">
+            <div class="history-detail book-src" id="stretchLine">14:00 stretch watch · no LLM: —</div>
+          </article>
         </div>
       </section>
       <section class="book-group" aria-label="Expiry-week selling">
@@ -7115,6 +7121,31 @@
         + (g.last_reject && !p ? ` · ${g.last_reject}` : "");
     }
 
+    // 14:00 stretch watch book: follow a >= 0.75% morning into the last hour with an ITM option (paper only).
+    function renderStretch(g) {
+      const line = document.getElementById("stretchLine");
+      if (!line) return;
+      const name = g.name || "14:00 stretch watch · no LLM";
+      if (!g.enabled) { line.textContent = `${name} · off (ATLAS_LITE_PAPER_STRETCH=0)`; return; }
+      const p = g.position, s = g.last_signal;
+      const sig = s ? `NIFTY ${s.move_pct > 0 ? "+" : ""}${s.move_pct}% from the open at 14:00` : "signal at 14:01";
+      const head = p ? `holding ${String(p.leg || "").toUpperCase()} ${p.strike} @ ${p.fill} · exit 15:00 · open PnL ${p.open_pnl ?? "—"}` : "FLAT";
+      line.textContent = `${name} · ${head} · ${sig} · today: ${g.trades_today ?? 0} trades, PnL ${g.realized_today ?? 0}`;
+    }
+
+    // US-fade watch book: fade a >= 1% S&P 500 move after the open (paper only).
+    function renderUsFade(g) {
+      const line = document.getElementById("usFadeLine");
+      if (!line) return;
+      const name = g.name || "US-fade watch · no LLM";
+      if (!g.enabled) { line.textContent = `${name} · off (ATLAS_LITE_PAPER_US_FADE=0)`; return; }
+      const p = g.position, us = g.us || {};
+      const usTxt = us.move_pct != null ? `S&P 500 ${us.move_pct > 0 ? "+" : ""}${us.move_pct}% (${us.us_date})`
+        : (us.error ? `US figure: ${us.error}` : "US figure: waiting");
+      const head = p ? `holding ${String(p.leg || "").toUpperCase()} ${p.strike} @ ${p.fill} · exit 15:14 · open PnL ${p.open_pnl ?? "—"}` : "FLAT";
+      line.textContent = `${name} · ${head} · ${usTxt} · today: ${g.trades_today ?? 0} trades, PnL ${g.realized_today ?? 0}`;
+    }
+
     // The factors the LLM named and every input it was given at its last decision.
     function renderLlmBuyerInputs(d) {
       const box = document.getElementById("llmBuyerInputs");
@@ -7392,6 +7423,8 @@
         if (meta) meta.textContent = "Paper books · real Kite orders only where a live switch is on";
         renderLlmBuyer(paper.llm_buyer || {});
         renderModelVote(paper.model_vote || {});
+        renderUsFade(paper.us_fade || {});
+        renderStretch(paper.stretch_1400 || {});
         loadLlmBuyerPaper();
         loadLlmBuyerLive();
         renderExpirySell("expiryEveStrangleLine", paper.expiry_eve_strangle || {});
@@ -7894,7 +7927,7 @@
     // ---- paper positions on the option chain and the chart (display only) ----
     // One selector filters both: "off", "all" or a single book. Kept light: small triangles, P&L only on exits.
     const PAPER_SHORT = {
-      llm_buyer: "LLM", g2t10: "G2T10", model_vote: "Vote", expiry_eve_strangle_1pct: "Eve1%", expiry_eve_strangle: "Eve0.5%",
+      llm_buyer: "LLM", g2t10: "G2T10", model_vote: "Vote", us_fade: "USfade", stretch_1400: "14stretch", expiry_eve_strangle_1pct: "Eve1%", expiry_eve_strangle: "Eve0.5%",
       expiry_day_straddle: "ExpDay", sensex_expiry_day_strangle: "SX", sensex_expiry_day_straddle: "SXstr",
       daily_strangle_05: "D0.5%", daily_premium50: "D₹50",
     };

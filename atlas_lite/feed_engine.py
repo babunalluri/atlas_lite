@@ -98,6 +98,8 @@ from atlas_lite.paper_expiry_sell import (
 )
 from atlas_lite.paper_g2t10 import PaperG2T10  # retired 25 Nov 2026; the type stays for the dead-safe paths
 from atlas_lite.paper_model_vote import LEDGER_NAME as MODEL_VOTE_LEDGER, PaperModelVote, paper_model_vote_enabled
+from atlas_lite.paper_us_fade import LEDGER_NAME as US_FADE_LEDGER, PaperUsFade, paper_us_fade_enabled
+from atlas_lite.paper_stretch import LEDGER_NAME as STRETCH_LEDGER, PaperStretch, paper_stretch_enabled
 from atlas_lite.paper_factor import (
     LEDGER_NAME as FACTOR_LEDGER,
     STRATEGY as FACTOR_STRATEGY,
@@ -269,7 +271,7 @@ def _num(v: Any) -> float | None:
 
 # Short labels for the chain tags and chart markers (paper books that hold options).
 MARK_LABELS: dict[str, str] = {
-    "llm_buyer": "LLM", "g2t10": "G2T10", "model_vote": "Vote", "expiry_eve_strangle_1pct": "Eve ±1%", "expiry_eve_strangle": "Eve ±0.5%",
+    "llm_buyer": "LLM", "g2t10": "G2T10", "model_vote": "Vote", "us_fade": "US-fade", "stretch_1400": "14:00 stretch", "expiry_eve_strangle_1pct": "Eve ±1%", "expiry_eve_strangle": "Eve ±0.5%",
     "expiry_day_straddle": "Exp-day straddle", "sensex_expiry_day_strangle": "SX exp-day ±0.5%",
     "sensex_expiry_day_straddle": "SX exp-day straddle", "daily_strangle_05": "Daily ±0.5%",
     "daily_premium50": "Daily ₹50",
@@ -504,6 +506,16 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
         "the next 30 min · all 3 agree and confident (top 10%) → 1 lot ATM CE or PE · paper only (offline test FAILED: built to watch)",
         "exit by vote: a confident vote for the other side sells and buys that side · trailing SL: from +80 NIFTY pts, sold after giving back half, then flat for the day · else 15:14",
     ),
+    "stretch_1400": (
+        "14:01 · no LLM · NIFTY >= ±0.75% from the 09:15 open at 14:00 → buy 1 lot of the option 100 pts in the money "
+        "that way · paper watch book (lead: NIFTY +13.9 / +14.6 pts to 15:00 in 2019–23 / 2024–26; ~break-even on 20 real days)",
+        "exit 15:00 · no stop · one trade a day · entries 14:01–14:05 only",
+    ),
+    "us_fade": (
+        "09:16 · no LLM · S&P 500's last session moved >= 1% → buy 1 lot ATM option against it (US up → PE, down → CE) · "
+        "paper watch book (weak lead: +5.1 / +16.8 NIFTY pts a day 2019–23 / 2024–26, t < 2)",
+        "exit 15:14 · no stop · one trade a day · skipped if the US figure is not in by 09:20",
+    ),
     "sensex_expiry_day_strangle": (
         "SENSEX (Thu expiry) · 09:16 on expiry day · sell CE/PE nearest F ± 0.5% · no wings · 1 lot",
         "per-leg stop at +50% · else close 15:14",
@@ -588,6 +600,8 @@ class FeedEngine:
     _llm_buyer_live: Any = field(default=None, repr=False)
     _paper_g2t10: PaperG2T10 | None = field(default=None, repr=False)
     _paper_model_vote: PaperModelVote | None = field(default=None, repr=False)
+    _paper_us_fade: PaperUsFade | None = field(default=None, repr=False)
+    _paper_stretch: PaperStretch | None = field(default=None, repr=False)
     # Previous day's NIFTY open interest, for the dealer-gamma reading Scalper v3 logs.
     _gamma_oi: GammaOi | None = field(default=None, repr=False)
     _gamma_oi_tried_at: float = field(default=0.0, repr=False)
@@ -909,6 +923,10 @@ class FeedEngine:
         if paper_model_vote_enabled():  # operator's call 27 Nov 2026: paper only, never live
             self._paper_model_vote = PaperModelVote(path=self.data_dir / MODEL_VOTE_LEDGER, lot_size=self._nifty_option_lot())
             self._log.info("model_vote book: paper, models %s", self._paper_model_vote.models.version)
+        if paper_us_fade_enabled():  # operator's call 28 Nov 2026: paper watch book, never live
+            self._paper_us_fade = PaperUsFade(path=self.data_dir / US_FADE_LEDGER, lot_size=self._nifty_option_lot())
+        if paper_stretch_enabled():  # operator's call 28 Nov 2026: paper watch book, never live
+            self._paper_stretch = PaperStretch(path=self.data_dir / STRETCH_LEDGER, lot_size=self._nifty_option_lot())
         if paper_long_straddle_tp20_enabled():
             self._paper_long_str_tp20 = PaperLongStraddle(
                 path=self.data_dir / LONG_STRADDLE_TP20_LEDGER, lot_size=self._nifty_option_lot(),
@@ -1025,6 +1043,10 @@ class FeedEngine:
             self._tasks.append(asyncio.create_task(self._paper_g2t10_loop(self._paper_g2t10)))
         if self._paper_model_vote is not None:  # same loop and feed as G2T10 (today's 1-minute bars, ATM symbols)
             self._tasks.append(asyncio.create_task(self._paper_g2t10_loop(self._paper_model_vote)))
+        if self._paper_us_fade is not None:  # same loop (ATM symbols); the US figure is fetched in its own thread
+            self._tasks.append(asyncio.create_task(self._paper_g2t10_loop(self._paper_us_fade)))
+        if self._paper_stretch is not None:  # same loop and feed (today's 1-minute bars, ATM symbols)
+            self._tasks.append(asyncio.create_task(self._paper_g2t10_loop(self._paper_stretch)))
         if self._agent is not None:
             self._tasks.append(asyncio.create_task(self._agent_loop()))
 
@@ -2132,7 +2154,7 @@ class FeedEngine:
         llm = self._llm_buyer
         if llm is not None and llm.position is not None:
             out.append((llm.position.symbol, int(llm.position.strike or 0)))
-        for g2 in (self._paper_g2t10, self._paper_model_vote):
+        for g2 in (self._paper_g2t10, self._paper_model_vote, self._paper_us_fade, self._paper_stretch):
             if g2 is not None and isinstance(g2.position, dict) and g2.position.get("symbol"):
                 out.append((str(g2.position["symbol"]), int(g2.position.get("strike") or 0)))
         return out
@@ -4029,7 +4051,8 @@ class FeedEngine:
             pos = self._llm_buyer.position
             if nb == "nifty" and pos is not None:
                 add_leg("llm_buyer", pos.symbol, pos.strike, pos.leg.upper(), "B", pos.fill)
-        for key, g2 in (("g2t10", self._paper_g2t10), ("model_vote", self._paper_model_vote)):
+        for key, g2 in (("g2t10", self._paper_g2t10), ("model_vote", self._paper_model_vote),
+                        ("us_fade", self._paper_us_fade), ("stretch_1400", self._paper_stretch)):
             if g2 is None:
                 continue
             books[key] = "nifty"
@@ -4049,6 +4072,10 @@ class FeedEngine:
             files["g2t10"] = self._paper_g2t10.path
         if self._paper_model_vote is not None:
             files["model_vote"] = self._paper_model_vote.path
+        if self._paper_us_fade is not None:
+            files["us_fade"] = self._paper_us_fade.path
+        if self._paper_stretch is not None:
+            files["stretch_1400"] = self._paper_stretch.path
         for name, path in files.items():
             if books.get(name) != nb:
                 continue
@@ -4306,6 +4333,18 @@ class FeedEngine:
             if self._paper_model_vote is not None
             else {"ok": True, "mode": "paper", "enabled": False, "live_orders": False, "book": "model_vote",
                   "name": "Model vote buyer · no LLM"}
+        )
+        body["us_fade"] = (
+            self._paper_us_fade.snapshot(self.book)
+            if self._paper_us_fade is not None
+            else {"ok": True, "mode": "paper", "enabled": False, "live_orders": False, "book": "us_fade",
+                  "name": "US-fade watch · no LLM"}
+        )
+        body["stretch_1400"] = (
+            self._paper_stretch.snapshot(self.book)
+            if self._paper_stretch is not None
+            else {"ok": True, "mode": "paper", "enabled": False, "live_orders": False, "book": "stretch_1400",
+                  "name": "14:00 stretch watch · no LLM"}
         )
         if self._paper_factor is None:
             body["factor_paper"] = {

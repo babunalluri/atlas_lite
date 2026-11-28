@@ -70,6 +70,8 @@ KNOWN_BOOKS = (
     "llm_buyer",
     "g2t10",
     "model_vote",
+    "us_fade",
+    "stretch_1400",
     "daily_strangle_05",
     "daily_premium50",
 )
