@@ -2518,6 +2518,14 @@
           <article class="book-card" data-src="stretchLine" data-title="14:00 stretch watch · no LLM">
             <div class="history-detail book-src" id="stretchLine">14:00 stretch watch · no LLM: —</div>
           </article>
+          <article class="book-card" data-src="llmV2Line" data-title="LLM Buy V2 · Sonnet 5.5">
+            <label class="live-switch" for="llmV2PaperToggle" title="LLM Buy V2 on/off: on = Claude Sonnet 5.5 is asked a few times a day and paper trades are recorded (uses LLM credit, about $0.10 a day); off = no LLM calls, no trades, an open paper trade is sold. Paper only, never real orders. Stays as set across days.">
+              <input type="checkbox" class="switch-input" id="llmV2PaperToggle" checked />
+              <span class="switch-track" aria-hidden="true"></span>
+              <span class="live-switch-text"><strong>LLM Buy V2</strong><span id="llmV2PaperLabel">Paper ON</span></span>
+            </label>
+            <div class="history-detail book-src" id="llmV2Line">LLM Buy V2 · Sonnet 5.5: —</div>
+          </article>
         </div>
       </section>
       <section class="book-group" aria-label="Expiry-week selling">
@@ -7133,6 +7141,58 @@
       line.textContent = `${name} · ${head} · ${sig} · today: ${g.trades_today ?? 0} trades, PnL ${g.realized_today ?? 0}`;
     }
 
+    // LLM Buy V2: the LLM decides at a few asks a day; code exits (paper only).
+    function renderLlmV2(g) {
+      const line = document.getElementById("llmV2Line");
+      if (!line) return;
+      const name = g.name || "LLM Buy V2 · Sonnet 5.5";
+      if (!g.enabled) { line.textContent = `${name} · off (ATLAS_LITE_PAPER_LLM_BUY_V2=0)`; return; }
+      renderLlmV2Paper(g.paper_on !== false);
+      if (g.paper_on === false && !g.position) {
+        line.textContent = `${name} · switched OFF: no LLM calls, no trades · today: ${g.trades_today ?? 0} trades, PnL ${g.realized_today ?? 0}`;
+        return;
+      }
+      const p = g.position, d = g.last_decision;
+      const head = p
+        ? `holding ${String(p.leg || "").toUpperCase()} ${p.strike} @ ${p.fill} · open PnL ${p.open_pnl ?? "—"} · wrong below/above ${p.invalidation} · horizon ${p.horizon_min} min · ${p.day_type || ""}: ${p.thesis || ""}`
+        : (g.asking ? "FLAT · asking the LLM…" : (g.done_for_day ? "FLAT · done for the day" : "FLAT"));
+      const dec = d ? ` · last ask ${d.hm} (${(d.trigger || []).join(", ")}): ${d.error ? "error " + d.error : `${d.action} · ${d.day_type} · ${d.confidence} · ${d.thesis || ""}`}` : "";
+      line.textContent = `${name} · ${head}${dec} · today: ${g.asks_today ?? 0}/${g.max_asks ?? 14} asks, ${g.trades_today ?? 0} trades, PnL ${g.realized_today ?? 0}`;
+    }
+
+    function renderLlmV2Paper(on) {
+      const toggle = document.getElementById("llmV2PaperToggle");
+      const label = document.getElementById("llmV2PaperLabel");
+      if (!toggle || !label) return;
+      if (toggle !== document.activeElement) toggle.checked = on;
+      label.textContent = on ? "Paper ON: asks the LLM a few times a day" : "OFF: no LLM calls, no trades";
+    }
+
+    document.getElementById("llmV2PaperToggle")?.addEventListener("change", async (ev) => {
+      const box = ev.target;
+      const want = !!box.checked;
+      if (!want && !window.confirm(
+        "Turn LLM Buy V2 OFF?\n\nNo more LLM calls (no credit used) and no new trades. An open paper trade is sold now. " +
+        "It stays off until you switch it on again.",
+      )) {
+        box.checked = true;
+        return;
+      }
+      try {
+        const resp = await fetch(`/api/llm_buy_v2/paper?enabled=${want ? "true" : "false"}`, {
+          method: "POST", credentials: "same-origin",
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (resp.status === 401) throw new Error("Not signed in — required to turn LLM Buy V2 on");
+        if (!resp.ok || data.ok === false) throw new Error(data.detail || `HTTP ${resp.status}`);
+        renderLlmV2Paper(!(data.paper && data.paper.enabled === false));
+      } catch (err) {
+        box.checked = !want;
+        const label = document.getElementById("llmV2PaperLabel");
+        if (label) label.textContent = `Switch failed: ${err.message || err}`;
+      }
+    });
+
     // US-fade watch book: fade a >= 1% S&P 500 move after the open (paper only).
     function renderUsFade(g) {
       const line = document.getElementById("usFadeLine");
@@ -7425,6 +7485,7 @@
         renderModelVote(paper.model_vote || {});
         renderUsFade(paper.us_fade || {});
         renderStretch(paper.stretch_1400 || {});
+        renderLlmV2(paper.llm_buy_v2 || {});
         loadLlmBuyerPaper();
         loadLlmBuyerLive();
         renderExpirySell("expiryEveStrangleLine", paper.expiry_eve_strangle || {});
@@ -7927,7 +7988,7 @@
     // ---- paper positions on the option chain and the chart (display only) ----
     // One selector filters both: "off", "all" or a single book. Kept light: small triangles, P&L only on exits.
     const PAPER_SHORT = {
-      llm_buyer: "LLM", g2t10: "G2T10", model_vote: "Vote", us_fade: "USfade", stretch_1400: "14stretch", expiry_eve_strangle_1pct: "Eve1%", expiry_eve_strangle: "Eve0.5%",
+      llm_buyer: "LLM", g2t10: "G2T10", model_vote: "Vote", us_fade: "USfade", stretch_1400: "14stretch", llm_buy_v2: "LLMv2", expiry_eve_strangle_1pct: "Eve1%", expiry_eve_strangle: "Eve0.5%",
       expiry_day_straddle: "ExpDay", sensex_expiry_day_strangle: "SX", sensex_expiry_day_straddle: "SXstr",
       daily_strangle_05: "D0.5%", daily_premium50: "D₹50",
     };

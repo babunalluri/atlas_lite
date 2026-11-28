@@ -43,6 +43,7 @@ from atlas_lite.llm_buyer import (
     LlmBuyer,
     LlmDecider,
     paper_llm_buyer_enabled,
+    prev_day_ohlc,
 )
 
 LLM_BUYER_HUNG_S = 90.0  # last resort: the call itself ends by its 25 s deadline (llm_buyer.post_with_deadline);
@@ -100,6 +101,13 @@ from atlas_lite.paper_g2t10 import PaperG2T10  # retired 25 Nov 2026; the type s
 from atlas_lite.paper_model_vote import LEDGER_NAME as MODEL_VOTE_LEDGER, PaperModelVote, paper_model_vote_enabled
 from atlas_lite.paper_us_fade import LEDGER_NAME as US_FADE_LEDGER, PaperUsFade, paper_us_fade_enabled
 from atlas_lite.paper_stretch import LEDGER_NAME as STRETCH_LEDGER, PaperStretch, paper_stretch_enabled
+from atlas_lite.paper_llm_buy_v2 import (
+    LEDGER_NAME as LLM_BUY_V2_LEDGER,
+    PAPER_FLAG_NAME as LLM_BUY_V2_PAPER_FLAG,
+    PaperLlmBuyV2,
+    V2Decider,
+    paper_llm_buy_v2_enabled,
+)
 from atlas_lite.paper_factor import (
     LEDGER_NAME as FACTOR_LEDGER,
     STRATEGY as FACTOR_STRATEGY,
@@ -271,7 +279,7 @@ def _num(v: Any) -> float | None:
 
 # Short labels for the chain tags and chart markers (paper books that hold options).
 MARK_LABELS: dict[str, str] = {
-    "llm_buyer": "LLM", "g2t10": "G2T10", "model_vote": "Vote", "us_fade": "US-fade", "stretch_1400": "14:00 stretch", "expiry_eve_strangle_1pct": "Eve ±1%", "expiry_eve_strangle": "Eve ±0.5%",
+    "llm_buyer": "LLM", "g2t10": "G2T10", "model_vote": "Vote", "us_fade": "US-fade", "stretch_1400": "14:00 stretch", "llm_buy_v2": "LLM V2", "expiry_eve_strangle_1pct": "Eve ±1%", "expiry_eve_strangle": "Eve ±0.5%",
     "expiry_day_straddle": "Exp-day straddle", "sensex_expiry_day_strangle": "SX exp-day ±0.5%",
     "sensex_expiry_day_straddle": "SX exp-day straddle", "daily_strangle_05": "Daily ±0.5%",
     "daily_premium50": "Daily ₹50",
@@ -511,6 +519,13 @@ PAPER_BOOK_GATES: dict[str, tuple[str, str]] = {
         "that way · paper watch book (lead: NIFTY +13.9 / +14.6 pts to 15:00 in 2019–23 / 2024–26; ~break-even on 20 real days)",
         "exit 15:00 · no stop · one trade a day · entries 14:01–14:05 only",
     ),
+    "llm_buy_v2": (
+        "asks Claude Sonnet 5.5 at 09:30, 10:00, 10:45, 11:30, 12:30, 13:30, 14:01 and on setups (opening-range break, new "
+        "day high/low, 0.75% stretch, gap fill, VIX jump), max 14 asks a day · it names the day type, a thesis, the NIFTY "
+        "level that proves it wrong and a horizon · 1 lot ATM CE or PE, max 2 trades · paper only (operator's call 28 Nov 2026, untested)",
+        "code exits only: a 1-min close beyond the invalidation level (20-60 pts), horizon passed while not in profit, "
+        "trail from +20% (sold at half the gain given back), -35% stop, 15:10",
+    ),
     "us_fade": (
         "09:16 · no LLM · S&P 500's last session moved >= 1% → buy 1 lot ATM option against it (US up → PE, down → CE) · "
         "paper watch book (weak lead: +5.1 / +16.8 NIFTY pts a day 2019–23 / 2024–26, t < 2)",
@@ -602,6 +617,7 @@ class FeedEngine:
     _paper_model_vote: PaperModelVote | None = field(default=None, repr=False)
     _paper_us_fade: PaperUsFade | None = field(default=None, repr=False)
     _paper_stretch: PaperStretch | None = field(default=None, repr=False)
+    _paper_llm_buy_v2: PaperLlmBuyV2 | None = field(default=None, repr=False)
     # Previous day's NIFTY open interest, for the dealer-gamma reading Scalper v3 logs.
     _gamma_oi: GammaOi | None = field(default=None, repr=False)
     _gamma_oi_tried_at: float = field(default=0.0, repr=False)
@@ -927,6 +943,12 @@ class FeedEngine:
             self._paper_us_fade = PaperUsFade(path=self.data_dir / US_FADE_LEDGER, lot_size=self._nifty_option_lot())
         if paper_stretch_enabled():  # operator's call 28 Nov 2026: paper watch book, never live
             self._paper_stretch = PaperStretch(path=self.data_dir / STRETCH_LEDGER, lot_size=self._nifty_option_lot())
+        if paper_llm_buy_v2_enabled():  # operator's call 28 Nov 2026: a fresh LLM buyer, paper only, never live
+            from atlas_lite.day_live_flag import OnOffFlag as _V2Flag
+
+            self._paper_llm_buy_v2 = PaperLlmBuyV2(path=self.data_dir / LLM_BUY_V2_LEDGER, lot_size=self._nifty_option_lot(),
+                                                   decider=V2Decider(read_llm_credentials()),
+                                                   paper_flag=_V2Flag(self.data_dir / LLM_BUY_V2_PAPER_FLAG))
         if paper_long_straddle_tp20_enabled():
             self._paper_long_str_tp20 = PaperLongStraddle(
                 path=self.data_dir / LONG_STRADDLE_TP20_LEDGER, lot_size=self._nifty_option_lot(),
@@ -1047,6 +1069,8 @@ class FeedEngine:
             self._tasks.append(asyncio.create_task(self._paper_g2t10_loop(self._paper_us_fade)))
         if self._paper_stretch is not None:  # same loop and feed (today's 1-minute bars, ATM symbols)
             self._tasks.append(asyncio.create_task(self._paper_g2t10_loop(self._paper_stretch)))
+        if self._paper_llm_buy_v2 is not None:  # same loop and feed, plus yesterday's OHLC; the LLM call runs in a thread
+            self._tasks.append(asyncio.create_task(self._paper_g2t10_loop(self._paper_llm_buy_v2)))
         if self._agent is not None:
             self._tasks.append(asyncio.create_task(self._agent_loop()))
 
@@ -2154,7 +2178,8 @@ class FeedEngine:
         llm = self._llm_buyer
         if llm is not None and llm.position is not None:
             out.append((llm.position.symbol, int(llm.position.strike or 0)))
-        for g2 in (self._paper_g2t10, self._paper_model_vote, self._paper_us_fade, self._paper_stretch):
+        for g2 in (self._paper_g2t10, self._paper_model_vote, self._paper_us_fade, self._paper_stretch,
+                   self._paper_llm_buy_v2):
             if g2 is not None and isinstance(g2.position, dict) and g2.position.get("symbol"):
                 out.append((str(g2.position["symbol"]), int(g2.position.get("strike") or 0)))
         return out
@@ -3466,6 +3491,10 @@ class FeedEngine:
                     day_prefix = now.strftime("%Y-%m-%d")
                     feed = {**feed, "bars_today": [b for b in nb.bar_builder.bars[-400:]
                                                    if str(b.get("t") or "").startswith(day_prefix)]}
+                    if getattr(book, "wants_prev_day", False):  # LLM Buy V2: yesterday's open/high/low/close
+                        prev_day = prev_day_ohlc(list(nb.bar_builder.bars), day_prefix)
+                        if prev_day:
+                            feed["prev_day"] = prev_day
                 if book.position is None and self._agent_gates and not self._agent_gates.entries_allowed(book.strategy, now):
                     book.last_reject = "gate_paused"
                 else:
@@ -4052,7 +4081,8 @@ class FeedEngine:
             if nb == "nifty" and pos is not None:
                 add_leg("llm_buyer", pos.symbol, pos.strike, pos.leg.upper(), "B", pos.fill)
         for key, g2 in (("g2t10", self._paper_g2t10), ("model_vote", self._paper_model_vote),
-                        ("us_fade", self._paper_us_fade), ("stretch_1400", self._paper_stretch)):
+                        ("us_fade", self._paper_us_fade), ("stretch_1400", self._paper_stretch),
+                        ("llm_buy_v2", self._paper_llm_buy_v2)):
             if g2 is None:
                 continue
             books[key] = "nifty"
@@ -4076,6 +4106,8 @@ class FeedEngine:
             files["us_fade"] = self._paper_us_fade.path
         if self._paper_stretch is not None:
             files["stretch_1400"] = self._paper_stretch.path
+        if self._paper_llm_buy_v2 is not None:
+            files["llm_buy_v2"] = self._paper_llm_buy_v2.path
         for name, path in files.items():
             if books.get(name) != nb:
                 continue
@@ -4345,6 +4377,12 @@ class FeedEngine:
             if self._paper_stretch is not None
             else {"ok": True, "mode": "paper", "enabled": False, "live_orders": False, "book": "stretch_1400",
                   "name": "14:00 stretch watch · no LLM"}
+        )
+        body["llm_buy_v2"] = (
+            self._paper_llm_buy_v2.snapshot(self.book)
+            if self._paper_llm_buy_v2 is not None
+            else {"ok": True, "mode": "paper", "enabled": False, "live_orders": False, "book": "llm_buy_v2",
+                  "name": "LLM Buy V2 · Sonnet 5.5"}
         )
         if self._paper_factor is None:
             body["factor_paper"] = {

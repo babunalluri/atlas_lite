@@ -613,6 +613,32 @@ async def api_llm_buyer_paper_set(
     return {"ok": True, "paper": paper, "live": await asyncio.to_thread(lambda: _llm_buyer_live_flag().snapshot())}
 
 
+def _llm_buy_v2_paper_flag():
+    from atlas_lite.day_live_flag import OnOffFlag
+    from atlas_lite.paper_llm_buy_v2 import PAPER_FLAG_NAME
+
+    return OnOffFlag(DATA_DIR / PAPER_FLAG_NAME)
+
+
+@app.get("/api/llm_buy_v2/paper")
+async def api_llm_buy_v2_paper_get() -> dict[str, Any]:
+    """LLM Buy V2 on/off switch: on = asks the LLM and paper trades; off = no LLM calls, no trades."""
+    return {"ok": True, "paper": await asyncio.to_thread(lambda: _llm_buy_v2_paper_flag().snapshot())}
+
+
+@app.post("/api/llm_buy_v2/paper")
+async def api_llm_buy_v2_paper_set(
+    request: Request,
+    enabled: bool = Query(..., description="true = LLM Buy V2 runs (paper only); false = no LLM calls, no trades"),
+) -> dict[str, Any]:
+    """Turn LLM Buy V2 on (sign-in required: it spends LLM credit) or off (always allowed; an open paper trade is
+    sold by the book within seconds). Paper only: this book never sends orders."""
+    if enabled:
+        _ui_session_required(request)
+    paper = await asyncio.to_thread(lambda: _llm_buy_v2_paper_flag().set_enabled(enabled, source="ui"))
+    return {"ok": True, "paper": paper}
+
+
 @app.get("/api/llm_buyer/live")
 async def api_llm_buyer_live_get() -> dict[str, Any]:
     """LLM option buyer live switch: allowed on this host, and enabled for today."""
